@@ -708,6 +708,217 @@ a {
   gap: 12px;
 }
 
+/* ── Messages Button ── */
+
+.btn-messages {
+  padding: 4px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s;
+}
+
+.btn-messages:hover {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* ── Inbox ── */
+
+.inbox-title {
+  font-size: 1.3rem;
+  margin-bottom: 16px;
+}
+
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 40px;
+}
+
+.inbox-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.2s;
+}
+
+.inbox-row:hover {
+  border-color: var(--accent);
+}
+
+.inbox-row-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.inbox-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.inbox-row-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.inbox-row-time {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.inbox-row-preview {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Conversation ── */
+
+.conversation-view {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 100px);
+  min-height: 400px;
+}
+
+.conversation-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.conversation-header .btn-back {
+  margin-bottom: 0;
+  padding: 6px 12px;
+}
+
+.conversation-contact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.conversation-name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.conversation-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+/* ── Chat Bubbles ── */
+
+.chat-bubble {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  word-break: break-word;
+}
+
+.chat-bubble.sent {
+  align-self: flex-end;
+  background: var(--accent);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-bubble.received {
+  align-self: flex-start;
+  background: var(--surface2);
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+
+.chat-text {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.chat-time {
+  font-size: 0.65rem;
+  opacity: 0.6;
+  margin-top: 4px;
+  text-align: right;
+}
+
+/* ── Conversation Compose ── */
+
+.conversation-compose {
+  display: flex;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+.conversation-compose input {
+  flex: 1;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.conversation-compose input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.conversation-compose input::placeholder {
+  color: #555;
+}
+
+.btn-send {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-send:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.btn-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 500px) {
@@ -751,5 +962,13 @@ a {
   .edit-actions .btn-back {
     width: 100%;
     text-align: center;
+  }
+
+  .chat-bubble {
+    max-width: 85%;
+  }
+
+  .conversation-view {
+    height: calc(100vh - 140px);
   }
 }

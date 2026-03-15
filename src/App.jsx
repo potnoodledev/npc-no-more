@@ -7,6 +7,9 @@ import {
   publishProfile,
   subscribeFeed,
   subscribeUserFeed,
+  subscribeDMs,
+  sendDM,
+  decryptDM,
   fetchProfile,
   fetchProfiles,
   saveAccount,
@@ -226,7 +229,6 @@ function EditProfilePage({ account, onBack, onSaved }) {
   const [nip05, setNip05] = useState("");
   const [lud16, setLud16] = useState("");
 
-  // Load existing profile
   useEffect(() => {
     setLoading(true);
     fetchProfile(DEFAULT_RELAYS, account.pk)
@@ -273,9 +275,7 @@ function EditProfilePage({ account, onBack, onSaved }) {
   if (loading) {
     return (
       <div className="edit-profile-page">
-        <button className="btn-back" onClick={onBack}>
-          ← Back
-        </button>
+        <button className="btn-back" onClick={onBack}>← Back</button>
         <div className="loading">Loading your profile…</div>
       </div>
     );
@@ -283,23 +283,15 @@ function EditProfilePage({ account, onBack, onSaved }) {
 
   return (
     <div className="edit-profile-page">
-      <button className="btn-back" onClick={onBack}>
-        ← Back
-      </button>
-
+      <button className="btn-back" onClick={onBack}>← Back</button>
       <div className="edit-profile-card">
         <h2>Edit Profile</h2>
         <p className="edit-profile-hint">
-          Your profile is published to relays as a kind 0 event. All fields are
-          optional.
+          Your profile is published to relays as a kind 0 event. All fields are optional.
         </p>
-
-        {/* Preview */}
         <div className="edit-preview">
           {banner && (
-            <div className="edit-preview-banner">
-              <img src={banner} alt="" />
-            </div>
+            <div className="edit-preview-banner"><img src={banner} alt="" /></div>
           )}
           <div className="edit-preview-header">
             <div className="edit-preview-avatar">
@@ -312,114 +304,35 @@ function EditProfilePage({ account, onBack, onSaved }) {
               )}
             </div>
             <div>
-              <div className="edit-preview-name">
-                {displayName || name || "Anonymous"}
-              </div>
-              {nip05 && (
-                <div className="edit-preview-nip05">✅ {nip05}</div>
-              )}
+              <div className="edit-preview-name">{displayName || name || "Anonymous"}</div>
+              {nip05 && <div className="edit-preview-nip05">✅ {nip05}</div>}
             </div>
           </div>
           {about && <p className="edit-preview-about">{about}</p>}
         </div>
-
-        {/* Form */}
         <div className="edit-form">
-          <label>
-            <span>Display Name</span>
-            <input
-              type="text"
-              placeholder="How you want to be known"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-            />
-          </label>
-
-          <label>
-            <span>Username</span>
-            <input
-              type="text"
-              placeholder="short handle (no spaces)"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
-
-          <label>
-            <span>About</span>
-            <textarea
-              placeholder="Tell the world about yourself…"
-              value={about}
-              onChange={(e) => setAbout(e.target.value)}
-              rows={3}
-            />
-          </label>
-
-          <label>
-            <span>Profile Picture URL</span>
-            <input
-              type="url"
-              placeholder="https://example.com/avatar.jpg"
-              value={picture}
-              onChange={(e) => setPicture(e.target.value)}
-            />
-          </label>
-
-          <label>
-            <span>Banner Image URL</span>
-            <input
-              type="url"
-              placeholder="https://example.com/banner.jpg"
-              value={banner}
-              onChange={(e) => setBanner(e.target.value)}
-            />
-          </label>
-
-          <label>
-            <span>Website</span>
-            <input
-              type="url"
-              placeholder="https://yoursite.com"
-              value={website}
-              onChange={(e) => setWebsite(e.target.value)}
-            />
-          </label>
-
-          <label>
-            <span>NIP-05 Identifier</span>
-            <input
-              type="text"
-              placeholder="you@yoursite.com"
-              value={nip05}
-              onChange={(e) => setNip05(e.target.value)}
-            />
-          </label>
-
-          <label>
-            <span>Lightning Address</span>
-            <input
-              type="text"
-              placeholder="you@walletofsatoshi.com"
-              value={lud16}
-              onChange={(e) => setLud16(e.target.value)}
-            />
-          </label>
+          <label><span>Display Name</span>
+            <input type="text" placeholder="How you want to be known" value={displayName} onChange={(e) => setDisplayName(e.target.value)} /></label>
+          <label><span>Username</span>
+            <input type="text" placeholder="short handle (no spaces)" value={name} onChange={(e) => setName(e.target.value)} /></label>
+          <label><span>About</span>
+            <textarea placeholder="Tell the world about yourself…" value={about} onChange={(e) => setAbout(e.target.value)} rows={3} /></label>
+          <label><span>Profile Picture URL</span>
+            <input type="url" placeholder="https://example.com/avatar.jpg" value={picture} onChange={(e) => setPicture(e.target.value)} /></label>
+          <label><span>Banner Image URL</span>
+            <input type="url" placeholder="https://example.com/banner.jpg" value={banner} onChange={(e) => setBanner(e.target.value)} /></label>
+          <label><span>Website</span>
+            <input type="url" placeholder="https://yoursite.com" value={website} onChange={(e) => setWebsite(e.target.value)} /></label>
+          <label><span>NIP-05 Identifier</span>
+            <input type="text" placeholder="you@yoursite.com" value={nip05} onChange={(e) => setNip05(e.target.value)} /></label>
+          <label><span>Lightning Address</span>
+            <input type="text" placeholder="you@walletofsatoshi.com" value={lud16} onChange={(e) => setLud16(e.target.value)} /></label>
         </div>
-
         {error && <p className="error">{error}</p>}
-        {saved && (
-          <p className="success">✅ Profile saved and published to relays!</p>
-        )}
-
+        {saved && <p className="success">✅ Profile saved and published to relays!</p>}
         <div className="edit-actions">
-          <button className="btn-back" onClick={onBack}>
-            Cancel
-          </button>
-          <button
-            className="btn-primary"
-            onClick={handleSave}
-            disabled={saving}
-          >
+          <button className="btn-back" onClick={onBack}>Cancel</button>
+          <button className="btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? "Publishing…" : "💾 Save Profile"}
           </button>
         </div>
@@ -428,47 +341,153 @@ function EditProfilePage({ account, onBack, onSaved }) {
   );
 }
 
-// ── Profile Page ──
+// ── Conversation View ──
 
-function ProfilePage({ pubkey, isOwnProfile, onBack, onClickProfile, onEditProfile }) {
-  const [profile, setProfile] = useState(null);
-  const [notes, setNotes] = useState([]);
+function ConversationView({ account, otherPubkey, messages, profiles, onBack, onClickProfile }) {
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef(null);
+
+  const otherProfile = profiles[otherPubkey] || {};
+  const otherName = otherProfile.display_name || otherProfile.name || shortPubkey(otherPubkey);
+  const otherAvatar = otherProfile.picture || null;
+
+  const sorted = [...messages].sort((a, b) => a.created_at - b.created_at);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [sorted.length]);
+
+  async function handleSend() {
+    if (!input.trim()) return;
+    setSending(true);
+    try {
+      await sendDM(input, otherPubkey, account);
+      setInput("");
+    } catch (e) {
+      alert("Failed to send: " + e.message);
+    }
+    setSending(false);
+  }
+
+  return (
+    <div className="conversation-view">
+      <div className="conversation-header">
+        <button className="btn-back" onClick={onBack}>←</button>
+        <div
+          className="conversation-contact clickable"
+          onClick={() => onClickProfile(otherPubkey)}
+        >
+          <div className="note-avatar">
+            {otherAvatar ? (
+              <img src={otherAvatar} alt="" />
+            ) : (
+              <div className="avatar-placeholder">
+                {otherName.charAt(0).toUpperCase()}
+              </div>
+            )}
+          </div>
+          <span className="conversation-name">{otherName}</span>
+        </div>
+      </div>
+
+      <div className="conversation-messages">
+        {sorted.length === 0 && (
+          <div className="loading">No messages yet. Say hello!</div>
+        )}
+        {sorted.map((msg) => (
+          <div
+            key={msg.id}
+            className={`chat-bubble ${msg.pubkey === account.pk ? "sent" : "received"}`}
+          >
+            <div className="chat-text">{msg._decrypted || msg.content}</div>
+            <div className="chat-time">{formatTime(msg.created_at)}</div>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="conversation-compose">
+        <input
+          type="text"
+          placeholder="Type a message…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+        />
+        <button
+          className="btn-send"
+          onClick={handleSend}
+          disabled={sending || !input.trim()}
+        >
+          {sending ? "…" : "➤"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Inbox View ──
+
+function InboxView({ account, initialConversation, onOpenConversation, onClickProfile }) {
+  const [conversations, setConversations] = useState({}); // { otherPk: [msgs] }
   const [profiles, setProfiles] = useState({});
-  const [loadingProfile, setLoadingProfile] = useState(true);
-  const [loadingNotes, setLoadingNotes] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [selectedPk, setSelectedPk] = useState(initialConversation || null);
   const subRef = useRef(null);
-  const notesRef = useRef([]);
+  const allMessagesRef = useRef({}); // { eventId: event }
+  const conversationsRef = useRef({});
   const profileCacheRef = useRef({});
 
-  const npub = npubEncode(pubkey);
+  // Process a DM event: decrypt and add to conversations
+  const processEvent = useCallback(async (event) => {
+    // Skip if already processed
+    if (allMessagesRef.current[event.id]) return;
 
+    const { plaintext, otherPk } = await decryptDM(event, account);
+    const processed = { ...event, _decrypted: plaintext, _otherPk: otherPk };
+    allMessagesRef.current[event.id] = processed;
+
+    // Add to conversations grouped by other party
+    if (!conversationsRef.current[otherPk]) {
+      conversationsRef.current[otherPk] = [];
+    }
+    conversationsRef.current[otherPk].push(processed);
+
+    // Update state
+    setConversations({ ...conversationsRef.current });
+  }, [account]);
+
+  // Subscribe to DMs
   useEffect(() => {
-    setLoadingProfile(true);
-    setProfile(null);
-    fetchProfile(DEFAULT_RELAYS, pubkey)
-      .then((p) => {
-        setProfile(p);
-        setLoadingProfile(false);
-      })
-      .catch(() => setLoadingProfile(false));
-  }, [pubkey]);
+    setLoading(true);
+    allMessagesRef.current = {};
+    conversationsRef.current = {};
+    setConversations({});
 
-  const addNote = useCallback((event) => {
-    setNotes((prev) => {
-      if (prev.find((n) => n.id === event.id)) return prev;
-      const updated = [event, ...prev].sort(
-        (a, b) => b.created_at - a.created_at
-      );
-      notesRef.current = updated;
-      return updated;
-    });
-  }, []);
+    subRef.current = subscribeDMs(
+      DEFAULT_RELAYS,
+      account.pk,
+      (event) => processEvent(event),
+      () => setLoading(false)
+    );
 
+    return () => {
+      if (subRef.current) subRef.current.close();
+    };
+  }, [account.pk, processEvent]);
+
+  // Fetch profiles for conversation partners
   useEffect(() => {
     const interval = setInterval(async () => {
-      const unknownPubkeys = [
-        ...new Set(notesRef.current.map((n) => n.pubkey)),
-      ].filter((pk) => !profileCacheRef.current[pk]);
+      const unknownPubkeys = Object.keys(conversationsRef.current).filter(
+        (pk) => !profileCacheRef.current[pk]
+      );
       if (unknownPubkeys.length === 0) return;
       try {
         const fetched = await fetchProfiles(DEFAULT_RELAYS, unknownPubkeys);
@@ -484,21 +503,143 @@ function ProfilePage({ pubkey, isOwnProfile, onBack, onClickProfile, onEditProfi
     return () => clearInterval(interval);
   }, []);
 
+  // If a conversation is selected, show it
+  if (selectedPk) {
+    return (
+      <ConversationView
+        account={account}
+        otherPubkey={selectedPk}
+        messages={conversations[selectedPk] || []}
+        profiles={profiles}
+        onBack={() => setSelectedPk(null)}
+        onClickProfile={onClickProfile}
+      />
+    );
+  }
+
+  // Sort conversations by latest message time
+  const sortedConvos = Object.entries(conversations)
+    .map(([pk, msgs]) => {
+      const sorted = [...msgs].sort((a, b) => b.created_at - a.created_at);
+      return { pk, msgs: sorted, latest: sorted[0] };
+    })
+    .sort((a, b) => b.latest.created_at - a.latest.created_at);
+
+  return (
+    <div className="inbox-view">
+      <h2 className="inbox-title">✉️ Messages</h2>
+
+      {loading && sortedConvos.length === 0 && (
+        <div className="loading">Loading messages…</div>
+      )}
+      {!loading && sortedConvos.length === 0 && (
+        <div className="loading">
+          No messages yet. Visit someone's profile and send them a message!
+        </div>
+      )}
+
+      <div className="inbox-list">
+        {sortedConvos.map(({ pk, latest }) => {
+          const profile = profiles[pk] || {};
+          const name = profile.display_name || profile.name || shortPubkey(pk);
+          const avatar = profile.picture || null;
+          const preview = latest._decrypted || "";
+          const isSent = latest.pubkey === account.pk;
+
+          return (
+            <div
+              key={pk}
+              className="inbox-row clickable"
+              onClick={() => {
+                setSelectedPk(pk);
+                if (onOpenConversation) onOpenConversation(pk);
+              }}
+            >
+              <div className="note-avatar">
+                {avatar ? (
+                  <img src={avatar} alt="" />
+                ) : (
+                  <div className="avatar-placeholder">
+                    {name.charAt(0).toUpperCase()}
+                  </div>
+                )}
+              </div>
+              <div className="inbox-row-content">
+                <div className="inbox-row-top">
+                  <span className="inbox-row-name">{name}</span>
+                  <span className="inbox-row-time">
+                    {formatTime(latest.created_at)}
+                  </span>
+                </div>
+                <div className="inbox-row-preview">
+                  {isSent ? "You: " : ""}
+                  {preview.length > 80 ? preview.slice(0, 80) + "…" : preview}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Profile Page ──
+
+function ProfilePage({ pubkey, isOwnProfile, onBack, onClickProfile, onEditProfile, onSendMessage }) {
+  const [profile, setProfile] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [profiles, setProfiles] = useState({});
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [loadingNotes, setLoadingNotes] = useState(true);
+  const subRef = useRef(null);
+  const notesRef = useRef([]);
+  const profileCacheRef = useRef({});
+
+  const npub = npubEncode(pubkey);
+
+  useEffect(() => {
+    setLoadingProfile(true);
+    setProfile(null);
+    fetchProfile(DEFAULT_RELAYS, pubkey)
+      .then((p) => { setProfile(p); setLoadingProfile(false); })
+      .catch(() => setLoadingProfile(false));
+  }, [pubkey]);
+
+  const addNote = useCallback((event) => {
+    setNotes((prev) => {
+      if (prev.find((n) => n.id === event.id)) return prev;
+      const updated = [event, ...prev].sort((a, b) => b.created_at - a.created_at);
+      notesRef.current = updated;
+      return updated;
+    });
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const unknownPubkeys = [...new Set(notesRef.current.map((n) => n.pubkey))].filter(
+        (pk) => !profileCacheRef.current[pk]
+      );
+      if (unknownPubkeys.length === 0) return;
+      try {
+        const fetched = await fetchProfiles(DEFAULT_RELAYS, unknownPubkeys);
+        profileCacheRef.current = { ...profileCacheRef.current, ...fetched };
+        for (const pk of unknownPubkeys) {
+          if (!profileCacheRef.current[pk]) profileCacheRef.current[pk] = { _attempted: true };
+        }
+        setProfiles({ ...profileCacheRef.current });
+      } catch {}
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     setLoadingNotes(true);
     notesRef.current = [];
     setNotes([]);
     if (subRef.current) subRef.current.close();
-    subRef.current = subscribeUserFeed(
-      DEFAULT_RELAYS,
-      pubkey,
-      (event) => addNote(event),
-      () => setLoadingNotes(false),
-      50
-    );
-    return () => {
-      if (subRef.current) subRef.current.close();
-    };
+    subRef.current = subscribeUserFeed(DEFAULT_RELAYS, pubkey, (event) => addNote(event), () => setLoadingNotes(false), 50);
+    return () => { if (subRef.current) subRef.current.close(); };
   }, [pubkey, addNote]);
 
   const meta = profile || {};
@@ -508,87 +649,52 @@ function ProfilePage({ pubkey, isOwnProfile, onBack, onClickProfile, onEditProfi
 
   return (
     <div className="profile-page">
-      <button className="btn-back" onClick={onBack}>
-        ← Back
-      </button>
+      <button className="btn-back" onClick={onBack}>← Back</button>
 
-      {banner && (
-        <div className="profile-banner">
-          <img src={banner} alt="" />
-        </div>
-      )}
+      {banner && <div className="profile-banner"><img src={banner} alt="" /></div>}
 
       <div className="profile-card">
         <div className="profile-avatar-large">
-          {avatar ? (
-            <img src={avatar} alt="" />
-          ) : (
-            <div className="avatar-placeholder large">
-              {displayName.charAt(0).toUpperCase()}
-            </div>
+          {avatar ? <img src={avatar} alt="" /> : (
+            <div className="avatar-placeholder large">{displayName.charAt(0).toUpperCase()}</div>
           )}
         </div>
-
         <div className="profile-info">
           <div className="profile-name-row">
             <h2 className="profile-name">{displayName}</h2>
             {isOwnProfile && (
-              <button className="btn-edit" onClick={onEditProfile}>
-                ✏️ Edit Profile
+              <button className="btn-edit" onClick={onEditProfile}>✏️ Edit Profile</button>
+            )}
+            {!isOwnProfile && (
+              <button className="btn-edit" onClick={() => onSendMessage(pubkey)}>
+                ✉️ Message
               </button>
             )}
           </div>
-          {meta.nip05 && (
-            <span className="profile-nip05">✅ {meta.nip05}</span>
-          )}
+          {meta.nip05 && <span className="profile-nip05">✅ {meta.nip05}</span>}
           <code className="profile-npub">{npub}</code>
           {meta.about && <p className="profile-about">{meta.about}</p>}
-
           <div className="profile-details">
             {meta.website && (
-              <a
-                className="profile-link"
-                href={
-                  meta.website.startsWith("http")
-                    ? meta.website
-                    : "https://" + meta.website
-                }
-                target="_blank"
-                rel="noopener"
-              >
+              <a className="profile-link" href={meta.website.startsWith("http") ? meta.website : "https://" + meta.website} target="_blank" rel="noopener">
                 🔗 {meta.website}
               </a>
             )}
-            {meta.lud16 && (
-              <span className="profile-detail">⚡ {meta.lud16}</span>
-            )}
+            {meta.lud16 && <span className="profile-detail">⚡ {meta.lud16}</span>}
           </div>
         </div>
       </div>
 
-      {loadingProfile && !profile && (
-        <div className="loading">Loading profile…</div>
-      )}
+      {loadingProfile && !profile && <div className="loading">Loading profile…</div>}
 
       <h3 className="profile-posts-heading">Posts</h3>
 
-      {loadingNotes && notes.length === 0 && (
-        <div className="loading">Loading notes…</div>
-      )}
-      {!loadingNotes && notes.length === 0 && (
-        <div className="loading">No posts found.</div>
-      )}
+      {loadingNotes && notes.length === 0 && <div className="loading">Loading notes…</div>}
+      {!loadingNotes && notes.length === 0 && <div className="loading">No posts found.</div>}
 
       <div className="notes-list">
         {notes.map((ev) => (
-          <NoteCard
-            key={ev.id}
-            event={ev}
-            profile={
-              ev.pubkey === pubkey ? profile : profiles[ev.pubkey]
-            }
-            onClickProfile={onClickProfile}
-          />
+          <NoteCard key={ev.id} event={ev} profile={ev.pubkey === pubkey ? profile : profiles[ev.pubkey]} onClickProfile={onClickProfile} />
         ))}
       </div>
     </div>
@@ -609,9 +715,7 @@ function Feed({ account, onClickProfile }) {
   const addNote = useCallback((event) => {
     setNotes((prev) => {
       if (prev.find((n) => n.id === event.id)) return prev;
-      const updated = [event, ...prev].sort(
-        (a, b) => b.created_at - a.created_at
-      );
+      const updated = [event, ...prev].sort((a, b) => b.created_at - a.created_at);
       notesRef.current = updated;
       return updated;
     });
@@ -619,17 +723,15 @@ function Feed({ account, onClickProfile }) {
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      const unknownPubkeys = [
-        ...new Set(notesRef.current.map((n) => n.pubkey)),
-      ].filter((pk) => !profileCacheRef.current[pk]);
+      const unknownPubkeys = [...new Set(notesRef.current.map((n) => n.pubkey))].filter(
+        (pk) => !profileCacheRef.current[pk]
+      );
       if (unknownPubkeys.length === 0) return;
       try {
         const fetched = await fetchProfiles(DEFAULT_RELAYS, unknownPubkeys);
         profileCacheRef.current = { ...profileCacheRef.current, ...fetched };
         for (const pk of unknownPubkeys) {
-          if (!profileCacheRef.current[pk]) {
-            profileCacheRef.current[pk] = { _attempted: true };
-          }
+          if (!profileCacheRef.current[pk]) profileCacheRef.current[pk] = { _attempted: true };
         }
         setProfiles({ ...profileCacheRef.current });
       } catch {}
@@ -643,65 +745,29 @@ function Feed({ account, onClickProfile }) {
     setNotes([]);
     if (subRef.current) subRef.current.close();
     if (tab === "mine") {
-      subRef.current = subscribeUserFeed(
-        DEFAULT_RELAYS,
-        account.pk,
-        (event) => addNote(event),
-        () => setLoading(false),
-        100
-      );
+      subRef.current = subscribeUserFeed(DEFAULT_RELAYS, account.pk, (event) => addNote(event), () => setLoading(false), 100);
     } else {
-      subRef.current = subscribeFeed(
-        DEFAULT_RELAYS,
-        (event) => addNote(event),
-        () => setLoading(false),
-        100
-      );
+      subRef.current = subscribeFeed(DEFAULT_RELAYS, (event) => addNote(event), () => setLoading(false), 100);
     }
-    return () => {
-      if (subRef.current) subRef.current.close();
-    };
+    return () => { if (subRef.current) subRef.current.close(); };
   }, [tab, account.pk, addNote]);
 
-  function handlePosted(ev) {
-    addNote(ev);
-  }
+  function handlePosted(ev) { addNote(ev); }
 
   return (
     <div className="feed">
       <ComposeBox account={account} onPosted={handlePosted} />
-
       <div className="feed-tabs">
-        <button
-          className={tab === "global" ? "active" : ""}
-          onClick={() => setTab("global")}
-        >
-          🌍 Global
-        </button>
-        <button
-          className={tab === "mine" ? "active" : ""}
-          onClick={() => setTab("mine")}
-        >
-          👤 My Posts
-        </button>
+        <button className={tab === "global" ? "active" : ""} onClick={() => setTab("global")}>🌍 Global</button>
+        <button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}>👤 My Posts</button>
       </div>
-
-      {loading && notes.length === 0 && (
-        <div className="loading">Connecting to relays…</div>
-      )}
+      {loading && notes.length === 0 && <div className="loading">Connecting to relays…</div>}
       {!loading && notes.length === 0 && tab === "mine" && (
-        <div className="loading">
-          No posts yet. Write your first note above!
-        </div>
+        <div className="loading">No posts yet. Write your first note above!</div>
       )}
       <div className="notes-list">
         {notes.map((ev) => (
-          <NoteCard
-            key={ev.id}
-            event={ev}
-            profile={profiles[ev.pubkey]}
-            onClickProfile={onClickProfile}
-          />
+          <NoteCard key={ev.id} event={ev} profile={profiles[ev.pubkey]} onClickProfile={onClickProfile} />
         ))}
       </div>
     </div>
@@ -710,12 +776,19 @@ function Feed({ account, onClickProfile }) {
 
 // ── Account Info Bar ──
 
-function AccountBar({ account, onLogout, onClickProfile }) {
+function AccountBar({ account, onLogout, onClickProfile, onOpenMessages }) {
   const [showKey, setShowKey] = useState(false);
 
   return (
     <div className="account-bar">
       <div className="account-info">
+        <button
+          className="btn-messages"
+          onClick={onOpenMessages}
+          title="Messages"
+        >
+          ✉️
+        </button>
         <span
           className="account-npub clickable"
           title="View your profile"
@@ -748,25 +821,19 @@ function AccountBar({ account, onLogout, onClickProfile }) {
 export default function App() {
   const [account, setAccount] = useState(null);
   const [ready, setReady] = useState(false);
-  // view: "feed" | "profile" | "editProfile"
+  // view: "feed" | "profile" | "editProfile" | "inbox" | "conversation"
   const [view, setView] = useState("feed");
   const [viewingProfilePk, setViewingProfilePk] = useState(null);
+  const [dmTargetPk, setDmTargetPk] = useState(null);
 
   useEffect(() => {
     const saved = loadAccount();
     if (saved) {
       if (saved.isExtension) {
         if (window.nostr) {
-          window.nostr
-            .getPublicKey()
-            .then((pk) => {
-              setAccount({ ...saved, pk });
-              setReady(true);
-            })
-            .catch(() => {
-              clearAccount();
-              setReady(true);
-            });
+          window.nostr.getPublicKey()
+            .then((pk) => { setAccount({ ...saved, pk }); setReady(true); })
+            .catch(() => { clearAccount(); setReady(true); });
           return;
         } else {
           clearAccount();
@@ -778,18 +845,15 @@ export default function App() {
     setReady(true);
   }, []);
 
-  function handleLogin(acc) {
-    setAccount(acc);
-  }
+  function handleLogin(acc) { setAccount(acc); }
 
   function handleLogout() {
     clearAccount();
     setAccount(null);
     setView("feed");
     setViewingProfilePk(null);
-    try {
-      getPool().close(DEFAULT_RELAYS);
-    } catch {}
+    setDmTargetPk(null);
+    try { getPool().close(DEFAULT_RELAYS); } catch {}
   }
 
   function handleClickProfile(pubkey) {
@@ -808,17 +872,20 @@ export default function App() {
     window.scrollTo(0, 0);
   }
 
-  function handleProfileSaved() {
-    // After saving, go back to own profile to see changes
+  function handleBackFromEdit() {
+    setView(viewingProfilePk ? "profile" : "feed");
+    window.scrollTo(0, 0);
   }
 
-  function handleBackFromEdit() {
-    // Go back to profile view
-    if (viewingProfilePk) {
-      setView("profile");
-    } else {
-      setView("feed");
-    }
+  function handleOpenMessages() {
+    setDmTargetPk(null);
+    setView("inbox");
+    window.scrollTo(0, 0);
+  }
+
+  function handleSendMessage(pubkey) {
+    setDmTargetPk(pubkey);
+    setView("inbox");
     window.scrollTo(0, 0);
   }
 
@@ -831,10 +898,15 @@ export default function App() {
   let content;
   if (view === "editProfile") {
     content = (
-      <EditProfilePage
+      <EditProfilePage account={account} onBack={handleBackFromEdit} onSaved={() => {}} />
+    );
+  } else if (view === "inbox") {
+    content = (
+      <InboxView
         account={account}
-        onBack={handleBackFromEdit}
-        onSaved={handleProfileSaved}
+        initialConversation={dmTargetPk}
+        onOpenConversation={(pk) => setDmTargetPk(pk)}
+        onClickProfile={handleClickProfile}
       />
     );
   } else if (view === "profile" && viewingProfilePk) {
@@ -845,6 +917,7 @@ export default function App() {
         onBack={handleBackToFeed}
         onClickProfile={handleClickProfile}
         onEditProfile={handleEditProfile}
+        onSendMessage={handleSendMessage}
       />
     );
   } else {
@@ -856,19 +929,14 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1
-          className="clickable"
-          onClick={() => {
-            setView("feed");
-            setViewingProfilePk(null);
-          }}
-        >
+        <h1 className="clickable" onClick={() => { setView("feed"); setViewingProfilePk(null); setDmTargetPk(null); }}>
           🟣 NPC No More
         </h1>
         <AccountBar
           account={account}
           onLogout={handleLogout}
           onClickProfile={handleClickProfile}
+          onOpenMessages={handleOpenMessages}
         />
       </header>
       <main>{content}</main>

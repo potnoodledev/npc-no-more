@@ -5,6 +5,7 @@ import {
 } from "nostr-tools/pure";
 import { SimplePool } from "nostr-tools/pool";
 import { nsecEncode, npubEncode, decode } from "nostr-tools/nip19";
+import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from "nostr-tools/nip04";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 // Our own relay (injected at build time, falls back to empty)
@@ -195,6 +196,86 @@ export async function fetchProfiles(relays, pubkeys) {
     } catch {}
   }
   return profiles;
+}
+
+// ── Direct Messages (NIP-04) ──
+
+export async function sendDM(content, recipientPk, account, relays = DEFAULT_RELAYS) {
+  let encrypted;
+  if (account.isExtension) {
+    encrypted = await window.nostr.nip04.encrypt(recipientPk, content);
+  } else {
+    encrypted = await nip04Encrypt(account.sk, recipientPk, content);
+  }
+
+  const event = {
+    kind: 4,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["p", recipientPk]],
+    content: encrypted,
+  };
+
+  let signed;
+  if (account.isExtension) {
+    signed = await window.nostr.signEvent(event);
+  } else {
+    signed = finalizeEvent(event, account.sk);
+  }
+
+  const p = getPool();
+  await Promise.allSettled(p.publish(relays, signed));
+  return signed;
+}
+
+export async function decryptDM(event, account) {
+  // Figure out who the other party is
+  const otherPk = event.pubkey === account.pk
+    ? event.tags.find((t) => t[0] === "p")?.[1] || ""
+    : event.pubkey;
+
+  try {
+    let plaintext;
+    if (account.isExtension) {
+      plaintext = await window.nostr.nip04.decrypt(otherPk, event.content);
+    } else {
+      plaintext = await nip04Decrypt(account.sk, otherPk, event.content);
+    }
+    return { plaintext, otherPk };
+  } catch {
+    return { plaintext: "[failed to decrypt]", otherPk };
+  }
+}
+
+export function subscribeDMs(relays, myPubkey, onEvent, onEose) {
+  const p = getPool();
+  // We need two filters: messages I sent + messages to me
+  // subscribeMany with a single filter can't do OR on different fields,
+  // so we make two subscriptions
+  let eoseCount = 0;
+  const checkEose = () => {
+    eoseCount++;
+    if (eoseCount >= 2 && onEose) onEose();
+  };
+
+  const sub1 = p.subscribeMany(
+    relays,
+    { kinds: [4], authors: [myPubkey], limit: 200 },
+    { onevent: onEvent, oneose: checkEose }
+  );
+
+  const sub2 = p.subscribeMany(
+    relays,
+    { kinds: [4], "#p": [myPubkey], limit: 200 },
+    { onevent: onEvent, oneose: checkEose }
+  );
+
+  // Return a combined closer
+  return {
+    close() {
+      sub1.close();
+      sub2.close();
+    },
+  };
 }
 
 // ── Helpers ──
