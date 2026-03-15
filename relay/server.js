@@ -43,6 +43,12 @@ db.exec(`
     label TEXT DEFAULT '',
     added_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 const stmts = {
@@ -66,6 +72,12 @@ const stmts = {
   `),
   removePubkey: db.prepare(`DELETE FROM allowed_pubkeys WHERE pubkey = ?`),
   listPubkeys: db.prepare(`SELECT pubkey, label, added_at FROM allowed_pubkeys`),
+  getConfig: db.prepare(`SELECT value FROM config WHERE key = ?`),
+  setConfig: db.prepare(`
+    INSERT OR REPLACE INTO config (key, value, updated_at)
+    VALUES (?, ?, ?)
+  `),
+  getAllConfig: db.prepare(`SELECT key, value FROM config`),
 };
 
 // ── Allowed pubkeys (merged from env + DB) ──
@@ -425,6 +437,58 @@ const server = http.createServer((req, res) => {
     console.log(`[admin] removed pubkey: ${pubkey.slice(0, 16)}…`);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, removed: pubkey }));
+    return;
+  }
+
+  // Admin: get config
+  if (req.method === "GET" && req.url === "/admin/config") {
+    if (!isAdmin) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    const rows = stmts.getAllConfig.all();
+    const config = {};
+    for (const row of rows) {
+      try { config[row.key] = JSON.parse(row.value); } catch { config[row.key] = row.value; }
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(config));
+    return;
+  }
+
+  // Admin: set config
+  if (req.method === "PUT" && req.url === "/admin/config") {
+    if (!isAdmin) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const data = JSON.parse(body);
+        const now = Math.floor(Date.now() / 1000);
+        for (const [key, value] of Object.entries(data)) {
+          stmts.setConfig.run(key, JSON.stringify(value), now);
+        }
+        console.log(`[admin] config updated: ${Object.keys(data).join(", ")}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Admin: check if setup is complete (public — no auth needed)
+  if (req.method === "GET" && req.url === "/setup-status") {
+    const row = stmts.getConfig.get("character");
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ setup_complete: !!row }));
     return;
   }
 

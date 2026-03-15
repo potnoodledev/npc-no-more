@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   createAccount,
-  loginWithNsec,
+  accountFromNsec,
   loginWithExtension,
   publishNote,
   publishProfile,
@@ -12,47 +12,45 @@ import {
   decryptDM,
   fetchProfile,
   fetchProfiles,
-  saveAccount,
-  loadAccount,
-  clearAccount,
+  relayGetConfig,
+  relaySaveConfig,
+  relayAddPubkey,
+  relayGetSetupStatus,
   shortPubkey,
   formatTime,
+  saveLocal,
+  loadLocal,
+  clearLocal,
   DEFAULT_RELAYS,
+  RELAY_HTTP_URL,
   getPool,
 } from "./nostr";
 import { npubEncode, decode as nip19decode } from "nostr-tools/nip19";
 import "./App.css";
 
-// ── Hash Router Helpers ──
+// ══════════════════════════════════════
+//  HASH ROUTER
+// ══════════════════════════════════════
 
 function parseHash() {
   const hash = window.location.hash.replace(/^#\/?/, "");
-  if (!hash) return { route: "feed" };
-
+  if (!hash) return { route: "home" };
   const parts = hash.split("/");
-  if (parts[0] === "profile" && parts[1]) {
-    return { route: "profile", key: parts[1] };
-  }
-  if (parts[0] === "messages" && parts[1]) {
-    return { route: "messages", key: parts[1] };
-  }
-  if (parts[0] === "messages") {
-    return { route: "inbox" };
-  }
-  return { route: "feed" };
+  if (parts[0] === "admin" && parts[1] === "setup") return { route: "setup" };
+  if (parts[0] === "admin") return { route: "admin" };
+  if (parts[0] === "profile" && parts[1]) return { route: "profile", key: parts[1] };
+  if (parts[0] === "messages" && parts[1]) return { route: "messages", key: parts[1] };
+  if (parts[0] === "messages") return { route: "inbox" };
+  if (parts[0] === "origin") return { route: "origin" };
+  return { route: "home" };
 }
 
 function resolvePubkey(key) {
   if (!key) return null;
-  // If it starts with npub1, decode it
   if (key.startsWith("npub1")) {
-    try {
-      const { type, data } = nip19decode(key);
-      if (type === "npub") return data;
-    } catch {}
+    try { const { type, data } = nip19decode(key); if (type === "npub") return data; } catch {}
     return null;
   }
-  // If it looks like hex (64 chars)
   if (/^[0-9a-f]{64}$/i.test(key)) return key;
   return null;
 }
@@ -61,27 +59,597 @@ function setHash(path) {
   window.history.pushState(null, "", "#/" + path);
 }
 
-// ── Auth Screen ──
+// ══════════════════════════════════════
+//  SETUP WIZARD
+// ══════════════════════════════════════
 
-function AuthScreen({ onLogin }) {
-  const [tab, setTab] = useState("create");
-  const [nsecInput, setNsecInput] = useState("");
+function SetupWizard({ onComplete }) {
+  const [step, setStep] = useState(1);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  function handleCreate() {
-    const acc = createAccount();
-    saveAccount(acc);
-    onLogin(acc);
+  // Step 1: Character
+  const [charName, setCharName] = useState("");
+  const [charPersonality, setCharPersonality] = useState("");
+  const [charWorld, setCharWorld] = useState("");
+  const [charVoice, setCharVoice] = useState("");
+
+  // Step 2: API Keys
+  const [geminiKey, setGeminiKey] = useState("");
+
+  // Step 3: Admin
+  const [adminMethod, setAdminMethod] = useState("create");
+  const [adminNsecInput, setAdminNsecInput] = useState("");
+  const [adminSecret, setAdminSecret] = useState("");
+
+  // Generated accounts (created in step 4)
+  const [characterAccount, setCharacterAccount] = useState(null);
+  const [adminAccount, setAdminAccount] = useState(null);
+
+  async function handleLaunch() {
+    setError("");
+    setSaving(true);
+    try {
+      // Create character keypair
+      const charAcc = createAccount();
+      setCharacterAccount(charAcc);
+
+      // Create or import admin account
+      let admAcc;
+      if (adminMethod === "create") {
+        admAcc = createAccount();
+      } else if (adminMethod === "nsec") {
+        admAcc = accountFromNsec(adminNsecInput.trim());
+      } else {
+        admAcc = await loginWithExtension();
+      }
+      setAdminAccount(admAcc);
+
+      // The admin secret for relay API
+      const secret = adminSecret.trim() || crypto.randomUUID().replace(/-/g, "");
+
+      // Build character config
+      const config = {
+        character: {
+          name: charName,
+          personality: charPersonality,
+          world: charWorld,
+          voice: charVoice,
+          pubkey: charAcc.pk,
+          npub: charAcc.npub,
+          origin_story: [], // will be filled by Gemini later
+          profile_image: "",
+          banner_image: "",
+          video_url: "",
+          posting_schedule: {
+            frequency: "3x daily",
+            topics: [],
+            style: "in-character",
+          },
+        },
+        admin: {
+          pubkey: admAcc.pk,
+          npub: admAcc.npub,
+        },
+        api_keys: {
+          gemini: geminiKey,
+        },
+        setup_complete: true,
+      };
+
+      // Save to relay
+      if (RELAY_HTTP_URL) {
+        // First, try saving config — the admin secret might already be set on Railway
+        // We need the user-provided admin secret to auth
+        await relaySaveConfig(secret, config);
+        // Whitelist the character pubkey for writing
+        await relayAddPubkey(secret, charAcc.pk, "character");
+        // Whitelist the admin pubkey too
+        if (admAcc.pk) {
+          await relayAddPubkey(secret, admAcc.pk, "admin");
+        }
+      }
+
+      // Publish character's Nostr profile
+      const profileMeta = {
+        name: charName,
+        display_name: charName,
+        about: charPersonality,
+        // picture, banner, nip05 will be set later
+      };
+      await publishProfile(profileMeta, charAcc);
+
+      // Save locally
+      saveLocal("npc_config", config);
+      saveLocal("npc_character_account", {
+        skHex: charAcc.skHex,
+        nsec: charAcc.nsec,
+        pk: charAcc.pk,
+        npub: charAcc.npub,
+      });
+      if (admAcc.skHex) {
+        saveLocal("npc_admin_account", {
+          skHex: admAcc.skHex,
+          nsec: admAcc.nsec,
+          pk: admAcc.pk,
+          npub: admAcc.npub,
+        });
+      }
+      saveLocal("npc_admin_secret", secret);
+
+      onComplete(config, charAcc, admAcc);
+    } catch (e) {
+      setError("Setup failed: " + e.message);
+    }
+    setSaving(false);
   }
 
-  function handleNsecLogin() {
+  return (
+    <div className="setup-wizard">
+      <div className="setup-card">
+        <h1>🟣 NPC No More</h1>
+        <p className="setup-tagline">"Nobody cared who I was until I put on the mask"</p>
+
+        <div className="setup-steps">
+          <div className={`setup-step-dot ${step >= 1 ? "active" : ""}`}>1</div>
+          <div className={`setup-step-line ${step >= 2 ? "active" : ""}`} />
+          <div className={`setup-step-dot ${step >= 2 ? "active" : ""}`}>2</div>
+          <div className={`setup-step-line ${step >= 3 ? "active" : ""}`} />
+          <div className={`setup-step-dot ${step >= 3 ? "active" : ""}`}>3</div>
+        </div>
+
+        {/* Step 1: Character */}
+        {step === 1 && (
+          <div className="setup-section">
+            <h2>Every character has an origin story</h2>
+            <p className="setup-hint">Who is your character? Define their identity.</p>
+
+            <div className="edit-form">
+              <label>
+                <span>Character Name</span>
+                <input type="text" placeholder="Zara, ARIA-7, The Chronicler…" value={charName} onChange={(e) => setCharName(e.target.value)} />
+              </label>
+              <label>
+                <span>Personality & Backstory</span>
+                <textarea placeholder="A rogue AI archaeologist from 2187 who discovered that ancient civilizations were seeded by earlier AIs…" value={charPersonality} onChange={(e) => setCharPersonality(e.target.value)} rows={4} />
+              </label>
+              <label>
+                <span>World / Setting</span>
+                <input type="text" placeholder="Post-singularity Earth, cyberpunk Tokyo, a living library…" value={charWorld} onChange={(e) => setCharWorld(e.target.value)} />
+              </label>
+              <label>
+                <span>Voice & Style</span>
+                <textarea placeholder="Sardonic, curious, drops historical references. Never breaks the fourth wall. Speaks in short punchy sentences." value={charVoice} onChange={(e) => setCharVoice(e.target.value)} rows={3} />
+              </label>
+            </div>
+
+            <div className="setup-nav">
+              <div />
+              <button className="btn-primary" onClick={() => setStep(2)} disabled={!charName.trim() || !charPersonality.trim()}>
+                Next →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: API Keys */}
+        {step === 2 && (
+          <div className="setup-section">
+            <h2>Power up your character</h2>
+            <p className="setup-hint">API keys for AI generation. Optional — you can add them later.</p>
+
+            <div className="edit-form">
+              <label>
+                <span>Gemini API Key</span>
+                <input type="password" placeholder="AIza..." value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} />
+                <span className="field-hint">Used for generating origin story, images, and video. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Get one here</a></span>
+              </label>
+            </div>
+
+            <div className="setup-nav">
+              <button className="btn-back" onClick={() => setStep(1)}>← Back</button>
+              <button className="btn-primary" onClick={() => setStep(3)}>Next →</button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Admin */}
+        {step === 3 && (
+          <div className="setup-section">
+            <h2>The person behind the mask</h2>
+            <p className="setup-hint">Create your admin identity. This is YOU — the puppeteer.</p>
+
+            <div className="auth-tabs">
+              <button className={adminMethod === "create" ? "active" : ""} onClick={() => setAdminMethod("create")}>
+                Generate New
+              </button>
+              <button className={adminMethod === "nsec" ? "active" : ""} onClick={() => setAdminMethod("nsec")}>
+                Import nsec
+              </button>
+              <button className={adminMethod === "extension" ? "active" : ""} onClick={() => setAdminMethod("extension")}>
+                NIP-07
+              </button>
+            </div>
+
+            {adminMethod === "create" && (
+              <p className="setup-hint">A fresh keypair will be generated for your admin identity.</p>
+            )}
+            {adminMethod === "nsec" && (
+              <div className="edit-form">
+                <label>
+                  <span>Your nsec or hex private key</span>
+                  <input type="password" placeholder="nsec1… or hex" value={adminNsecInput} onChange={(e) => setAdminNsecInput(e.target.value)} />
+                </label>
+              </div>
+            )}
+            {adminMethod === "extension" && (
+              <p className="setup-hint">Your NIP-07 browser extension will be used.</p>
+            )}
+
+            <div className="edit-form" style={{ marginTop: "16px" }}>
+              <label>
+                <span>Relay Admin Secret</span>
+                <input type="text" placeholder="Leave blank to auto-generate" value={adminSecret} onChange={(e) => setAdminSecret(e.target.value)} />
+                <span className="field-hint">Password for the relay's admin API. Save this somewhere safe.</span>
+              </label>
+            </div>
+
+            {error && <p className="error">{error}</p>}
+
+            <div className="setup-nav">
+              <button className="btn-back" onClick={() => setStep(2)}>← Back</button>
+              <button className="btn-primary" onClick={handleLaunch} disabled={saving || (adminMethod === "nsec" && !adminNsecInput.trim())}>
+                {saving ? "Launching…" : "🚀 Launch Character"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  CHARACTER PUBLIC PAGE
+// ══════════════════════════════════════
+
+function CharacterPage({ config, onMessage }) {
+  const char = config.character;
+  const [notes, setNotes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const subRef = useRef(null);
+
+  const addNote = useCallback((event) => {
+    setNotes((prev) => {
+      if (prev.find((n) => n.id === event.id)) return prev;
+      return [event, ...prev].sort((a, b) => b.created_at - a.created_at);
+    });
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    setNotes([]);
+    if (subRef.current) subRef.current.close();
+    subRef.current = subscribeUserFeed(
+      DEFAULT_RELAYS, char.pubkey,
+      (event) => addNote(event),
+      () => setLoading(false),
+      50
+    );
+    return () => { if (subRef.current) subRef.current.close(); };
+  }, [char.pubkey, addNote]);
+
+  return (
+    <div className="character-page">
+      {/* Hero Section */}
+      <div className="char-hero">
+        {char.banner_image && (
+          <div className="char-hero-banner">
+            <img src={char.banner_image} alt="" />
+          </div>
+        )}
+        <div className="char-hero-content">
+          <div className="char-hero-avatar">
+            {char.profile_image ? (
+              <img src={char.profile_image} alt="" />
+            ) : (
+              <div className="avatar-placeholder large">
+                {char.name.charAt(0).toUpperCase()}
+              </div>
+            )}
+          </div>
+          <h1 className="char-hero-name">{char.name}</h1>
+          <p className="char-hero-personality">{char.personality}</p>
+          {char.world && <p className="char-hero-world">🌍 {char.world}</p>}
+          <div className="char-hero-actions">
+            <button className="btn-primary" onClick={() => onMessage(char.pubkey)}>
+              ✉️ Message {char.name}
+            </button>
+            <code className="char-npub">{char.npub}</code>
+          </div>
+        </div>
+      </div>
+
+      {/* Origin Story */}
+      {char.origin_story && char.origin_story.length > 0 && (
+        <div className="char-origin">
+          <h2>📖 Origin Story</h2>
+          {/* TODO: Render origin story posts */}
+          <p className="setup-hint">Coming soon — generated with Gemini</p>
+        </div>
+      )}
+
+      {/* Feed */}
+      <div className="char-feed">
+        <h2>Latest Posts</h2>
+        {loading && notes.length === 0 && <div className="loading">Loading…</div>}
+        {!loading && notes.length === 0 && (
+          <div className="loading">{char.name} hasn't posted yet. Check back soon!</div>
+        )}
+        <div className="notes-list">
+          {notes.map((ev) => (
+            <div key={ev.id} className="note-card">
+              <div className="note-header">
+                <div className="note-avatar">
+                  {char.profile_image ? (
+                    <img src={char.profile_image} alt="" />
+                  ) : (
+                    <div className="avatar-placeholder">{char.name.charAt(0).toUpperCase()}</div>
+                  )}
+                </div>
+                <div className="note-meta">
+                  <span className="note-author">{char.name}</span>
+                  <span className="note-time">{formatTime(ev.created_at)}</span>
+                </div>
+              </div>
+              <div className="note-content">{ev.content}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  ADMIN PANEL
+// ══════════════════════════════════════
+
+function AdminPanel({ config, characterAccount, adminAccount, adminSecret, onConfigUpdate }) {
+  const [tab, setTab] = useState("character"); // character | chat | post | messages
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // Character settings
+  const char = config.character || {};
+  const [charName, setCharName] = useState(char.name || "");
+  const [charPersonality, setCharPersonality] = useState(char.personality || "");
+  const [charWorld, setCharWorld] = useState(char.world || "");
+  const [charVoice, setCharVoice] = useState(char.voice || "");
+  const [profileImage, setProfileImage] = useState(char.profile_image || "");
+  const [bannerImage, setBannerImage] = useState(char.banner_image || "");
+
+  // Post as character
+  const [postContent, setPostContent] = useState("");
+  const [posting, setPosting] = useState(false);
+
+  // Pi chat (stubbed)
+  const [chatMessages, setChatMessages] = useState([
+    { role: "system", content: `You are ${char.name}. ${char.personality}. Voice: ${char.voice}` },
+  ]);
+  const [chatInput, setChatInput] = useState("");
+
+  async function handleSaveCharacter() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const updatedConfig = {
+        ...config,
+        character: {
+          ...config.character,
+          name: charName,
+          personality: charPersonality,
+          world: charWorld,
+          voice: charVoice,
+          profile_image: profileImage,
+          banner_image: bannerImage,
+        },
+      };
+
+      if (RELAY_HTTP_URL && adminSecret) {
+        await relaySaveConfig(adminSecret, updatedConfig);
+      }
+      saveLocal("npc_config", updatedConfig);
+
+      // Update Nostr profile
+      if (characterAccount) {
+        await publishProfile({
+          name: charName,
+          display_name: charName,
+          about: charPersonality,
+          picture: profileImage || undefined,
+          banner: bannerImage || undefined,
+        }, characterAccount);
+      }
+
+      onConfigUpdate(updatedConfig);
+      setSaved(true);
+    } catch (e) {
+      alert("Failed to save: " + e.message);
+    }
+    setSaving(false);
+  }
+
+  async function handlePostAsCharacter() {
+    if (!postContent.trim() || !characterAccount) return;
+    setPosting(true);
+    try {
+      await publishNote(postContent, characterAccount);
+      setPostContent("");
+    } catch (e) {
+      alert("Failed to post: " + e.message);
+    }
+    setPosting(false);
+  }
+
+  function handleChatSend() {
+    if (!chatInput.trim()) return;
+    setChatMessages((prev) => [...prev, { role: "user", content: chatInput }]);
+    // Stub: AI response
+    const stub = `[Pi integration coming soon — this is where ${char.name} would respond in-character]`;
+    setTimeout(() => {
+      setChatMessages((prev) => [...prev, { role: "assistant", content: stub }]);
+    }, 500);
+    setChatInput("");
+  }
+
+  return (
+    <div className="admin-panel">
+      <h2>🎭 Admin Panel</h2>
+
+      <div className="feed-tabs">
+        <button className={tab === "character" ? "active" : ""} onClick={() => setTab("character")}>
+          ⚙️ Character
+        </button>
+        <button className={tab === "post" ? "active" : ""} onClick={() => setTab("post")}>
+          📝 Post
+        </button>
+        <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>
+          🤖 Pi Chat
+        </button>
+      </div>
+
+      {/* Character Settings */}
+      {tab === "character" && (
+        <div className="admin-section">
+          <h3>Character Settings</h3>
+          <p className="setup-hint">These define who your character is — their personality becomes the pi config.</p>
+          <div className="edit-form">
+            <label><span>Name</span>
+              <input type="text" value={charName} onChange={(e) => setCharName(e.target.value)} /></label>
+            <label><span>Personality & Backstory</span>
+              <textarea value={charPersonality} onChange={(e) => setCharPersonality(e.target.value)} rows={4} /></label>
+            <label><span>World / Setting</span>
+              <input type="text" value={charWorld} onChange={(e) => setCharWorld(e.target.value)} /></label>
+            <label><span>Voice & Style</span>
+              <textarea value={charVoice} onChange={(e) => setCharVoice(e.target.value)} rows={3} /></label>
+            <label><span>Profile Image URL</span>
+              <input type="url" value={profileImage} onChange={(e) => setProfileImage(e.target.value)} placeholder="https://..." /></label>
+            <label><span>Banner Image URL</span>
+              <input type="url" value={bannerImage} onChange={(e) => setBannerImage(e.target.value)} placeholder="https://..." /></label>
+          </div>
+          {saved && <p className="success">✅ Character updated!</p>}
+          <button className="btn-primary" onClick={handleSaveCharacter} disabled={saving} style={{ marginTop: "16px" }}>
+            {saving ? "Saving…" : "💾 Save Character"}
+          </button>
+
+          <div className="admin-keys-section">
+            <h3>Keys & Config</h3>
+            <div className="admin-key-row">
+              <span>Character npub</span>
+              <code>{config.character?.npub || "—"}</code>
+            </div>
+            <div className="admin-key-row">
+              <span>Admin npub</span>
+              <code>{config.admin?.npub || "—"}</code>
+            </div>
+            <div className="admin-key-row">
+              <span>Character pubkey (hex)</span>
+              <code>{config.character?.pubkey || "—"}</code>
+            </div>
+            {characterAccount?.nsec && (
+              <div className="admin-key-row">
+                <span>Character nsec</span>
+                <code className="nsec-display">{characterAccount.nsec}</code>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Post as Character */}
+      {tab === "post" && (
+        <div className="admin-section">
+          <h3>Post as {charName || "Character"}</h3>
+          <p className="setup-hint">Write a post that will be published from your character's identity.</p>
+          <div className="compose-box">
+            <textarea
+              placeholder={`What's on ${charName || "your character"}'s mind?`}
+              value={postContent}
+              onChange={(e) => setPostContent(e.target.value)}
+              rows={4}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handlePostAsCharacter();
+              }}
+            />
+            <div className="compose-footer">
+              <span className="hint">Ctrl+Enter to post</span>
+              <button className="btn-primary" onClick={handlePostAsCharacter} disabled={posting || !postContent.trim()}>
+                {posting ? "Posting…" : `Post as ${charName || "Character"}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pi Chat (stubbed) */}
+      {tab === "chat" && (
+        <div className="admin-section">
+          <h3>🤖 Chat with {charName || "Character"}</h3>
+          <p className="setup-hint">
+            Talk to your character via pi. Control their behavior, test their personality, or have them draft posts.
+          </p>
+
+          <div className="pi-chat">
+            <div className="pi-chat-messages">
+              {chatMessages.filter((m) => m.role !== "system").map((msg, i) => (
+                <div key={i} className={`chat-bubble ${msg.role === "user" ? "sent" : "received"}`}>
+                  <div className="chat-text">{msg.content}</div>
+                </div>
+              ))}
+            </div>
+            <div className="conversation-compose">
+              <input
+                type="text"
+                placeholder={`Talk to ${charName || "your character"}…`}
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleChatSend();
+                  }
+                }}
+              />
+              <button className="btn-send" onClick={handleChatSend} disabled={!chatInput.trim()}>➤</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  ADMIN LOGIN
+// ══════════════════════════════════════
+
+function AdminLogin({ onLogin }) {
+  const [method, setMethod] = useState("nsec");
+  const [nsecInput, setNsecInput] = useState("");
+  const [secretInput, setSecretInput] = useState("");
+  const [error, setError] = useState("");
+
+  function handleLogin() {
     setError("");
     try {
-      const acc = loginWithNsec(nsecInput.trim());
-      saveAccount(acc);
-      onLogin(acc);
+      let acc;
+      if (method === "nsec") {
+        acc = accountFromNsec(nsecInput.trim());
+      }
+      onLogin(acc, secretInput.trim());
     } catch (e) {
-      setError("Invalid key: " + e.message);
+      setError("Invalid: " + e.message);
     }
   }
 
@@ -89,8 +657,7 @@ function AuthScreen({ onLogin }) {
     setError("");
     try {
       const acc = await loginWithExtension();
-      saveAccount(acc);
-      onLogin(acc);
+      onLogin(acc, secretInput.trim());
     } catch (e) {
       setError(e.message);
     }
@@ -99,308 +666,94 @@ function AuthScreen({ onLogin }) {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <h1>🟣 NPC No More</h1>
-        <p className="subtitle">Your gateway to Nostr</p>
+        <h1>🎭 Admin Login</h1>
+        <p className="subtitle">Sign in with your admin identity</p>
 
         <div className="auth-tabs">
-          <button
-            className={tab === "create" ? "active" : ""}
-            onClick={() => setTab("create")}
-          >
-            Create Account
-          </button>
-          <button
-            className={tab === "nsec" ? "active" : ""}
-            onClick={() => setTab("nsec")}
-          >
-            Sign In (nsec)
-          </button>
-          <button
-            className={tab === "extension" ? "active" : ""}
-            onClick={() => setTab("extension")}
-          >
-            Extension (NIP-07)
-          </button>
+          <button className={method === "nsec" ? "active" : ""} onClick={() => setMethod("nsec")}>nsec</button>
+          <button className={method === "extension" ? "active" : ""} onClick={() => setMethod("extension")}>NIP-07</button>
         </div>
 
-        {tab === "create" && (
-          <div className="auth-form">
-            <p>Generate a new Nostr identity instantly.</p>
-            <button className="btn-primary" onClick={handleCreate}>
-              ⚡ Create New Account
-            </button>
-          </div>
-        )}
-
-        {tab === "nsec" && (
-          <div className="auth-form">
-            <p>Paste your nsec or hex private key.</p>
-            <input
-              type="password"
-              placeholder="nsec1... or hex"
-              value={nsecInput}
-              onChange={(e) => setNsecInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleNsecLogin()}
-            />
-            <button className="btn-primary" onClick={handleNsecLogin}>
-              🔑 Sign In
-            </button>
-          </div>
-        )}
-
-        {tab === "extension" && (
-          <div className="auth-form">
-            <p>
-              Use a NIP-07 browser extension like{" "}
-              <a href="https://github.com/nicehash/nos2x" target="_blank">
-                nos2x
-              </a>{" "}
-              or{" "}
-              <a href="https://getalby.com" target="_blank">
-                Alby
-              </a>
-              .
-            </p>
-            <button className="btn-primary" onClick={handleExtensionLogin}>
-              🧩 Connect Extension
-            </button>
-          </div>
-        )}
+        <div className="edit-form">
+          {method === "nsec" && (
+            <label><span>Admin nsec or hex key</span>
+              <input type="password" placeholder="nsec1… or hex" value={nsecInput} onChange={(e) => setNsecInput(e.target.value)} /></label>
+          )}
+          <label><span>Relay Admin Secret</span>
+            <input type="password" placeholder="The secret from setup" value={secretInput} onChange={(e) => setSecretInput(e.target.value)} /></label>
+        </div>
 
         {error && <p className="error">{error}</p>}
-      </div>
-    </div>
-  );
-}
 
-// ── Compose Box ──
-
-function ComposeBox({ account, onPosted }) {
-  const [content, setContent] = useState("");
-  const [posting, setPosting] = useState(false);
-
-  async function handlePost() {
-    if (!content.trim()) return;
-    setPosting(true);
-    try {
-      const ev = await publishNote(content, account);
-      setContent("");
-      onPosted(ev);
-    } catch (e) {
-      alert("Failed to post: " + e.message);
-    }
-    setPosting(false);
-  }
-
-  return (
-    <div className="compose-box">
-      <textarea
-        placeholder="What's on your mind?"
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        rows={3}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handlePost();
-        }}
-      />
-      <div className="compose-footer">
-        <span className="hint">Ctrl+Enter to post</span>
         <button
           className="btn-primary"
-          onClick={handlePost}
-          disabled={posting || !content.trim()}
+          style={{ marginTop: "16px", width: "100%" }}
+          onClick={method === "extension" ? handleExtensionLogin : handleLogin}
+          disabled={method === "nsec" && !nsecInput.trim()}
         >
-          {posting ? "Posting…" : "Post"}
+          🔑 Sign In
         </button>
       </div>
     </div>
   );
 }
 
-// ── Note Card ──
+// ══════════════════════════════════════
+//  MESSAGES (for visitors messaging character)
+// ══════════════════════════════════════
 
-function NoteCard({ event, profile, onClickProfile }) {
-  const meta = profile || {};
-  const displayName =
-    meta.display_name || meta.name || shortPubkey(event.pubkey);
-  const avatar = meta.picture || null;
-
-  return (
-    <div className="note-card">
-      <div
-        className="note-header clickable"
-        onClick={() => onClickProfile(event.pubkey)}
-      >
-        <div className="note-avatar">
-          {avatar ? (
-            <img src={avatar} alt="" />
-          ) : (
-            <div className="avatar-placeholder">
-              {displayName.charAt(0).toUpperCase()}
-            </div>
-          )}
-        </div>
-        <div className="note-meta">
-          <span className="note-author">{displayName}</span>
-          <span className="note-time">{formatTime(event.created_at)}</span>
-        </div>
-      </div>
-      <div className="note-content">{event.content}</div>
-    </div>
-  );
-}
-
-// ── Edit Profile Page ──
-
-function EditProfilePage({ account, onBack, onSaved }) {
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState("");
-
-  const [displayName, setDisplayName] = useState("");
-  const [name, setName] = useState("");
-  const [about, setAbout] = useState("");
-  const [picture, setPicture] = useState("");
-  const [banner, setBanner] = useState("");
-  const [website, setWebsite] = useState("");
-  const [nip05, setNip05] = useState("");
-  const [lud16, setLud16] = useState("");
-
-  useEffect(() => {
-    setLoading(true);
-    fetchProfile(DEFAULT_RELAYS, account.pk)
-      .then((profile) => {
-        if (profile) {
-          setDisplayName(profile.display_name || "");
-          setName(profile.name || "");
-          setAbout(profile.about || "");
-          setPicture(profile.picture || "");
-          setBanner(profile.banner || "");
-          setWebsite(profile.website || "");
-          setNip05(profile.nip05 || "");
-          setLud16(profile.lud16 || "");
-        }
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, [account.pk]);
-
-  async function handleSave() {
-    setSaving(true);
-    setSaved(false);
-    setError("");
-    try {
-      const metadata = {};
-      if (displayName.trim()) metadata.display_name = displayName.trim();
-      if (name.trim()) metadata.name = name.trim();
-      if (about.trim()) metadata.about = about.trim();
-      if (picture.trim()) metadata.picture = picture.trim();
-      if (banner.trim()) metadata.banner = banner.trim();
-      if (website.trim()) metadata.website = website.trim();
-      if (nip05.trim()) metadata.nip05 = nip05.trim();
-      if (lud16.trim()) metadata.lud16 = lud16.trim();
-
-      await publishProfile(metadata, account);
-      setSaved(true);
-      if (onSaved) onSaved(metadata);
-    } catch (e) {
-      setError("Failed to save: " + e.message);
-    }
-    setSaving(false);
-  }
-
-  if (loading) {
-    return (
-      <div className="edit-profile-page">
-        <button className="btn-back" onClick={onBack}>← Back</button>
-        <div className="loading">Loading your profile…</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="edit-profile-page">
-      <button className="btn-back" onClick={onBack}>← Back</button>
-      <div className="edit-profile-card">
-        <h2>Edit Profile</h2>
-        <p className="edit-profile-hint">
-          Your profile is published to relays as a kind 0 event. All fields are optional.
-        </p>
-        <div className="edit-preview">
-          {banner && (
-            <div className="edit-preview-banner"><img src={banner} alt="" /></div>
-          )}
-          <div className="edit-preview-header">
-            <div className="edit-preview-avatar">
-              {picture ? (
-                <img src={picture} alt="" />
-              ) : (
-                <div className="avatar-placeholder large">
-                  {(displayName || name || "?").charAt(0).toUpperCase()}
-                </div>
-              )}
-            </div>
-            <div>
-              <div className="edit-preview-name">{displayName || name || "Anonymous"}</div>
-              {nip05 && <div className="edit-preview-nip05">✅ {nip05}</div>}
-            </div>
-          </div>
-          {about && <p className="edit-preview-about">{about}</p>}
-        </div>
-        <div className="edit-form">
-          <label><span>Display Name</span>
-            <input type="text" placeholder="How you want to be known" value={displayName} onChange={(e) => setDisplayName(e.target.value)} /></label>
-          <label><span>Username</span>
-            <input type="text" placeholder="short handle (no spaces)" value={name} onChange={(e) => setName(e.target.value)} /></label>
-          <label><span>About</span>
-            <textarea placeholder="Tell the world about yourself…" value={about} onChange={(e) => setAbout(e.target.value)} rows={3} /></label>
-          <label><span>Profile Picture URL</span>
-            <input type="url" placeholder="https://example.com/avatar.jpg" value={picture} onChange={(e) => setPicture(e.target.value)} /></label>
-          <label><span>Banner Image URL</span>
-            <input type="url" placeholder="https://example.com/banner.jpg" value={banner} onChange={(e) => setBanner(e.target.value)} /></label>
-          <label><span>Website</span>
-            <input type="url" placeholder="https://yoursite.com" value={website} onChange={(e) => setWebsite(e.target.value)} /></label>
-          <label><span>NIP-05 Identifier</span>
-            <input type="text" placeholder="you@yoursite.com" value={nip05} onChange={(e) => setNip05(e.target.value)} /></label>
-          <label><span>Lightning Address</span>
-            <input type="text" placeholder="you@walletofsatoshi.com" value={lud16} onChange={(e) => setLud16(e.target.value)} /></label>
-        </div>
-        {error && <p className="error">{error}</p>}
-        {saved && <p className="success">✅ Profile saved and published to relays!</p>}
-        <div className="edit-actions">
-          <button className="btn-back" onClick={onBack}>Cancel</button>
-          <button className="btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? "Publishing…" : "💾 Save Profile"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Conversation View ──
-
-function ConversationView({ account, otherPubkey, messages, profiles, onBack, onClickProfile }) {
+function VisitorMessageView({ characterPubkey, characterName }) {
+  const [account, setAccount] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const subRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  const otherProfile = profiles[otherPubkey] || {};
-  const otherName = otherProfile.display_name || otherProfile.name || shortPubkey(otherPubkey);
-  const otherAvatar = otherProfile.picture || null;
-
-  const sorted = [...messages].sort((a, b) => a.created_at - b.created_at);
-
+  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [sorted.length]);
+  }, [messages.length]);
+
+  // Create or load visitor account
+  useEffect(() => {
+    async function initAccount() {
+      let acc = loadLocal("npc_visitor_account");
+      if (acc && acc.skHex) {
+        const { hexToBytes } = await import("@noble/hashes/utils.js");
+        acc = { ...acc, sk: hexToBytes(acc.skHex) };
+      } else {
+        acc = createAccount();
+        saveLocal("npc_visitor_account", { skHex: acc.skHex, nsec: acc.nsec, pk: acc.pk, npub: acc.npub });
+      }
+      setAccount(acc);
+    }
+    initAccount();
+  }, []);
+
+  // Subscribe to DMs between visitor and character
+  useEffect(() => {
+    if (!account) return;
+    setLoading(true);
+
+    const processEvent = async (event) => {
+      const { plaintext } = await decryptDM(event, account);
+      setMessages((prev) => {
+        if (prev.find((m) => m.id === event.id)) return prev;
+        return [...prev, { ...event, _decrypted: plaintext }].sort((a, b) => a.created_at - b.created_at);
+      });
+    };
+
+    subRef.current = subscribeDMs(DEFAULT_RELAYS, account.pk, processEvent, () => setLoading(false));
+    return () => { if (subRef.current) subRef.current.close(); };
+  }, [account]);
 
   async function handleSend() {
-    if (!input.trim()) return;
+    if (!input.trim() || !account) return;
     setSending(true);
     try {
-      await sendDM(input, otherPubkey, account);
+      await sendDM(input, characterPubkey, account);
       setInput("");
     } catch (e) {
       alert("Failed to send: " + e.message);
@@ -408,37 +761,32 @@ function ConversationView({ account, otherPubkey, messages, profiles, onBack, on
     setSending(false);
   }
 
+  // Filter to only show messages with the character
+  const filtered = messages.filter((m) => {
+    const otherPk = m.pubkey === account?.pk
+      ? m.tags.find((t) => t[0] === "p")?.[1]
+      : m.pubkey;
+    return otherPk === characterPubkey;
+  });
+
   return (
     <div className="conversation-view">
       <div className="conversation-header">
-        <button className="btn-back" onClick={onBack}>←</button>
-        <div
-          className="conversation-contact clickable"
-          onClick={() => onClickProfile(otherPubkey)}
-        >
-          <div className="note-avatar">
-            {otherAvatar ? (
-              <img src={otherAvatar} alt="" />
-            ) : (
-              <div className="avatar-placeholder">
-                {otherName.charAt(0).toUpperCase()}
-              </div>
-            )}
+        <button className="btn-back" onClick={() => { setHash(""); }}>←</button>
+        <div className="conversation-contact">
+          <div className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: "0.8rem" }}>
+            {(characterName || "?").charAt(0).toUpperCase()}
           </div>
-          <span className="conversation-name">{otherName}</span>
+          <span className="conversation-name">{characterName}</span>
         </div>
       </div>
 
       <div className="conversation-messages">
-        {sorted.length === 0 && (
-          <div className="loading">No messages yet. Say hello!</div>
-        )}
-        {sorted.map((msg) => (
-          <div
-            key={msg.id}
-            className={`chat-bubble ${msg.pubkey === account.pk ? "sent" : "received"}`}
-          >
-            <div className="chat-text">{msg._decrypted || msg.content}</div>
+        {loading && filtered.length === 0 && <div className="loading">Connecting…</div>}
+        {!loading && filtered.length === 0 && <div className="loading">Say hello to {characterName}!</div>}
+        {filtered.map((msg) => (
+          <div key={msg.id} className={`chat-bubble ${msg.pubkey === account?.pk ? "sent" : "received"}`}>
+            <div className="chat-text">{msg._decrypted}</div>
             <div className="chat-time">{formatTime(msg.created_at)}</div>
           </div>
         ))}
@@ -448,21 +796,12 @@ function ConversationView({ account, otherPubkey, messages, profiles, onBack, on
       <div className="conversation-compose">
         <input
           type="text"
-          placeholder="Type a message…"
+          placeholder={`Message ${characterName}…`}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }}
         />
-        <button
-          className="btn-send"
-          onClick={handleSend}
-          disabled={sending || !input.trim()}
-        >
+        <button className="btn-send" onClick={handleSend} disabled={sending || !input.trim()}>
           {sending ? "…" : "➤"}
         </button>
       </div>
@@ -470,559 +809,163 @@ function ConversationView({ account, otherPubkey, messages, profiles, onBack, on
   );
 }
 
-// ── Inbox View ──
-
-function InboxView({ account, initialConversation, onOpenConversation, onClickProfile }) {
-  const [conversations, setConversations] = useState({}); // { otherPk: [msgs] }
-  const [profiles, setProfiles] = useState({});
-  const [loading, setLoading] = useState(true);
-  const [selectedPk, setSelectedPk] = useState(initialConversation || null);
-  const subRef = useRef(null);
-  const allMessagesRef = useRef({}); // { eventId: event }
-  const conversationsRef = useRef({});
-  const profileCacheRef = useRef({});
-
-  // Process a DM event: decrypt and add to conversations
-  const processEvent = useCallback(async (event) => {
-    // Skip if already processed
-    if (allMessagesRef.current[event.id]) return;
-
-    const { plaintext, otherPk } = await decryptDM(event, account);
-    const processed = { ...event, _decrypted: plaintext, _otherPk: otherPk };
-    allMessagesRef.current[event.id] = processed;
-
-    // Add to conversations grouped by other party
-    if (!conversationsRef.current[otherPk]) {
-      conversationsRef.current[otherPk] = [];
-    }
-    conversationsRef.current[otherPk].push(processed);
-
-    // Update state
-    setConversations({ ...conversationsRef.current });
-  }, [account]);
-
-  // Subscribe to DMs
-  useEffect(() => {
-    setLoading(true);
-    allMessagesRef.current = {};
-    conversationsRef.current = {};
-    setConversations({});
-
-    subRef.current = subscribeDMs(
-      DEFAULT_RELAYS,
-      account.pk,
-      (event) => processEvent(event),
-      () => setLoading(false)
-    );
-
-    return () => {
-      if (subRef.current) subRef.current.close();
-    };
-  }, [account.pk, processEvent]);
-
-  // Fetch profiles for conversation partners
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      const unknownPubkeys = Object.keys(conversationsRef.current).filter(
-        (pk) => !profileCacheRef.current[pk]
-      );
-      if (unknownPubkeys.length === 0) return;
-      try {
-        const fetched = await fetchProfiles(DEFAULT_RELAYS, unknownPubkeys);
-        profileCacheRef.current = { ...profileCacheRef.current, ...fetched };
-        for (const pk of unknownPubkeys) {
-          if (!profileCacheRef.current[pk]) {
-            profileCacheRef.current[pk] = { _attempted: true };
-          }
-        }
-        setProfiles({ ...profileCacheRef.current });
-      } catch {}
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // If a conversation is selected, show it
-  if (selectedPk) {
-    return (
-      <ConversationView
-        account={account}
-        otherPubkey={selectedPk}
-        messages={conversations[selectedPk] || []}
-        profiles={profiles}
-        onBack={() => setSelectedPk(null)}
-        onClickProfile={onClickProfile}
-      />
-    );
-  }
-
-  // Sort conversations by latest message time
-  const sortedConvos = Object.entries(conversations)
-    .map(([pk, msgs]) => {
-      const sorted = [...msgs].sort((a, b) => b.created_at - a.created_at);
-      return { pk, msgs: sorted, latest: sorted[0] };
-    })
-    .sort((a, b) => b.latest.created_at - a.latest.created_at);
-
-  return (
-    <div className="inbox-view">
-      <h2 className="inbox-title">✉️ Messages</h2>
-
-      {loading && sortedConvos.length === 0 && (
-        <div className="loading">Loading messages…</div>
-      )}
-      {!loading && sortedConvos.length === 0 && (
-        <div className="loading">
-          No messages yet. Visit someone's profile and send them a message!
-        </div>
-      )}
-
-      <div className="inbox-list">
-        {sortedConvos.map(({ pk, latest }) => {
-          const profile = profiles[pk] || {};
-          const name = profile.display_name || profile.name || shortPubkey(pk);
-          const avatar = profile.picture || null;
-          const preview = latest._decrypted || "";
-          const isSent = latest.pubkey === account.pk;
-
-          return (
-            <div
-              key={pk}
-              className="inbox-row clickable"
-              onClick={() => {
-                setSelectedPk(pk);
-                if (onOpenConversation) onOpenConversation(pk);
-              }}
-            >
-              <div className="note-avatar">
-                {avatar ? (
-                  <img src={avatar} alt="" />
-                ) : (
-                  <div className="avatar-placeholder">
-                    {name.charAt(0).toUpperCase()}
-                  </div>
-                )}
-              </div>
-              <div className="inbox-row-content">
-                <div className="inbox-row-top">
-                  <span className="inbox-row-name">{name}</span>
-                  <span className="inbox-row-time">
-                    {formatTime(latest.created_at)}
-                  </span>
-                </div>
-                <div className="inbox-row-preview">
-                  {isSent ? "You: " : ""}
-                  {preview.length > 80 ? preview.slice(0, 80) + "…" : preview}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ── Profile Page ──
-
-function ProfilePage({ pubkey, isOwnProfile, onBack, onClickProfile, onEditProfile, onSendMessage }) {
-  const [profile, setProfile] = useState(null);
-  const [notes, setNotes] = useState([]);
-  const [profiles, setProfiles] = useState({});
-  const [loadingProfile, setLoadingProfile] = useState(true);
-  const [loadingNotes, setLoadingNotes] = useState(true);
-  const subRef = useRef(null);
-  const notesRef = useRef([]);
-  const profileCacheRef = useRef({});
-
-  const npub = npubEncode(pubkey);
-
-  useEffect(() => {
-    setLoadingProfile(true);
-    setProfile(null);
-    fetchProfile(DEFAULT_RELAYS, pubkey)
-      .then((p) => { setProfile(p); setLoadingProfile(false); })
-      .catch(() => setLoadingProfile(false));
-  }, [pubkey]);
-
-  const addNote = useCallback((event) => {
-    setNotes((prev) => {
-      if (prev.find((n) => n.id === event.id)) return prev;
-      const updated = [event, ...prev].sort((a, b) => b.created_at - a.created_at);
-      notesRef.current = updated;
-      return updated;
-    });
-  }, []);
-
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      const unknownPubkeys = [...new Set(notesRef.current.map((n) => n.pubkey))].filter(
-        (pk) => !profileCacheRef.current[pk]
-      );
-      if (unknownPubkeys.length === 0) return;
-      try {
-        const fetched = await fetchProfiles(DEFAULT_RELAYS, unknownPubkeys);
-        profileCacheRef.current = { ...profileCacheRef.current, ...fetched };
-        for (const pk of unknownPubkeys) {
-          if (!profileCacheRef.current[pk]) profileCacheRef.current[pk] = { _attempted: true };
-        }
-        setProfiles({ ...profileCacheRef.current });
-      } catch {}
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    setLoadingNotes(true);
-    notesRef.current = [];
-    setNotes([]);
-    if (subRef.current) subRef.current.close();
-    subRef.current = subscribeUserFeed(DEFAULT_RELAYS, pubkey, (event) => addNote(event), () => setLoadingNotes(false), 50);
-    return () => { if (subRef.current) subRef.current.close(); };
-  }, [pubkey, addNote]);
-
-  const meta = profile || {};
-  const displayName = meta.display_name || meta.name || shortPubkey(pubkey);
-  const avatar = meta.picture || null;
-  const banner = meta.banner || null;
-
-  return (
-    <div className="profile-page">
-      <button className="btn-back" onClick={onBack}>← Back</button>
-
-      {banner && <div className="profile-banner"><img src={banner} alt="" /></div>}
-
-      <div className="profile-card">
-        <div className="profile-avatar-large">
-          {avatar ? <img src={avatar} alt="" /> : (
-            <div className="avatar-placeholder large">{displayName.charAt(0).toUpperCase()}</div>
-          )}
-        </div>
-        <div className="profile-info">
-          <div className="profile-name-row">
-            <h2 className="profile-name">{displayName}</h2>
-            {isOwnProfile && (
-              <button className="btn-edit" onClick={onEditProfile}>✏️ Edit Profile</button>
-            )}
-            {!isOwnProfile && (
-              <button className="btn-edit" onClick={() => onSendMessage(pubkey)}>
-                ✉️ Message
-              </button>
-            )}
-          </div>
-          {meta.nip05 && <span className="profile-nip05">✅ {meta.nip05}</span>}
-          <code className="profile-npub">{npub}</code>
-          {meta.about && <p className="profile-about">{meta.about}</p>}
-          <div className="profile-details">
-            {meta.website && (
-              <a className="profile-link" href={meta.website.startsWith("http") ? meta.website : "https://" + meta.website} target="_blank" rel="noopener">
-                🔗 {meta.website}
-              </a>
-            )}
-            {meta.lud16 && <span className="profile-detail">⚡ {meta.lud16}</span>}
-          </div>
-        </div>
-      </div>
-
-      {loadingProfile && !profile && <div className="loading">Loading profile…</div>}
-
-      <h3 className="profile-posts-heading">Posts</h3>
-
-      {loadingNotes && notes.length === 0 && <div className="loading">Loading notes…</div>}
-      {!loadingNotes && notes.length === 0 && <div className="loading">No posts found.</div>}
-
-      <div className="notes-list">
-        {notes.map((ev) => (
-          <NoteCard key={ev.id} event={ev} profile={ev.pubkey === pubkey ? profile : profiles[ev.pubkey]} onClickProfile={onClickProfile} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Feed ──
-
-function Feed({ account, onClickProfile }) {
-  const [tab, setTab] = useState("global");
-  const [notes, setNotes] = useState([]);
-  const [profiles, setProfiles] = useState({});
-  const [loading, setLoading] = useState(true);
-  const subRef = useRef(null);
-  const notesRef = useRef([]);
-  const profileCacheRef = useRef({});
-
-  const addNote = useCallback((event) => {
-    setNotes((prev) => {
-      if (prev.find((n) => n.id === event.id)) return prev;
-      const updated = [event, ...prev].sort((a, b) => b.created_at - a.created_at);
-      notesRef.current = updated;
-      return updated;
-    });
-  }, []);
-
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      const unknownPubkeys = [...new Set(notesRef.current.map((n) => n.pubkey))].filter(
-        (pk) => !profileCacheRef.current[pk]
-      );
-      if (unknownPubkeys.length === 0) return;
-      try {
-        const fetched = await fetchProfiles(DEFAULT_RELAYS, unknownPubkeys);
-        profileCacheRef.current = { ...profileCacheRef.current, ...fetched };
-        for (const pk of unknownPubkeys) {
-          if (!profileCacheRef.current[pk]) profileCacheRef.current[pk] = { _attempted: true };
-        }
-        setProfiles({ ...profileCacheRef.current });
-      } catch {}
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    setLoading(true);
-    notesRef.current = [];
-    setNotes([]);
-    if (subRef.current) subRef.current.close();
-    if (tab === "mine") {
-      subRef.current = subscribeUserFeed(DEFAULT_RELAYS, account.pk, (event) => addNote(event), () => setLoading(false), 100);
-    } else {
-      subRef.current = subscribeFeed(DEFAULT_RELAYS, (event) => addNote(event), () => setLoading(false), 100);
-    }
-    return () => { if (subRef.current) subRef.current.close(); };
-  }, [tab, account.pk, addNote]);
-
-  function handlePosted(ev) { addNote(ev); }
-
-  return (
-    <div className="feed">
-      <ComposeBox account={account} onPosted={handlePosted} />
-      <div className="feed-tabs">
-        <button className={tab === "global" ? "active" : ""} onClick={() => setTab("global")}>🌍 Global</button>
-        <button className={tab === "mine" ? "active" : ""} onClick={() => setTab("mine")}>👤 My Posts</button>
-      </div>
-      {loading && notes.length === 0 && <div className="loading">Connecting to relays…</div>}
-      {!loading && notes.length === 0 && tab === "mine" && (
-        <div className="loading">No posts yet. Write your first note above!</div>
-      )}
-      <div className="notes-list">
-        {notes.map((ev) => (
-          <NoteCard key={ev.id} event={ev} profile={profiles[ev.pubkey]} onClickProfile={onClickProfile} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── Account Info Bar ──
-
-function AccountBar({ account, onLogout, onClickProfile, onOpenMessages }) {
-  const [showKey, setShowKey] = useState(false);
-
-  return (
-    <div className="account-bar">
-      <div className="account-info">
-        <button
-          className="btn-messages"
-          onClick={onOpenMessages}
-          title="Messages"
-        >
-          ✉️
-        </button>
-        <span
-          className="account-npub clickable"
-          title="View your profile"
-          onClick={() => onClickProfile(account.pk)}
-        >
-          {account.npub.slice(0, 16)}…
-        </span>
-        {account.nsec && (
-          <button
-            className="btn-small"
-            onClick={() => setShowKey(!showKey)}
-            title="Toggle private key visibility"
-          >
-            {showKey ? "🙈 Hide nsec" : "👁 Show nsec"}
-          </button>
-        )}
-        {showKey && account.nsec && (
-          <code className="nsec-display">{account.nsec}</code>
-        )}
-      </div>
-      <button className="btn-logout" onClick={onLogout}>
-        Sign Out
-      </button>
-    </div>
-  );
-}
-
-// ── App ──
+// ══════════════════════════════════════
+//  APP
+// ══════════════════════════════════════
 
 export default function App() {
-  const [account, setAccount] = useState(null);
-  const [ready, setReady] = useState(false);
-  const [view, setView] = useState("feed");
-  const [viewingProfilePk, setViewingProfilePk] = useState(null);
-  const [dmTargetPk, setDmTargetPk] = useState(null);
+  const [config, setConfig] = useState(null);
+  const [characterAccount, setCharacterAccount] = useState(null);
+  const [adminAccount, setAdminAccount] = useState(null);
+  const [adminSecret, setAdminSecret] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [route, setRoute] = useState("home");
+  const [routeKey, setRouteKey] = useState(null);
 
-  // Navigate + update hash
-  function navigate(newView, profilePk = null, dmPk = null) {
-    setView(newView);
-    setViewingProfilePk(profilePk);
-    setDmTargetPk(dmPk);
+  // Load config on mount
+  useEffect(() => {
+    async function init() {
+      // Try loading from localStorage first
+      let cfg = loadLocal("npc_config");
+      const secret = loadLocal("npc_admin_secret");
 
-    if (newView === "profile" && profilePk) {
-      setHash("profile/" + npubEncode(profilePk));
-    } else if (newView === "inbox" && dmPk) {
-      setHash("messages/" + npubEncode(dmPk));
-    } else if (newView === "inbox") {
-      setHash("messages");
-    } else if (newView === "editProfile") {
-      setHash("edit-profile");
-    } else {
-      setHash("");
+      // Try loading from relay if we have a secret
+      if (!cfg && RELAY_HTTP_URL && secret) {
+        try {
+          cfg = await relayGetConfig(secret);
+          if (cfg && cfg.setup_complete) {
+            saveLocal("npc_config", cfg);
+          }
+        } catch {}
+      }
+
+      // Load character account
+      const charData = loadLocal("npc_character_account");
+      if (charData && charData.skHex) {
+        try {
+          const { hexToBytes } = await import("@noble/hashes/utils.js");
+          setCharacterAccount({ ...charData, sk: hexToBytes(charData.skHex) });
+        } catch {}
+      }
+
+      // Load admin account
+      const admData = loadLocal("npc_admin_account");
+      if (admData && admData.skHex) {
+        try {
+          const { hexToBytes } = await import("@noble/hashes/utils.js");
+          setAdminAccount({ ...admData, sk: hexToBytes(admData.skHex) });
+        } catch {}
+      }
+
+      if (secret) setAdminSecret(secret);
+      if (cfg && cfg.setup_complete) setConfig(cfg);
+      setLoading(false);
     }
-    window.scrollTo(0, 0);
-  }
+    init();
+  }, []);
 
-  // Read initial hash on mount + listen for back/forward
+  // Hash routing
   useEffect(() => {
     function applyHash() {
-      const { route, key } = parseHash();
-      const pk = key ? resolvePubkey(key) : null;
-      if (route === "profile" && pk) {
-        setView("profile");
-        setViewingProfilePk(pk);
-        setDmTargetPk(null);
-      } else if (route === "messages" && pk) {
-        setView("inbox");
-        setDmTargetPk(pk);
-        setViewingProfilePk(null);
-      } else if (route === "inbox") {
-        setView("inbox");
-        setDmTargetPk(null);
-        setViewingProfilePk(null);
-      } else {
-        setView("feed");
-        setViewingProfilePk(null);
-        setDmTargetPk(null);
-      }
+      const { route: r, key } = parseHash();
+      setRoute(r);
+      setRouteKey(key ? resolvePubkey(key) || key : null);
     }
-
-    // Apply on mount
     applyHash();
-
-    // Listen for popstate (back/forward buttons)
     window.addEventListener("popstate", applyHash);
     return () => window.removeEventListener("popstate", applyHash);
   }, []);
 
-  // Load saved account
-  useEffect(() => {
-    const saved = loadAccount();
-    if (saved) {
-      if (saved.isExtension) {
-        if (window.nostr) {
-          window.nostr.getPublicKey()
-            .then((pk) => { setAccount({ ...saved, pk }); setReady(true); })
-            .catch(() => { clearAccount(); setReady(true); });
-          return;
-        } else {
-          clearAccount();
+  function handleSetupComplete(cfg, charAcc, admAcc) {
+    setConfig(cfg);
+    setCharacterAccount(charAcc);
+    setAdminAccount(admAcc);
+    setAdminSecret(loadLocal("npc_admin_secret"));
+    setHash("");
+  }
+
+  function handleAdminLogin(acc, secret) {
+    setAdminAccount(acc);
+    setAdminSecret(secret);
+    if (acc.skHex) {
+      saveLocal("npc_admin_account", { skHex: acc.skHex, nsec: acc.nsec, pk: acc.pk, npub: acc.npub });
+    }
+    saveLocal("npc_admin_secret", secret);
+
+    // Try loading config from relay
+    if (RELAY_HTTP_URL && secret) {
+      relayGetConfig(secret).then((cfg) => {
+        if (cfg && cfg.setup_complete) {
+          setConfig(cfg);
+          saveLocal("npc_config", cfg);
         }
-      } else {
-        setAccount(saved);
-      }
-    }
-    setReady(true);
-  }, []);
-
-  function handleLogin(acc) { setAccount(acc); }
-
-  function handleLogout() {
-    clearAccount();
-    setAccount(null);
-    navigate("feed");
-    try { getPool().close(DEFAULT_RELAYS); } catch {}
-  }
-
-  function handleClickProfile(pubkey) {
-    navigate("profile", pubkey);
-  }
-
-  function handleBackToFeed() {
-    navigate("feed");
-  }
-
-  function handleEditProfile() {
-    navigate("editProfile", viewingProfilePk);
-  }
-
-  function handleBackFromEdit() {
-    if (viewingProfilePk) {
-      navigate("profile", viewingProfilePk);
-    } else {
-      navigate("feed");
+      }).catch(() => {});
     }
   }
 
-  function handleOpenMessages() {
-    navigate("inbox");
+  if (loading) return null;
+
+  // No config → setup wizard
+  if (!config) {
+    return <SetupWizard onComplete={handleSetupComplete} />;
   }
 
-  function handleSendMessage(pubkey) {
-    navigate("inbox", null, pubkey);
-  }
+  const charName = config.character?.name || "Character";
 
-  if (!ready) return null;
-
-  if (!account) {
-    return <AuthScreen onLogin={handleLogin} />;
-  }
-
-  let content;
-  if (view === "editProfile") {
-    content = (
-      <EditProfilePage account={account} onBack={handleBackFromEdit} onSaved={() => {}} />
-    );
-  } else if (view === "inbox") {
-    content = (
-      <InboxView
-        account={account}
-        initialConversation={dmTargetPk}
-        onOpenConversation={(pk) => setDmTargetPk(pk)}
-        onClickProfile={handleClickProfile}
-      />
-    );
-  } else if (view === "profile" && viewingProfilePk) {
-    content = (
-      <ProfilePage
-        pubkey={viewingProfilePk}
-        isOwnProfile={viewingProfilePk === account.pk}
-        onBack={handleBackToFeed}
-        onClickProfile={handleClickProfile}
-        onEditProfile={handleEditProfile}
-        onSendMessage={handleSendMessage}
-      />
-    );
-  } else {
-    content = (
-      <Feed account={account} onClickProfile={handleClickProfile} />
+  // Admin route
+  if (route === "admin") {
+    if (!adminAccount || !adminSecret) {
+      return <AdminLogin onLogin={handleAdminLogin} />;
+    }
+    return (
+      <div className="app">
+        <header className="app-header">
+          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
+          <button className="btn-small" onClick={() => setHash("")}>← Public Page</button>
+        </header>
+        <main>
+          <AdminPanel
+            config={config}
+            characterAccount={characterAccount}
+            adminAccount={adminAccount}
+            adminSecret={adminSecret}
+            onConfigUpdate={(cfg) => { setConfig(cfg); }}
+          />
+        </main>
+      </div>
     );
   }
 
+  // Messages route
+  if (route === "messages") {
+    return (
+      <div className="app">
+        <header className="app-header">
+          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
+        </header>
+        <main>
+          <VisitorMessageView
+            characterPubkey={config.character?.pubkey}
+            characterName={charName}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  // Default: Character public page
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="clickable" onClick={() => navigate("feed")}>
-          🟣 NPC No More
-        </h1>
-        <AccountBar
-          account={account}
-          onLogout={handleLogout}
-          onClickProfile={handleClickProfile}
-          onOpenMessages={handleOpenMessages}
-        />
+        <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
+        <button className="btn-small" onClick={() => setHash("admin")}>🎭 Admin</button>
       </header>
-      <main>{content}</main>
+      <main>
+        <CharacterPage
+          config={config}
+          onMessage={(pk) => setHash("messages/" + npubEncode(pk))}
+        />
+      </main>
     </div>
   );
 }
