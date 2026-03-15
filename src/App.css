@@ -567,6 +567,259 @@ a { color: var(--accent); }
 .btn-send:hover:not(:disabled) { background: var(--accent-hover); }
 .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ── Dice Roll (Setup Wizard) ── */
+
+.dice-roll-section {
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.btn-dice {
+  background: linear-gradient(135deg, #76b900, #BAFF00);
+  color: #000;
+  border: none;
+  padding: 14px 28px;
+  border-radius: var(--radius);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  width: 100%;
+}
+
+.btn-dice:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(186, 255, 0, 0.3);
+}
+
+.btn-dice:disabled {
+  opacity: 0.7;
+  cursor: wait;
+  animation: dice-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes dice-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.dice-error {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-top: 12px;
+  text-align: center;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text);
+  animation: dice-error-pop 0.3s ease-out;
+}
+
+@keyframes dice-error-pop {
+  0% { transform: scale(0.95); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.dice-hint {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-top: 8px;
+}
+
+.dice-hint strong {
+  color: #BAFF00;
+}
+
+/* ── Origin Generator ── */
+
+.origin-page {
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 24px 0;
+}
+
+.origin-header {
+  margin-bottom: 24px;
+}
+
+.origin-header h2 {
+  font-size: 1.5rem;
+  margin-bottom: 8px;
+}
+
+.origin-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 40px 0;
+  color: var(--text-dim);
+}
+
+.origin-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.origin-result {
+  margin-top: 8px;
+}
+
+.origin-model-tag {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  border-bottom: none;
+}
+
+.origin-model-tag strong {
+  color: #BAFF00;
+}
+
+.origin-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: 24px;
+}
+
+.origin-name {
+  font-size: 1.6rem;
+  margin-bottom: 20px;
+  color: #fff;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.origin-field {
+  margin-bottom: 16px;
+}
+
+.origin-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.origin-field p {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.origin-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.origin-history {
+  margin-top: 32px;
+}
+
+.origin-history h3 {
+  font-size: 0.9rem;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.origin-history-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.origin-history-item:hover {
+  border-color: var(--accent);
+}
+
+.origin-history-item strong {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 4px;
+}
+
+.origin-history-model {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-left: 8px;
+}
+
+.origin-history-preview {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* ── Streaming ── */
+
+.streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent);
+  margin-left: 4px;
+  vertical-align: text-bottom;
+  animation: blink 0.6s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.origin-card.streaming {
+  border-color: var(--accent);
+  box-shadow: 0 0 20px rgba(147, 51, 234, 0.1);
+}
+
+.streaming-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: blink 0.6s step-end infinite;
+}
+
+.origin-phase {
+  color: var(--accent);
+  font-style: italic;
+  font-size: 0.75rem;
+}
+
+.origin-placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 500px) {

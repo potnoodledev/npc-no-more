@@ -1,0 +1,3 @@
+[submodule "nim-skill-test"]
+	path = nim-skill-test
+	url = git@github.com:polats/nim-skill-test.git

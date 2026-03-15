@@ -5,4 +5,13 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/npc-no-more/',
+  server: {
+    proxy: {
+      '/nim-api': {
+        target: 'https://integrate.api.nvidia.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/nim-api/, ''),
+      },
+    },
+  },
 })
