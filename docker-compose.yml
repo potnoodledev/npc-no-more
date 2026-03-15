@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  relay:
+    image: ghcr.io/hoytech/strfry:latest
+    container_name: nostr-relay
+    ports:
+      - "7777:7777"
+    volumes:
+      - relay-data:/app/strfry-db
+    restart: unless-stopped
+
+volumes:
+  relay-data:
