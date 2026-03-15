@@ -1,8 +1,9 @@
-name: Deploy to GitHub Pages
+name: Deploy Frontend
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -10,11 +11,14 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: deploy
   cancel-in-progress: true
 
+# Railway auto-deploys the relay when the repo is pushed (connected via API).
+# This workflow only handles the frontend (GitHub Pages).
+
 jobs:
-  build-and-deploy:
+  deploy-frontend:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -28,7 +32,13 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
+
+      - name: Build with relay URL
+        env:
+          VITE_RELAY_URL: ${{ vars.RELAY_URL }}
+        run: |
+          echo "Building with relay: $VITE_RELAY_URL"
+          npm run build
 
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3

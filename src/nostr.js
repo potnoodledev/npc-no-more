@@ -7,13 +7,25 @@ import { SimplePool } from "nostr-tools/pool";
 import { nsecEncode, npubEncode, decode } from "nostr-tools/nip19";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
-// Default relays — popular public relays
-export const DEFAULT_RELAYS = [
+// Our own relay (injected at build time, falls back to empty)
+const OWN_RELAY = import.meta.env.VITE_RELAY_URL || "";
+
+// Public relays for discovery + fallback
+const PUBLIC_RELAYS = [
   "wss://relay.damus.io",
   "wss://nos.lol",
   "wss://relay.snort.social",
   "wss://relay.primal.net",
 ];
+
+// Own relay first (persistent), then public relays
+export const DEFAULT_RELAYS = [
+  ...(OWN_RELAY ? [OWN_RELAY] : []),
+  ...PUBLIC_RELAYS,
+];
+
+// Just our relay — for writes that must persist
+export const PERSISTENT_RELAYS = OWN_RELAY ? [OWN_RELAY] : PUBLIC_RELAYS;
 
 // Singleton pool
 let pool = null;
