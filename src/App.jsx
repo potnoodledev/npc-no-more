@@ -20,8 +20,46 @@ import {
   DEFAULT_RELAYS,
   getPool,
 } from "./nostr";
-import { npubEncode } from "nostr-tools/nip19";
+import { npubEncode, decode as nip19decode } from "nostr-tools/nip19";
 import "./App.css";
+
+// ── Hash Router Helpers ──
+
+function parseHash() {
+  const hash = window.location.hash.replace(/^#\/?/, "");
+  if (!hash) return { route: "feed" };
+
+  const parts = hash.split("/");
+  if (parts[0] === "profile" && parts[1]) {
+    return { route: "profile", key: parts[1] };
+  }
+  if (parts[0] === "messages" && parts[1]) {
+    return { route: "messages", key: parts[1] };
+  }
+  if (parts[0] === "messages") {
+    return { route: "inbox" };
+  }
+  return { route: "feed" };
+}
+
+function resolvePubkey(key) {
+  if (!key) return null;
+  // If it starts with npub1, decode it
+  if (key.startsWith("npub1")) {
+    try {
+      const { type, data } = nip19decode(key);
+      if (type === "npub") return data;
+    } catch {}
+    return null;
+  }
+  // If it looks like hex (64 chars)
+  if (/^[0-9a-f]{64}$/i.test(key)) return key;
+  return null;
+}
+
+function setHash(path) {
+  window.history.pushState(null, "", "#/" + path);
+}
 
 // ── Auth Screen ──
 
@@ -821,11 +859,63 @@ function AccountBar({ account, onLogout, onClickProfile, onOpenMessages }) {
 export default function App() {
   const [account, setAccount] = useState(null);
   const [ready, setReady] = useState(false);
-  // view: "feed" | "profile" | "editProfile" | "inbox" | "conversation"
   const [view, setView] = useState("feed");
   const [viewingProfilePk, setViewingProfilePk] = useState(null);
   const [dmTargetPk, setDmTargetPk] = useState(null);
 
+  // Navigate + update hash
+  function navigate(newView, profilePk = null, dmPk = null) {
+    setView(newView);
+    setViewingProfilePk(profilePk);
+    setDmTargetPk(dmPk);
+
+    if (newView === "profile" && profilePk) {
+      setHash("profile/" + npubEncode(profilePk));
+    } else if (newView === "inbox" && dmPk) {
+      setHash("messages/" + npubEncode(dmPk));
+    } else if (newView === "inbox") {
+      setHash("messages");
+    } else if (newView === "editProfile") {
+      setHash("edit-profile");
+    } else {
+      setHash("");
+    }
+    window.scrollTo(0, 0);
+  }
+
+  // Read initial hash on mount + listen for back/forward
+  useEffect(() => {
+    function applyHash() {
+      const { route, key } = parseHash();
+      const pk = key ? resolvePubkey(key) : null;
+      if (route === "profile" && pk) {
+        setView("profile");
+        setViewingProfilePk(pk);
+        setDmTargetPk(null);
+      } else if (route === "messages" && pk) {
+        setView("inbox");
+        setDmTargetPk(pk);
+        setViewingProfilePk(null);
+      } else if (route === "inbox") {
+        setView("inbox");
+        setDmTargetPk(null);
+        setViewingProfilePk(null);
+      } else {
+        setView("feed");
+        setViewingProfilePk(null);
+        setDmTargetPk(null);
+      }
+    }
+
+    // Apply on mount
+    applyHash();
+
+    // Listen for popstate (back/forward buttons)
+    window.addEventListener("popstate", applyHash);
+    return () => window.removeEventListener("popstate", applyHash);
+  }, []);
+
+  // Load saved account
   useEffect(() => {
     const saved = loadAccount();
     if (saved) {
@@ -850,43 +940,36 @@ export default function App() {
   function handleLogout() {
     clearAccount();
     setAccount(null);
-    setView("feed");
-    setViewingProfilePk(null);
-    setDmTargetPk(null);
+    navigate("feed");
     try { getPool().close(DEFAULT_RELAYS); } catch {}
   }
 
   function handleClickProfile(pubkey) {
-    setViewingProfilePk(pubkey);
-    setView("profile");
-    window.scrollTo(0, 0);
+    navigate("profile", pubkey);
   }
 
   function handleBackToFeed() {
-    setView("feed");
-    setViewingProfilePk(null);
+    navigate("feed");
   }
 
   function handleEditProfile() {
-    setView("editProfile");
-    window.scrollTo(0, 0);
+    navigate("editProfile", viewingProfilePk);
   }
 
   function handleBackFromEdit() {
-    setView(viewingProfilePk ? "profile" : "feed");
-    window.scrollTo(0, 0);
+    if (viewingProfilePk) {
+      navigate("profile", viewingProfilePk);
+    } else {
+      navigate("feed");
+    }
   }
 
   function handleOpenMessages() {
-    setDmTargetPk(null);
-    setView("inbox");
-    window.scrollTo(0, 0);
+    navigate("inbox");
   }
 
   function handleSendMessage(pubkey) {
-    setDmTargetPk(pubkey);
-    setView("inbox");
-    window.scrollTo(0, 0);
+    navigate("inbox", null, pubkey);
   }
 
   if (!ready) return null;
@@ -929,7 +1012,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="clickable" onClick={() => { setView("feed"); setViewingProfilePk(null); setDmTargetPk(null); }}>
+        <h1 className="clickable" onClick={() => navigate("feed")}>
           🟣 NPC No More
         </h1>
         <AccountBar
