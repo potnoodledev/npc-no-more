@@ -9,9 +9,9 @@ import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from "nostr-tools/ni
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 // Our own relay (injected at build time)
-const OWN_RELAY = import.meta.env.VITE_RELAY_URL || "";
+export const OWN_RELAY = import.meta.env.VITE_RELAY_URL || "";
 
-const PUBLIC_RELAYS = [
+export const PUBLIC_RELAYS = [
   "wss://relay.damus.io",
   "wss://nos.lol",
   "wss://relay.snort.social",
@@ -22,12 +22,8 @@ const PUBLIC_RELAYS = [
 // Public relays are fallback only when no private relay is configured.
 export const DEFAULT_RELAYS = OWN_RELAY ? [OWN_RELAY] : PUBLIC_RELAYS;
 
-export const PERSISTENT_RELAYS = OWN_RELAY ? [OWN_RELAY] : PUBLIC_RELAYS;
-
-// Relay HTTP base URL (for admin API)
-export const RELAY_HTTP_URL = OWN_RELAY
-  ? OWN_RELAY.replace("wss://", "https://").replace("ws://", "http://")
-  : "";
+// All relays combined (for profile lookups that should search everywhere)
+export const ALL_RELAYS = [...new Set([...DEFAULT_RELAYS, ...PUBLIC_RELAYS])];
 
 let pool = null;
 export function getPool() {
@@ -68,25 +64,24 @@ export function accountFromNsec(nsecOrHex) {
   };
 }
 
-export async function loginWithExtension() {
-  if (!window.nostr) {
-    throw new Error("No Nostr extension found. Install nos2x, Alby, or another NIP-07 extension.");
-  }
-  const pk = await window.nostr.getPublicKey();
-  return { sk: null, skHex: null, nsec: null, pk, npub: npubEncode(pk), isExtension: true };
+export function accountFromSkHex(skHex) {
+  const sk = hexToBytes(skHex);
+  const pk = getPublicKey(sk);
+  return { sk, skHex, nsec: nsecEncode(sk), pk, npub: npubEncode(pk) };
 }
 
 // ── Client tag ──
 
 export const CLIENT_TAG = ["client", "npc-no-more"];
+// Single-letter tag for relay-compatible filtering (relays only support #<single-char> filters)
+export const CLIENT_FILTER_TAG = ["l", "npc-no-more"];
 
 // ── Publishing ──
 
 export async function publishEvent(event, account, relays = DEFAULT_RELAYS) {
-  // Add client tag to all events
   const tagged = {
     ...event,
-    tags: [...(event.tags || []), CLIENT_TAG],
+    tags: [...(event.tags || []), CLIENT_TAG, CLIENT_FILTER_TAG],
   };
   let signed;
   if (account.isExtension) {
@@ -154,16 +149,18 @@ export async function decryptDM(event, account) {
 // ── Subscriptions ──
 
 export function subscribeFeed(relays, onEvent, onEose, limit = 50) {
-  return getPool().subscribeMany(relays, { kinds: [1], "#client": ["npc-no-more"], limit }, { onevent: onEvent, oneose: onEose });
+  return getPool().subscribeMany(relays, { kinds: [1], "#l": ["npc-no-more"], limit }, { onevent: onEvent, oneose: onEose });
+}
+
+export function subscribeGlobalFeed(relays, onEvent, onEose, limit = 50) {
+  return getPool().subscribeMany(relays, { kinds: [1], limit }, { onevent: onEvent, oneose: onEose });
 }
 
 export function subscribeUserFeed(relays, pubkey, onEvent, onEose, limit = 50) {
-  // Subscribe to both the user's own posts AND replies mentioning them (threads)
-  // Filter to only npc-no-more client events
   let eoseCount = 0;
   const checkEose = () => { eoseCount++; if (eoseCount >= 2 && onEose) onEose(); };
-  const sub1 = getPool().subscribeMany(relays, { kinds: [1], authors: [pubkey], "#client": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
-  const sub2 = getPool().subscribeMany(relays, { kinds: [1], "#p": [pubkey], "#client": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
+  const sub1 = getPool().subscribeMany(relays, { kinds: [1], authors: [pubkey], "#l": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
+  const sub2 = getPool().subscribeMany(relays, { kinds: [1], "#p": [pubkey], "#l": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
   return { close() { sub1.close(); sub2.close(); } };
 }
 
@@ -197,61 +194,58 @@ export async function fetchProfiles(relays, pubkeys) {
   return profiles;
 }
 
-// ── Relay Admin API ──
+// ── Characters Persistence ──
 
-export async function relayGetConfig(adminSecret) {
-  const res = await fetch(`${RELAY_HTTP_URL}/admin/config`, {
-    headers: { Authorization: `Bearer ${adminSecret}` },
-  });
-  if (!res.ok) throw new Error("Failed to fetch config");
-  return res.json();
+export function loadCharacters() {
+  return loadLocal("npc_characters") || [];
 }
 
-export async function relaySaveConfig(adminSecret, config) {
-  const res = await fetch(`${RELAY_HTTP_URL}/admin/config`, {
-    method: "PUT",
-    headers: {
-      Authorization: `Bearer ${adminSecret}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(config),
-  });
-  if (!res.ok) throw new Error("Failed to save config");
-  return res.json();
+export function saveCharacters(chars) {
+  saveLocal("npc_characters", chars);
 }
 
-export async function relayAddPubkey(adminSecret, pubkey, label) {
-  const res = await fetch(`${RELAY_HTTP_URL}/admin/pubkeys`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${adminSecret}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ pubkey, label }),
-  });
-  if (!res.ok) throw new Error("Failed to add pubkey");
-  return res.json();
+export function loadActiveCharId() {
+  return loadLocal("npc_active_character_id");
 }
 
-export async function relayGetPublicCharacter() {
-  try {
-    const res = await fetch(`${RELAY_HTTP_URL}/character`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.character || null;
-  } catch {
-    return null;
-  }
+export function saveActiveCharId(id) {
+  saveLocal("npc_active_character_id", id);
 }
 
-export async function relayGetSetupStatus() {
-  try {
-    const res = await fetch(`${RELAY_HTTP_URL}/setup-status`);
-    if (!res.ok) return { setup_complete: false };
-    return res.json();
-  } catch {
-    return { setup_complete: false };
-  }
+// Migrate old single-character data to new multi-character format
+export function migrateOldData() {
+  const oldConfig = loadLocal("npc_config");
+  const oldCharAccount = loadLocal("npc_character_account");
+  if (!oldConfig || !oldCharAccount) return null;
+
+  const char = oldConfig.character || {};
+  const migrated = {
+    id: crypto.randomUUID(),
+    name: char.name || "Unnamed",
+    personality: char.personality || "",
+    world: char.world || "",
+    voice: char.voice || "",
+    profile_image: char.profile_image || "",
+    banner_image: char.banner_image || "",
+    origin_story: char.origin_story || [],
+    skHex: oldCharAccount.skHex,
+    nsec: oldCharAccount.nsec,
+    pk: oldCharAccount.pk,
+    npub: oldCharAccount.npub,
+    createdAt: Math.floor(Date.now() / 1000),
+  };
+
+  saveCharacters([migrated]);
+  saveActiveCharId(migrated.id);
+
+  // Clean up old keys
+  clearLocal("npc_config");
+  clearLocal("npc_character_account");
+  clearLocal("npc_admin_account");
+  clearLocal("npc_admin_secret");
+  clearLocal("npc_visitor_account");
+
+  return migrated;
 }
 
 // ── Helpers ──

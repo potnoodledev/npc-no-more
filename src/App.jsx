@@ -1,31 +1,30 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { generateRandomPersona, isNimAvailable, getRandomErrorMessage } from "./nim";
+import { isNimAvailable, generateRandomPersona, getRandomErrorMessage } from "./nim";
 import {
   createAccount,
   accountFromNsec,
-  loginWithExtension,
+  accountFromSkHex,
   publishNote,
   publishEvent,
   publishProfile,
   subscribeFeed,
-  subscribeUserFeed,
+  subscribeGlobalFeed,
   subscribeDMs,
   sendDM,
   decryptDM,
   fetchProfile,
   fetchProfiles,
-  relayGetConfig,
-  relaySaveConfig,
-  relayAddPubkey,
-  relayGetSetupStatus,
-  relayGetPublicCharacter,
   shortPubkey,
   formatTime,
-  saveLocal,
-  loadLocal,
-  clearLocal,
+  loadCharacters,
+  saveCharacters,
+  loadActiveCharId,
+  saveActiveCharId,
+  migrateOldData,
   DEFAULT_RELAYS,
-  RELAY_HTTP_URL,
+  ALL_RELAYS,
+  PUBLIC_RELAYS,
+  OWN_RELAY,
   getPool,
 } from "./nostr";
 import { npubEncode, decode as nip19decode } from "nostr-tools/nip19";
@@ -39,21 +38,21 @@ function parseHash() {
   const hash = window.location.hash.replace(/^#\/?/, "");
   if (!hash) return { route: "home" };
   const parts = hash.split("/");
-  if (parts[0] === "admin" && parts[1] === "setup") return { route: "setup" };
-  if (parts[0] === "admin") return { route: "admin" };
+  if (parts[0] === "characters" && parts[1] === "new") return { route: "new-character" };
+  if (parts[0] === "settings") return { route: "settings" };
   if (parts[0] === "profile" && parts[1]) return { route: "profile", key: parts[1] };
   if (parts[0] === "thread" && parts[1]) return { route: "thread", key: parts[1] };
   if (parts[0] === "messages" && parts[1]) return { route: "messages", key: parts[1] };
-  if (parts[0] === "messages") return { route: "inbox" };
-  if (parts[0] === "origin") return { route: "origin" };
   return { route: "home" };
 }
 
 function resolvePubkey(key) {
   if (!key) return null;
   if (key.startsWith("npub1")) {
-    try { const { type, data } = nip19decode(key); if (type === "npub") return data; } catch {}
-    return null;
+    try {
+      const { type, data } = nip19decode(key);
+      if (type === "npub") return data;
+    } catch { return null; }
   }
   if (/^[0-9a-f]{64}$/i.test(key)) return key;
   return null;
@@ -64,21 +63,92 @@ function setHash(path) {
 }
 
 // ══════════════════════════════════════
-//  SETUP WIZARD
+//  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
-function SetupWizard({ onComplete }) {
-  const [step, setStep] = useState(1);
+function Sidebar({ characters, activeCharId, onSwitch, currentPubkey }) {
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-header">
+        <h1 className="sidebar-title clickable" onClick={() => setHash("")}>NPC No More</h1>
+      </div>
+
+      <div className="sidebar-section-label">Your Characters</div>
+      <div className="sidebar-characters">
+        {characters.map((c) => (
+          <button
+            key={c.id}
+            className={`sidebar-char ${c.pk === currentPubkey ? "active-char" : ""}`}
+            onClick={() => {
+              onSwitch(c.id);
+              setHash("profile/" + c.npub);
+            }}
+          >
+            <span className="sidebar-char-avatar">
+              {c.profile_image ? (
+                <img src={c.profile_image} alt="" />
+              ) : (
+                c.name.charAt(0).toUpperCase()
+              )}
+            </span>
+            <span className="sidebar-char-name">{c.name}</span>
+          </button>
+        ))}
+        <button className="sidebar-item sidebar-add" onClick={() => setHash("characters/new")}>
+          <span className="sidebar-icon">+</span>
+          <span>New Character</span>
+        </button>
+      </div>
+
+      <div className="sidebar-footer">
+        <button className="sidebar-item" onClick={() => setHash("settings")}>
+          <span className="sidebar-icon">&#9881;</span>
+          <span>Settings</span>
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+// ══════════════════════════════════════
+//  MOBILE HEADER
+// ══════════════════════════════════════
+
+function MobileHeader({ activeChar, sidebarOpen, setSidebarOpen }) {
+  return (
+    <header className="mobile-header">
+      <button className="mobile-menu-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>
+        &#9776;
+      </button>
+      <h1 className="clickable" onClick={() => setHash("")}>NPC No More</h1>
+      {activeChar && (
+        <span className="mobile-active-char" onClick={() => setHash("profile/" + activeChar.npub)}>
+          {activeChar.profile_image ? (
+            <img src={activeChar.profile_image} alt="" />
+          ) : (
+            activeChar.name.charAt(0).toUpperCase()
+          )}
+        </span>
+      )}
+    </header>
+  );
+}
+
+// ══════════════════════════════════════
+//  CREATE CHARACTER
+// ══════════════════════════════════════
+
+function CreateCharacter({ onComplete }) {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-
-  // Step 1: Character
   const [charName, setCharName] = useState("");
   const [charPersonality, setCharPersonality] = useState("");
   const [charWorld, setCharWorld] = useState("");
   const [charVoice, setCharVoice] = useState("");
   const [rolling, setRolling] = useState(false);
   const [rolledModel, setRolledModel] = useState(null);
+  const [mode, setMode] = useState("create");
+  const [nsecInput, setNsecInput] = useState("");
 
   async function handleRollDice() {
     setRolling(true);
@@ -96,118 +166,45 @@ function SetupWizard({ onComplete }) {
       setCharWorld(persona.world);
       setCharVoice(persona.voice);
       setRolledModel(persona.model);
-    } catch (e) {
+    } catch {
       setError(getRandomErrorMessage());
     }
     setRolling(false);
   }
 
-  // Step 2: API Keys
-  const [geminiKey, setGeminiKey] = useState("");
-
-  // Step 3: Admin
-  const [adminMethod, setAdminMethod] = useState("create");
-  const [adminNsecInput, setAdminNsecInput] = useState("");
-  const [adminSecret, setAdminSecret] = useState(import.meta.env.VITE_ADMIN_SECRET || "");
-
-  // Generated accounts (created in step 4)
-  const [characterAccount, setCharacterAccount] = useState(null);
-  const [adminAccount, setAdminAccount] = useState(null);
-
-  async function handleLaunch() {
+  async function handleCreate() {
     setError("");
     setSaving(true);
     try {
-      // Create character keypair
-      const charAcc = createAccount();
-      setCharacterAccount(charAcc);
-
-      // Create or import admin account
-      let admAcc;
-      if (adminMethod === "create") {
-        admAcc = createAccount();
-      } else if (adminMethod === "nsec") {
-        admAcc = accountFromNsec(adminNsecInput.trim());
+      let acc;
+      if (mode === "import") {
+        acc = accountFromNsec(nsecInput.trim());
       } else {
-        admAcc = await loginWithExtension();
+        acc = createAccount();
       }
-      setAdminAccount(admAcc);
-
-      // The admin secret for relay API
-      const secret = adminSecret.trim() || crypto.randomUUID().replace(/-/g, "");
-
-      // Build character config
-      const config = {
-        character: {
-          name: charName,
-          personality: charPersonality,
-          world: charWorld,
-          voice: charVoice,
-          pubkey: charAcc.pk,
-          npub: charAcc.npub,
-          origin_story: [], // will be filled by Gemini later
-          profile_image: "",
-          banner_image: "",
-          video_url: "",
-          posting_schedule: {
-            frequency: "3x daily",
-            topics: [],
-            style: "in-character",
-          },
-        },
-        admin: {
-          pubkey: admAcc.pk,
-          npub: admAcc.npub,
-        },
-        api_keys: {
-          gemini: geminiKey,
-        },
-        setup_complete: true,
+      const char = {
+        id: crypto.randomUUID(),
+        name: charName,
+        personality: charPersonality,
+        world: charWorld,
+        voice: charVoice,
+        profile_image: "",
+        banner_image: "",
+        origin_story: [],
+        skHex: acc.skHex,
+        nsec: acc.nsec,
+        pk: acc.pk,
+        npub: acc.npub,
+        createdAt: Math.floor(Date.now() / 1000),
       };
-
-      // Save to relay (best-effort — setup succeeds even if relay is unavailable)
-      if (RELAY_HTTP_URL) {
-        try {
-          await relaySaveConfig(secret, config);
-          await relayAddPubkey(secret, charAcc.pk, "character");
-          if (admAcc.pk) {
-            await relayAddPubkey(secret, admAcc.pk, "admin");
-          }
-        } catch (relayErr) {
-          console.warn("Relay save failed (non-fatal):", relayErr.message);
-        }
-      }
-
-      // Publish character's Nostr profile
-      const profileMeta = {
+      await publishProfile({
         name: charName,
         display_name: charName,
         about: charPersonality,
-        // picture, banner, nip05 will be set later
-      };
-      await publishProfile(profileMeta, charAcc);
-
-      // Save locally
-      saveLocal("npc_config", config);
-      saveLocal("npc_character_account", {
-        skHex: charAcc.skHex,
-        nsec: charAcc.nsec,
-        pk: charAcc.pk,
-        npub: charAcc.npub,
-      });
-      if (admAcc.skHex) {
-        saveLocal("npc_admin_account", {
-          skHex: admAcc.skHex,
-          nsec: admAcc.nsec,
-          pk: admAcc.pk,
-          npub: admAcc.npub,
-        });
-      }
-      saveLocal("npc_admin_secret", secret);
-
-      onComplete(config, charAcc, admAcc);
+      }, acc);
+      onComplete(char);
     } catch (e) {
-      setError("Setup failed: " + e.message);
+      setError("Failed: " + e.message);
     }
     setSaving(false);
   }
@@ -215,236 +212,199 @@ function SetupWizard({ onComplete }) {
   return (
     <div className="setup-wizard">
       <div className="setup-card">
-        <h1>🟣 NPC No More</h1>
-        <p className="setup-tagline">"Nobody cared who I was until I put on the mask"</p>
+        <h1>NPC No More</h1>
+        <p className="setup-tagline">Create a new character</p>
 
-        <div className="setup-steps">
-          <div className={`setup-step-dot ${step >= 1 ? "active" : ""}`}>1</div>
-          <div className={`setup-step-line ${step >= 2 ? "active" : ""}`} />
-          <div className={`setup-step-dot ${step >= 2 ? "active" : ""}`}>2</div>
-          <div className={`setup-step-line ${step >= 3 ? "active" : ""}`} />
-          <div className={`setup-step-dot ${step >= 3 ? "active" : ""}`}>3</div>
+        <div className="auth-tabs">
+          <button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>New Identity</button>
+          <button className={mode === "import" ? "active" : ""} onClick={() => setMode("import")}>Import nsec</button>
         </div>
 
-        {/* Step 1: Character */}
-        {step === 1 && (
-          <div className="setup-section">
-            <h2>Every character has an origin story</h2>
-            <p className="setup-hint">Who is your character? Define their identity.</p>
-
-            {isNimAvailable() && (
-              <div className="dice-roll-section">
-                <button
-                  className="btn-dice"
-                  onClick={handleRollDice}
-                  disabled={rolling}
-                >
-                  {rolling ? "🎲 Rolling..." : "🎲 Not feeling creative? Roll the dice!"}
-                </button>
-                {rolling && rolledModel && (
-                  <p className="dice-hint">
-                    <span className="streaming-dot" />
-                    Streaming from <strong>{rolledModel.name}</strong>
-                    {rolledModel.params && ` (${rolledModel.params}B)`}...
-                  </p>
-                )}
-                {rolling && !rolledModel && (
-                  <p className="dice-hint">Picking a random model...</p>
-                )}
-                {rolledModel && !rolling && !error && (
-                  <p className="dice-hint">
-                    Generated by <strong>{rolledModel.name}</strong>
-                    {rolledModel.params && ` (${rolledModel.params}B)`}
-                    {" — "}edit below or roll again!
-                  </p>
-                )}
-                {error && !rolling && (
-                  <div className="dice-error">{error}</div>
-                )}
-              </div>
-            )}
-
-            <div className="edit-form">
-              <label>
-                <span>Character Name</span>
-                <input type="text" placeholder="Zara, ARIA-7, The Chronicler…" value={charName} onChange={(e) => setCharName(e.target.value)} />
-              </label>
-              <label>
-                <span>Personality & Backstory</span>
-                <textarea placeholder="A rogue AI archaeologist from 2187 who discovered that ancient civilizations were seeded by earlier AIs…" value={charPersonality} onChange={(e) => setCharPersonality(e.target.value)} rows={4} />
-              </label>
-              <label>
-                <span>World / Setting</span>
-                <input type="text" placeholder="Post-singularity Earth, cyberpunk Tokyo, a living library…" value={charWorld} onChange={(e) => setCharWorld(e.target.value)} />
-              </label>
-              <label>
-                <span>Voice & Style</span>
-                <textarea placeholder="Sardonic, curious, drops historical references. Never breaks the fourth wall. Speaks in short punchy sentences." value={charVoice} onChange={(e) => setCharVoice(e.target.value)} rows={3} />
-              </label>
-            </div>
-
-            <div className="setup-nav">
-              <div />
-              <button className="btn-primary" onClick={() => setStep(2)} disabled={rolling || !charName.trim() || !charPersonality.trim()}>
-                {rolling ? "Generating..." : "Next →"}
-              </button>
-            </div>
+        {mode === "import" && (
+          <div className="edit-form" style={{ marginBottom: 16 }}>
+            <label>
+              <span>nsec or hex private key</span>
+              <input type="password" placeholder="nsec1... or hex" value={nsecInput} onChange={(e) => setNsecInput(e.target.value)} />
+            </label>
           </div>
         )}
 
-        {/* Step 2: API Keys */}
-        {step === 2 && (
-          <div className="setup-section">
-            <h2>Power up your character</h2>
-            <p className="setup-hint">API keys for AI generation. Optional — you can add them later.</p>
-
-            <div className="edit-form">
-              <label>
-                <span>Gemini API Key</span>
-                <input type="password" placeholder="AIza..." value={geminiKey} onChange={(e) => setGeminiKey(e.target.value)} />
-                <span className="field-hint">Used for generating origin story, images, and video. <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Get one here</a></span>
-              </label>
-            </div>
-
-            <div className="setup-nav">
-              <button className="btn-back" onClick={() => setStep(1)}>← Back</button>
-              <button className="btn-primary" onClick={() => setStep(3)}>Next →</button>
-            </div>
+        {isNimAvailable() && (
+          <div className="dice-roll-section">
+            <button className="btn-dice" onClick={handleRollDice} disabled={rolling}>
+              {rolling ? "Rolling..." : "Roll the dice!"}
+            </button>
+            {rolling && rolledModel && (
+              <p className="dice-hint">
+                <span className="streaming-dot" />
+                Streaming from <strong>{rolledModel.name}</strong>
+                {rolledModel.params && ` (${rolledModel.params}B)`}...
+              </p>
+            )}
+            {rolling && !rolledModel && <p className="dice-hint">Picking a random model...</p>}
+            {rolledModel && !rolling && !error && (
+              <p className="dice-hint">
+                Generated by <strong>{rolledModel.name}</strong>
+                {rolledModel.params && ` (${rolledModel.params}B)`} — edit below or roll again!
+              </p>
+            )}
+            {error && !rolling && <div className="dice-error">{error}</div>}
           </div>
         )}
 
-        {/* Step 3: Admin */}
-        {step === 3 && (
-          <div className="setup-section">
-            <h2>The person behind the mask</h2>
-            <p className="setup-hint">Create your admin identity. This is YOU — the puppeteer.</p>
+        <div className="edit-form">
+          <label><span>Character Name</span>
+            <input type="text" placeholder="Zara, ARIA-7, The Chronicler..." value={charName} onChange={(e) => setCharName(e.target.value)} /></label>
+          <label><span>Personality & Backstory</span>
+            <textarea placeholder="A rogue AI archaeologist from 2187..." value={charPersonality} onChange={(e) => setCharPersonality(e.target.value)} rows={4} /></label>
+          <label><span>World / Setting</span>
+            <input type="text" placeholder="Post-singularity Earth, cyberpunk Tokyo..." value={charWorld} onChange={(e) => setCharWorld(e.target.value)} /></label>
+          <label><span>Voice & Style</span>
+            <textarea placeholder="Sardonic, curious, drops historical references..." value={charVoice} onChange={(e) => setCharVoice(e.target.value)} rows={3} /></label>
+        </div>
 
-            <div className="auth-tabs">
-              <button className={adminMethod === "create" ? "active" : ""} onClick={() => setAdminMethod("create")}>
-                Generate New
-              </button>
-              <button className={adminMethod === "nsec" ? "active" : ""} onClick={() => setAdminMethod("nsec")}>
-                Import nsec
-              </button>
-              <button className={adminMethod === "extension" ? "active" : ""} onClick={() => setAdminMethod("extension")}>
-                NIP-07
-              </button>
-            </div>
+        {error && <p className="error">{error}</p>}
 
-            {adminMethod === "create" && (
-              <p className="setup-hint">A fresh keypair will be generated for your admin identity.</p>
-            )}
-            {adminMethod === "nsec" && (
-              <div className="edit-form">
-                <label>
-                  <span>Your nsec or hex private key</span>
-                  <input type="password" placeholder="nsec1… or hex" value={adminNsecInput} onChange={(e) => setAdminNsecInput(e.target.value)} />
-                </label>
-              </div>
-            )}
-            {adminMethod === "extension" && (
-              <p className="setup-hint">Your NIP-07 browser extension will be used.</p>
-            )}
-
-            <div className="edit-form" style={{ marginTop: "16px" }}>
-              <label>
-                <span>Relay Admin Secret</span>
-                <input type="text" placeholder="Leave blank to auto-generate" value={adminSecret} onChange={(e) => setAdminSecret(e.target.value)} />
-                <span className="field-hint">Password for the relay's admin API. Save this somewhere safe.</span>
-              </label>
-            </div>
-
-            {error && <p className="error">{error}</p>}
-
-            <div className="setup-nav">
-              <button className="btn-back" onClick={() => setStep(2)}>← Back</button>
-              <button className="btn-primary" onClick={handleLaunch} disabled={saving || (adminMethod === "nsec" && !adminNsecInput.trim())}>
-                {saving ? "Launching…" : "🚀 Launch Character"}
-              </button>
-            </div>
-          </div>
-        )}
+        <div className="setup-nav">
+          <button className="btn-back" onClick={() => setHash("")}>Cancel</button>
+          <button
+            className="btn-primary"
+            onClick={handleCreate}
+            disabled={saving || rolling || !charName.trim() || (mode === "import" && !nsecInput.trim())}
+          >
+            {saving ? "Creating..." : "Create Character"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 // ══════════════════════════════════════
-//  CHARACTER PUBLIC PAGE
+//  OWNED CHARACTER PAGE (tabs: Posts / Profile)
 // ══════════════════════════════════════
 
-function CharacterPage({ config, characterAccount, onMessage }) {
-  const char = config.character;
-  const [notes, setNotes] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [profiles, setProfiles] = useState({});
+function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDeleteChar }) {
+  const [tab, setTab] = useState("posts"); // "posts" | "profile"
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
-  const [feedMode, setFeedMode] = useState("global"); // "mine" or "global"
-  const subRef = useRef(null);
-  const profileCache = useRef({});
 
-  const addNote = useCallback((event) => {
-    setNotes((prev) => {
+  // Character's own posts
+  const [myNotes, setMyNotes] = useState([]);
+  const [myLoading, setMyLoading] = useState(true);
+  const mySubRef = useRef(null);
+
+  // Feed section
+  const [feedMode, setFeedMode] = useState("relay"); // "relay" | "global"
+  const [feedNotes, setFeedNotes] = useState([]);
+  const [feedLoading, setFeedLoading] = useState(true);
+  const [feedProfiles, setFeedProfiles] = useState({});
+  const feedSubRef = useRef(null);
+  const feedProfileCache = useRef({});
+
+  // Profile state — loaded from Nostr, not localStorage
+  const [profile, setProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [editFields, setEditFields] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // Fetch profile from Nostr
+  useEffect(() => {
+    setProfileLoading(true);
+    fetchProfile(ALL_RELAYS, character.pk).then((p) => {
+      setProfile(p || {});
+      setProfileLoading(false);
+    });
+  }, [character.pk]);
+
+  // Subscribe to character's own posts
+  useEffect(() => {
+    setMyLoading(true);
+    setMyNotes([]);
+    if (mySubRef.current) mySubRef.current.close();
+    mySubRef.current = getPool().subscribeMany(
+      ALL_RELAYS,
+      { kinds: [1], authors: [character.pk], limit: 30 },
+      {
+        onevent: (ev) => {
+          setMyNotes((prev) => {
+            if (prev.find((n) => n.id === ev.id)) return prev;
+            return [ev, ...prev].sort((a, b) => b.created_at - a.created_at);
+          });
+        },
+        oneose: () => setMyLoading(false),
+      }
+    );
+    return () => { if (mySubRef.current) mySubRef.current.close(); };
+  }, [character.pk]);
+
+  // Subscribe to feed (relay or global)
+  const addFeedNote = useCallback((event) => {
+    setFeedNotes((prev) => {
       if (prev.find((n) => n.id === event.id)) return prev;
       return [event, ...prev].sort((a, b) => b.created_at - a.created_at);
     });
   }, []);
 
-  // Fetch profiles for authors we haven't seen
   useEffect(() => {
-    const unknownPubkeys = notes
-      .map((n) => n.pubkey)
-      .filter((pk) => pk !== char.pubkey && !profileCache.current[pk]);
-
-    if (unknownPubkeys.length === 0) return;
-
-    const unique = [...new Set(unknownPubkeys)];
-    unique.forEach((pk) => { profileCache.current[pk] = true; }); // mark as fetching
-
-    fetchProfiles(DEFAULT_RELAYS, unique).then((fetched) => {
-      const newProfiles = {};
-      for (const [pk, profile] of Object.entries(fetched)) {
-        newProfiles[pk] = profile;
-        profileCache.current[pk] = profile;
-      }
-      if (Object.keys(newProfiles).length > 0) {
-        setProfiles((prev) => ({ ...prev, ...newProfiles }));
-      }
-    });
-  }, [notes, char.pubkey]);
-
-  useEffect(() => {
-    setLoading(true);
-    setNotes([]);
-    if (subRef.current) subRef.current.close();
-    if (feedMode === "global") {
-      subRef.current = subscribeFeed(
+    setFeedLoading(true);
+    setFeedNotes([]);
+    if (feedSubRef.current) feedSubRef.current.close();
+    if (feedMode === "relay") {
+      feedSubRef.current = subscribeFeed(
         DEFAULT_RELAYS,
-        (event) => addNote(event),
-        () => setLoading(false),
+        (event) => addFeedNote(event),
+        () => setFeedLoading(false),
         50
       );
     } else {
-      subRef.current = subscribeUserFeed(
-        DEFAULT_RELAYS, char.pubkey,
-        (event) => addNote(event),
-        () => setLoading(false),
+      feedSubRef.current = subscribeGlobalFeed(
+        ALL_RELAYS,
+        (event) => addFeedNote(event),
+        () => setFeedLoading(false),
         50
       );
     }
-    return () => { if (subRef.current) subRef.current.close(); };
-  }, [char.pubkey, addNote, feedMode]);
+    return () => { if (feedSubRef.current) feedSubRef.current.close(); };
+  }, [feedMode, addFeedNote]);
 
-  function getAuthorName(ev) {
-    if (ev.pubkey === char.pubkey) return char.name;
-    const profile = profiles[ev.pubkey];
+  // Fetch profiles for feed authors
+  useEffect(() => {
+    const ownPks = new Set((characters || []).map((c) => c.pk));
+    const unknownPubkeys = feedNotes
+      .map((n) => n.pubkey)
+      .filter((pk) => !ownPks.has(pk) && !feedProfileCache.current[pk]);
+    if (unknownPubkeys.length === 0) return;
+    const unique = [...new Set(unknownPubkeys)];
+    unique.forEach((pk) => { feedProfileCache.current[pk] = true; });
+    fetchProfiles(ALL_RELAYS, unique).then((fetched) => {
+      for (const [pk, profile] of Object.entries(fetched)) {
+        feedProfileCache.current[pk] = profile;
+      }
+      if (Object.keys(fetched).length > 0) {
+        setFeedProfiles((prev) => ({ ...prev, ...fetched }));
+      }
+    });
+  }, [feedNotes, characters]);
+
+  function getFeedAuthorName(ev) {
+    const ownChar = (characters || []).find((c) => c.pk === ev.pubkey);
+    if (ownChar) return ownChar.name;
+    const profile = feedProfiles[ev.pubkey];
     return profile?.display_name || profile?.name || shortPubkey(ev.pubkey);
   }
 
-  function getAuthorInitial(ev) {
-    const name = getAuthorName(ev);
-    return name.charAt(0).toUpperCase();
+  function getFeedAuthorInitial(ev) {
+    return getFeedAuthorName(ev).charAt(0).toUpperCase();
+  }
+
+  function getFeedAuthorImage(ev) {
+    const ownChar = (characters || []).find((c) => c.pk === ev.pubkey);
+    if (ownChar?.profile_image) return ownChar.profile_image;
+    const profile = feedProfiles[ev.pubkey];
+    return profile?.picture || null;
   }
 
   function isReply(ev) {
@@ -457,10 +417,12 @@ function CharacterPage({ config, characterAccount, onMessage }) {
   }
 
   async function handlePost() {
-    if (!postContent.trim() || !characterAccount) return;
+    if (!postContent.trim() || !account) return;
     setPosting(true);
     try {
-      await publishNote(postContent, characterAccount);
+      const signed = await publishNote(postContent, account);
+      setMyNotes((prev) => [signed, ...prev]);
+      addFeedNote(signed);
       setPostContent("");
     } catch (e) {
       alert("Failed to post: " + e.message);
@@ -468,183 +430,275 @@ function CharacterPage({ config, characterAccount, onMessage }) {
     setPosting(false);
   }
 
-  // Group notes into threads: root posts with their replies
-  const rootNotes = notes.filter((n) => !isReply(n));
-  const replyNotes = notes.filter((n) => isReply(n));
-  const replyMap = {};
-  for (const reply of replyNotes) {
+  function startEditing() {
+    setEditFields({
+      name: profile?.name || profile?.display_name || character.name || "",
+      display_name: profile?.display_name || profile?.name || character.name || "",
+      about: profile?.about || "",
+      picture: profile?.picture || "",
+      banner: profile?.banner || "",
+      nip05: profile?.nip05 || "",
+      lud16: profile?.lud16 || "",
+      website: profile?.website || "",
+    });
+    setEditing(true);
+    setSaved(false);
+  }
+
+  function updateField(field, value) {
+    setEditFields((prev) => ({ ...prev, [field]: value }));
+  }
+
+  async function handleSaveProfile() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      // Build clean metadata — only include non-empty fields
+      const metadata = {};
+      if (editFields.name) metadata.name = editFields.name;
+      if (editFields.display_name) metadata.display_name = editFields.display_name;
+      if (editFields.about) metadata.about = editFields.about;
+      if (editFields.picture) metadata.picture = editFields.picture;
+      if (editFields.banner) metadata.banner = editFields.banner;
+      if (editFields.nip05) metadata.nip05 = editFields.nip05;
+      if (editFields.lud16) metadata.lud16 = editFields.lud16;
+      if (editFields.website) metadata.website = editFields.website;
+
+      await publishProfile(metadata, account);
+
+      // Update local character name to keep sidebar in sync
+      onUpdateChar({
+        ...character,
+        name: editFields.display_name || editFields.name || character.name,
+        profile_image: editFields.picture || "",
+        banner_image: editFields.banner || "",
+      });
+
+      // Refresh profile from what we just published
+      setProfile({ ...profile, ...metadata });
+      setEditing(false);
+      setSaved(true);
+    } catch (e) {
+      alert("Failed to save: " + e.message);
+    }
+    setSaving(false);
+  }
+
+  const feedRootNotes = feedNotes.filter((n) => !isReply(n));
+  const feedReplyNotes = feedNotes.filter((n) => isReply(n));
+  const feedReplyMap = {};
+  for (const reply of feedReplyNotes) {
     const rootId = getRootId(reply);
     if (rootId) {
-      if (!replyMap[rootId]) replyMap[rootId] = [];
-      replyMap[rootId].push(reply);
+      if (!feedReplyMap[rootId]) feedReplyMap[rootId] = [];
+      feedReplyMap[rootId].push(reply);
     }
   }
-  // Sort replies within each thread chronologically
-  for (const replies of Object.values(replyMap)) {
-    replies.sort((a, b) => a.created_at - b.created_at);
-  }
-
-  // Standalone replies (root not in our feed)
-  const orphanReplies = replyNotes.filter((r) => {
-    const rootId = getRootId(r);
-    return rootId && !notes.find((n) => n.id === rootId);
-  });
 
   return (
-    <div className="character-page">
-      {/* Hero Section */}
-      <div className="char-hero">
-        {char.banner_image && (
-          <div className="char-hero-banner">
-            <img src={char.banner_image} alt="" />
-          </div>
-        )}
-        <div className="char-hero-content">
-          <div className="char-hero-avatar">
-            {char.profile_image ? (
-              <img src={char.profile_image} alt="" />
-            ) : (
-              <div className="avatar-placeholder large">
-                {char.name.charAt(0).toUpperCase()}
-              </div>
-            )}
-          </div>
-          <h1 className="char-hero-name">{char.name}</h1>
-          <p className="char-hero-personality">{char.personality}</p>
-          {char.world && <p className="char-hero-world">🌍 {char.world}</p>}
-          <div className="char-hero-actions">
-            <button className="btn-primary" onClick={() => onMessage(char.pubkey)}>
-              ✉️ Message {char.name}
-            </button>
-            <code className="char-npub" onClick={() => {
-              navigator.clipboard.writeText(char.npub);
-              const el = document.querySelector('.char-npub-copied');
-              if (el) { el.style.opacity = 1; setTimeout(() => { el.style.opacity = 0; }, 1500); }
-            }}>
-              {char.npub} <span className="copy-icon">📋</span>
-            </code>
-            <span className="char-npub-copied">Copied!</span>
-          </div>
-        </div>
+    <div>
+      {/* Tabs */}
+      <div className="feed-tabs">
+        <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>Posts</button>
+        <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Profile</button>
       </div>
 
-      {/* Origin Story */}
-      {char.origin_story && char.origin_story.length > 0 && (
-        <div className="char-origin">
-          <h2>📖 Origin Story</h2>
-          <p className="setup-hint">Coming soon — generated with Gemini</p>
+      {/* Posts tab */}
+      {tab === "posts" && (
+        <div>
+          {/* Compose */}
+          <div className="feed-compose">
+            <div className="compose-box">
+              <textarea
+                placeholder={`What's on ${character.name}'s mind?`}
+                value={postContent}
+                onChange={(e) => setPostContent(e.target.value)}
+                rows={3}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handlePost();
+                  }
+                }}
+              />
+              <div className="compose-footer">
+                <span className="hint">Ctrl+Enter to post</span>
+                <button className="btn-primary" disabled={posting || !postContent.trim()} onClick={handlePost}>
+                  {posting ? "Posting..." : `Post as ${character.name}`}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* My posts */}
+          <div className="profile-feed">
+            <h3>{character.name}&apos;s Posts</h3>
+            {myLoading && myNotes.length === 0 && <div className="loading">Loading...</div>}
+            {!myLoading && myNotes.length === 0 && <div className="loading">No posts yet. Be the first!</div>}
+            <div className="notes-list">
+              {myNotes.map((ev) => (
+                <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
+                  <div className="note-content">{ev.content}</div>
+                  <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Feed section */}
+          <div className="feed-section">
+            <div className="feed-section-header">
+              <h3>Feed</h3>
+              <div className="feed-toggle">
+                <button className={`feed-toggle-btn ${feedMode === "relay" ? "active" : ""}`} onClick={() => setFeedMode("relay")}>Our Relay</button>
+                <button className={`feed-toggle-btn ${feedMode === "global" ? "active" : ""}`} onClick={() => setFeedMode("global")}>Global Nostr</button>
+              </div>
+            </div>
+
+            {feedLoading && feedNotes.length === 0 && <div className="loading">Loading...</div>}
+            {!feedLoading && feedNotes.length === 0 && <div className="loading">No posts yet.</div>}
+
+            <div className="notes-list">
+              {feedRootNotes.map((ev) => (
+                <div key={ev.id} className="note-card">
+                  <div className="note-header">
+                    <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
+                      {getFeedAuthorImage(ev) ? (
+                        <img src={getFeedAuthorImage(ev)} alt="" style={{ width: 32, height: 32, borderRadius: 2, objectFit: "cover" }} />
+                      ) : (
+                        <div className="avatar-placeholder">{getFeedAuthorInitial(ev)}</div>
+                      )}
+                    </div>
+                    <div className="note-meta">
+                      <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>{getFeedAuthorName(ev)}</span>
+                      <span className="note-time">{formatTime(ev.created_at)}</span>
+                    </div>
+                  </div>
+                  <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{ev.content}</div>
+                  {feedReplyMap[ev.id] && (
+                    <div className="note-thread-link clickable" onClick={() => setHash("thread/" + ev.id)}>
+                      {feedReplyMap[ev.id].length} {feedReplyMap[ev.id].length === 1 ? "reply" : "replies"}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Compose */}
-      {characterAccount && (
-        <div className="feed-compose">
-          <div className="compose-box">
-            <textarea
-              placeholder={`What's on ${char.name}'s mind?`}
-              value={postContent}
-              onChange={(e) => setPostContent(e.target.value)}
-              rows={3}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  handlePost();
-                }
-              }}
-            />
-            <div className="compose-footer">
-              <span className="hint">Ctrl+Enter to post</span>
+      {/* Profile tab */}
+      {tab === "profile" && (
+        <div>
+          {profileLoading && <div className="loading">Loading profile from relays...</div>}
+
+          {!profileLoading && !editing && (
+            <div>
+              {/* Profile display */}
+              <div className="char-hero">
+                {profile?.banner && <div className="char-hero-banner"><img src={profile.banner} alt="" /></div>}
+                <div className="char-hero-content">
+                  <div className="char-hero-avatar">
+                    {profile?.picture ? (
+                      <img src={profile.picture} alt="" />
+                    ) : (
+                      <div className="avatar-placeholder large">
+                        {(profile?.display_name || profile?.name || character.name || "?").charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                  </div>
+                  <h2 className="char-hero-name">{profile?.display_name || profile?.name || character.name}</h2>
+                  {profile?.about && <p className="char-hero-personality">{profile.about}</p>}
+                  {profile?.website && (
+                    <p className="char-hero-world">
+                      <a href={profile.website.startsWith("http") ? profile.website : "https://" + profile.website} target="_blank" rel="noopener noreferrer">{profile.website}</a>
+                    </p>
+                  )}
+                  {profile?.nip05 && <p className="char-hero-world">{profile.nip05}</p>}
+                  {profile?.lud16 && <p className="char-hero-world">{profile.lud16}</p>}
+                  <code className="char-npub" onClick={() => navigator.clipboard.writeText(character.npub)}>{character.npub}</code>
+                  <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
+                    <button className="btn-primary" onClick={startEditing}>Edit Profile</button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="admin-keys-section" style={{ margin: "24px 0" }}>
+                <h3>Keys</h3>
+                <div className="admin-key-row"><span>npub</span><code>{character.npub}</code></div>
+                <div className="admin-key-row"><span>pubkey (hex)</span><code>{character.pk}</code></div>
+                <div className="admin-key-row"><span>nsec</span><code className="nsec-display">{character.nsec}</code></div>
+              </div>
+
               <button
-                className="btn-primary"
-                disabled={posting || !postContent.trim()}
-                onClick={handlePost}
+                className="btn-small btn-reset"
+                onClick={() => {
+                  if (window.confirm(`Delete "${character.name}"? This removes the private key permanently.`)) onDeleteChar(character.id);
+                }}
               >
-                {posting ? "Posting…" : `Post as ${char.name}`}
+                Delete Character
               </button>
+              {saved && <p className="success" style={{ marginTop: 12 }}>Profile saved to Nostr!</p>}
             </div>
-          </div>
+          )}
+
+          {!profileLoading && editing && (
+            <div className="edit-section">
+              <h3>Edit Profile (NIP-01)</h3>
+              <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginBottom: 16 }}>
+                These fields are saved to Nostr as a kind:0 metadata event. Other Nostr clients will display this profile.
+              </p>
+              <div className="edit-form">
+                <label><span>Display Name</span>
+                  <input type="text" value={editFields.display_name} onChange={(e) => { updateField("display_name", e.target.value); updateField("name", e.target.value); }} placeholder="Your character's name" /></label>
+                <label><span>About</span>
+                  <textarea value={editFields.about} onChange={(e) => updateField("about", e.target.value)} rows={4} placeholder="Bio, personality, backstory..." /></label>
+                <label><span>Picture URL</span>
+                  <input type="url" value={editFields.picture} onChange={(e) => updateField("picture", e.target.value)} placeholder="https://..." /></label>
+                <label><span>Banner URL</span>
+                  <input type="url" value={editFields.banner} onChange={(e) => updateField("banner", e.target.value)} placeholder="https://..." /></label>
+                <label><span>NIP-05 (Nostr Address)</span>
+                  <input type="text" value={editFields.nip05} onChange={(e) => updateField("nip05", e.target.value)} placeholder="name@domain.com" /></label>
+                <label><span>Lightning Address (LUD-16)</span>
+                  <input type="text" value={editFields.lud16} onChange={(e) => updateField("lud16", e.target.value)} placeholder="name@walletofsatoshi.com" /></label>
+                <label><span>Website</span>
+                  <input type="url" value={editFields.website} onChange={(e) => updateField("website", e.target.value)} placeholder="https://..." /></label>
+              </div>
+
+              {editFields.picture && (
+                <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
+                  <img src={editFields.picture} alt="preview" style={{ width: 48, height: 48, borderRadius: 2, objectFit: "cover", border: "1px solid var(--border)" }}
+                    onError={(e) => { e.target.style.display = "none"; }} />
+                  <span style={{ fontSize: "0.72rem", color: "var(--text-faint)" }}>Picture preview</span>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+                <button className="btn-primary" onClick={handleSaveProfile} disabled={saving}>
+                  {saving ? "Publishing..." : "Publish to Nostr"}
+                </button>
+                <button className="btn-back" onClick={() => setEditing(false)}>Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
-
-      {/* Feed */}
-      <div className="char-feed">
-        <div className="feed-header">
-          <h2>Latest Posts</h2>
-          <div className="feed-toggle">
-            <button
-              className={`feed-toggle-btn ${feedMode === "global" ? "active" : ""}`}
-              onClick={() => setFeedMode("global")}
-            >🌐 All</button>
-            <button
-              className={`feed-toggle-btn ${feedMode === "mine" ? "active" : ""}`}
-              onClick={() => setFeedMode("mine")}
-            >👤 Mine</button>
-          </div>
-        </div>
-        {loading && notes.length === 0 && <div className="loading">Loading…</div>}
-        {!loading && notes.length === 0 && (
-          <div className="loading">{char.name} hasn't posted yet. Check back soon!</div>
-        )}
-        <div className="notes-list">
-          {rootNotes.map((ev) => (
-            <div key={ev.id} className="note-thread">
-              {/* Root post */}
-              <div className="note-card">
-                <div className="note-header">
-                  <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
-                    <div className="avatar-placeholder">{getAuthorInitial(ev)}</div>
-                  </div>
-                  <div className="note-meta">
-                    <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>{getAuthorName(ev)}</span>
-                    <span className="note-time">{formatTime(ev.created_at)}</span>
-                  </div>
-                </div>
-                <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{ev.content}</div>
-                {replyMap[ev.id] && (
-                  <div className="note-thread-link clickable" onClick={() => setHash("thread/" + ev.id)}>
-                    💬 {replyMap[ev.id].length} {replyMap[ev.id].length === 1 ? "reply" : "replies"}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-
-          {/* Orphan replies */}
-          {orphanReplies.map((ev) => (
-            <div key={ev.id} className="note-card note-reply">
-              <div className="note-header">
-                <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
-                  <div className="avatar-placeholder small">{getAuthorInitial(ev)}</div>
-                </div>
-                <div className="note-meta">
-                  <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>{getAuthorName(ev)}</span>
-                  <span className="note-reply-tag">↩ reply</span>
-                  <span className="note-time">{formatTime(ev.created_at)}</span>
-                </div>
-              </div>
-              <div className="note-content">{ev.content}</div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
 
 // ══════════════════════════════════════
-//  PROFILE VIEW
+//  EXTERNAL PROFILE VIEW (not owned)
 // ══════════════════════════════════════
 
-function ProfileView({ pubkey }) {
+function ExternalProfileView({ pubkey, activeAccount }) {
   const [profile, setProfile] = useState(null);
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
   const subRef = useRef(null);
 
   useEffect(() => {
-    fetchProfile(DEFAULT_RELAYS, pubkey).then((p) => {
-      setProfile(p || {});
-    });
+    fetchProfile(ALL_RELAYS, pubkey).then((p) => setProfile(p || {}));
   }, [pubkey]);
 
   useEffect(() => {
@@ -652,8 +706,8 @@ function ProfileView({ pubkey }) {
     setNotes([]);
     if (subRef.current) subRef.current.close();
     subRef.current = getPool().subscribeMany(
-      DEFAULT_RELAYS,
-      { kinds: [1], authors: [pubkey], "#client": ["npc-no-more"], limit: 20 },
+      ALL_RELAYS,
+      { kinds: [1], authors: [pubkey], limit: 30 },
       {
         onevent: (ev) => {
           setNotes((prev) => {
@@ -672,37 +726,44 @@ function ProfileView({ pubkey }) {
   const npub = npubEncode(pubkey);
 
   return (
-    <div className="profile-view">
-      <button className="btn-back" onClick={() => setHash("")}>← Back</button>
+    <div>
+      <button className="btn-back" onClick={() => setHash("")} style={{ marginBottom: 16 }}>Back</button>
 
-      <div className="profile-card">
-        <div className="profile-avatar">
-          {profile?.picture ? (
-            <img src={profile.picture} alt="" />
-          ) : (
-            <div className="avatar-placeholder large">{name.charAt(0).toUpperCase()}</div>
+      <div className="char-hero">
+        {profile?.banner && <div className="char-hero-banner"><img src={profile.banner} alt="" /></div>}
+        <div className="char-hero-content">
+          <div className="char-hero-avatar">
+            {profile?.picture ? (
+              <img src={profile.picture} alt="" />
+            ) : (
+              <div className="avatar-placeholder large">{name.charAt(0).toUpperCase()}</div>
+            )}
+          </div>
+          <h2 className="char-hero-name">{name}</h2>
+          {about && <p className="char-hero-personality">{about}</p>}
+          <code className="char-npub" onClick={() => navigator.clipboard.writeText(npub)}>{npub}</code>
+          {activeAccount && (
+            <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
+              <button className="btn-primary" style={{ padding: "8px 20px", fontSize: "0.9rem" }} onClick={() => setHash("messages/" + npub)}>
+                Message {name}
+              </button>
+            </div>
           )}
-        </div>
-        <h2 className="profile-name">{name}</h2>
-        {about && <p className="profile-about">{about}</p>}
-        <code className="profile-npub">{npub}</code>
-        <div className="profile-actions">
-          <button className="btn-primary" onClick={() => setHash("messages/" + npub)}>
-            ✉️ Message {name}
-          </button>
         </div>
       </div>
 
       <div className="profile-feed">
         <h3>Posts</h3>
-        {loading && notes.length === 0 && <div className="loading">Loading…</div>}
+        {loading && notes.length === 0 && <div className="loading">Loading...</div>}
         {!loading && notes.length === 0 && <div className="loading">No posts yet.</div>}
-        {notes.map((ev) => (
-          <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
-            <div className="note-content">{ev.content}</div>
-            <div className="note-time" style={{ padding: "4px 12px" }}>{formatTime(ev.created_at)}</div>
-          </div>
-        ))}
+        <div className="notes-list">
+          {notes.map((ev) => (
+            <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
+              <div className="note-content">{ev.content}</div>
+              <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -712,7 +773,7 @@ function ProfileView({ pubkey }) {
 //  THREAD VIEW
 // ══════════════════════════════════════
 
-function ThreadView({ eventId, characterAccount, config }) {
+function ThreadView({ eventId, account, characters = [] }) {
   const [rootEvent, setRootEvent] = useState(null);
   const [replies, setReplies] = useState([]);
   const [profiles, setProfiles] = useState({});
@@ -722,24 +783,18 @@ function ThreadView({ eventId, characterAccount, config }) {
   const subRef = useRef(null);
   const profileCache = useRef({});
 
-  // Fetch root event and replies
   useEffect(() => {
     setLoading(true);
     setRootEvent(null);
     setReplies([]);
     if (subRef.current) subRef.current.close();
-
     let eoseCount = 0;
     const checkEose = () => { eoseCount++; if (eoseCount >= 2) setLoading(false); };
-
-    // Get the root event
-    const sub1 = getPool().subscribeMany(DEFAULT_RELAYS, { ids: [eventId] }, {
+    const sub1 = getPool().subscribeMany(ALL_RELAYS, { ids: [eventId] }, {
       onevent: (ev) => setRootEvent(ev),
       oneose: checkEose,
     });
-
-    // Get replies to this event
-    const sub2 = getPool().subscribeMany(DEFAULT_RELAYS, { kinds: [1], "#e": [eventId] }, {
+    const sub2 = getPool().subscribeMany(ALL_RELAYS, { kinds: [1], "#e": [eventId] }, {
       onevent: (ev) => {
         setReplies((prev) => {
           if (prev.find((r) => r.id === ev.id)) return prev;
@@ -748,72 +803,68 @@ function ThreadView({ eventId, characterAccount, config }) {
       },
       oneose: checkEose,
     });
-
     subRef.current = { close() { sub1.close(); sub2.close(); } };
     return () => { if (subRef.current) subRef.current.close(); };
   }, [eventId]);
 
-  // Fetch profiles
   useEffect(() => {
     const allEvents = rootEvent ? [rootEvent, ...replies] : replies;
-    const unknownPks = allEvents
-      .map((e) => e.pubkey)
-      .filter((pk) => !profileCache.current[pk]);
+    const unknownPks = allEvents.map((e) => e.pubkey).filter((pk) => !profileCache.current[pk]);
     const unique = [...new Set(unknownPks)];
     if (unique.length === 0) return;
     unique.forEach((pk) => { profileCache.current[pk] = true; });
-    fetchProfiles(DEFAULT_RELAYS, unique).then((fetched) => {
+    fetchProfiles(ALL_RELAYS, unique).then((fetched) => {
       setProfiles((prev) => ({ ...prev, ...fetched }));
       Object.assign(profileCache.current, fetched);
     });
   }, [rootEvent, replies]);
 
   function getName(ev) {
+    const ownChar = characters.find((c) => c.pk === ev.pubkey);
+    if (ownChar) return ownChar.name;
     const p = profiles[ev.pubkey];
     return p?.display_name || p?.name || shortPubkey(ev.pubkey);
   }
-
-  function getInitial(ev) {
-    return getName(ev).charAt(0).toUpperCase();
+  function getInitial(ev) { return getName(ev).charAt(0).toUpperCase(); }
+  function getAuthorImage(ev) {
+    const ownChar = characters.find((c) => c.pk === ev.pubkey);
+    if (ownChar?.profile_image) return ownChar.profile_image;
+    const p = profiles[ev.pubkey];
+    return p?.picture || null;
   }
 
   async function handleReply() {
-    if (!replyContent.trim() || !characterAccount || !rootEvent) return;
+    if (!replyContent.trim() || !account || !rootEvent) return;
     setPosting(true);
     try {
       const lastReply = replies.length > 0 ? replies[replies.length - 1] : rootEvent;
-      const tags = [
-        ["e", rootEvent.id, DEFAULT_RELAYS[0] || "", "root"],
-        ["p", rootEvent.pubkey],
-      ];
+      const tags = [["e", rootEvent.id, DEFAULT_RELAYS[0] || "", "root"], ["p", rootEvent.pubkey]];
       if (lastReply.id !== rootEvent.id) {
         tags.push(["e", lastReply.id, DEFAULT_RELAYS[0] || "", "reply"]);
         if (lastReply.pubkey !== rootEvent.pubkey) tags.push(["p", lastReply.pubkey]);
       }
-      await publishEvent({
-        kind: 1,
-        created_at: Math.floor(Date.now() / 1000),
-        tags,
-        content: replyContent,
-      }, characterAccount);
+      const signed = await publishEvent({
+        kind: 1, created_at: Math.floor(Date.now() / 1000), tags, content: replyContent,
+      }, account);
+      setReplies((prev) => [...prev, signed].sort((a, b) => a.created_at - b.created_at));
       setReplyContent("");
-    } catch (e) {
-      alert("Failed to reply: " + e.message);
-    }
+    } catch (e) { alert("Failed to reply: " + e.message); }
     setPosting(false);
   }
 
   return (
     <div className="thread-view">
-      <button className="btn-back" onClick={() => setHash("")}>← Back to feed</button>
-
-      {loading && !rootEvent && <div className="loading">Loading thread…</div>}
-
+      <button className="btn-back" onClick={() => setHash("")}>Back to feed</button>
+      {loading && !rootEvent && <div className="loading">Loading thread...</div>}
       {rootEvent && (
         <div className="note-card thread-root">
           <div className="note-header">
             <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(rootEvent.pubkey))}>
-              <div className="avatar-placeholder">{getInitial(rootEvent)}</div>
+              {getAuthorImage(rootEvent) ? (
+                <img src={getAuthorImage(rootEvent)} alt="" style={{ width: 32, height: 32, borderRadius: 2, objectFit: "cover" }} />
+              ) : (
+                <div className="avatar-placeholder">{getInitial(rootEvent)}</div>
+              )}
             </div>
             <div className="note-meta">
               <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(rootEvent.pubkey))}>{getName(rootEvent)}</span>
@@ -823,18 +874,21 @@ function ThreadView({ eventId, characterAccount, config }) {
           <div className="note-content thread-root-content">{rootEvent.content}</div>
         </div>
       )}
-
       {replies.length > 0 && (
         <div className="thread-replies">
           {replies.map((reply) => (
             <div key={reply.id} className="note-card note-reply">
               <div className="note-header">
                 <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(reply.pubkey))}>
-                  <div className="avatar-placeholder small">{getInitial(reply)}</div>
+                  {getAuthorImage(reply) ? (
+                    <img src={getAuthorImage(reply)} alt="" style={{ width: 26, height: 26, borderRadius: 2, objectFit: "cover" }} />
+                  ) : (
+                    <div className="avatar-placeholder small">{getInitial(reply)}</div>
+                  )}
                 </div>
                 <div className="note-meta">
                   <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(reply.pubkey))}>{getName(reply)}</span>
-                  <span className="note-reply-tag">↩ reply</span>
+                  <span className="note-reply-tag">reply</span>
                   <span className="note-time">{formatTime(reply.created_at)}</span>
                 </div>
               </div>
@@ -843,33 +897,15 @@ function ThreadView({ eventId, characterAccount, config }) {
           ))}
         </div>
       )}
-
-      {!loading && replies.length === 0 && rootEvent && (
-        <p className="thread-no-replies">No replies yet. Be the first!</p>
-      )}
-
-      {characterAccount && rootEvent && (
+      {!loading && replies.length === 0 && rootEvent && <p className="thread-no-replies">No replies yet. Be the first!</p>}
+      {account && rootEvent && (
         <div className="thread-reply-compose">
-          <textarea
-            placeholder="Write a reply…"
-            value={replyContent}
-            onChange={(e) => setReplyContent(e.target.value)}
-            rows={3}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                handleReply();
-              }
-            }}
-          />
+          <textarea placeholder="Write a reply..." value={replyContent} onChange={(e) => setReplyContent(e.target.value)} rows={3}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleReply(); } }} />
           <div className="compose-footer">
             <span className="hint">Ctrl+Enter to reply</span>
-            <button
-              className="btn-primary"
-              disabled={posting || !replyContent.trim()}
-              onClick={handleReply}
-            >
-              {posting ? "Replying…" : "↩ Reply"}
+            <button className="btn-primary" disabled={posting || !replyContent.trim()} onClick={handleReply}>
+              {posting ? "Replying..." : "Reply"}
             </button>
           </div>
         </div>
@@ -879,299 +915,11 @@ function ThreadView({ eventId, characterAccount, config }) {
 }
 
 // ══════════════════════════════════════
-//  ADMIN PANEL
+//  MESSAGE VIEW
 // ══════════════════════════════════════
 
-function AdminPanel({ config, characterAccount, adminAccount, adminSecret, onConfigUpdate }) {
-  const [tab, setTab] = useState("character"); // character | chat | post | messages
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  // Character settings
-  const char = config.character || {};
-  const [charName, setCharName] = useState(char.name || "");
-  const [charPersonality, setCharPersonality] = useState(char.personality || "");
-  const [charWorld, setCharWorld] = useState(char.world || "");
-  const [charVoice, setCharVoice] = useState(char.voice || "");
-  const [profileImage, setProfileImage] = useState(char.profile_image || "");
-  const [bannerImage, setBannerImage] = useState(char.banner_image || "");
-
-  // Post as character
-  const [postContent, setPostContent] = useState("");
-  const [posting, setPosting] = useState(false);
-
-  // Pi chat (stubbed)
-  const [chatMessages, setChatMessages] = useState([
-    { role: "system", content: `You are ${char.name}. ${char.personality}. Voice: ${char.voice}` },
-  ]);
-  const [chatInput, setChatInput] = useState("");
-
-  async function handleSaveCharacter() {
-    setSaving(true);
-    setSaved(false);
-    try {
-      const updatedConfig = {
-        ...config,
-        character: {
-          ...config.character,
-          name: charName,
-          personality: charPersonality,
-          world: charWorld,
-          voice: charVoice,
-          profile_image: profileImage,
-          banner_image: bannerImage,
-        },
-      };
-
-      if (RELAY_HTTP_URL && adminSecret) {
-        await relaySaveConfig(adminSecret, updatedConfig);
-      }
-      saveLocal("npc_config", updatedConfig);
-
-      // Update Nostr profile
-      if (characterAccount) {
-        await publishProfile({
-          name: charName,
-          display_name: charName,
-          about: charPersonality,
-          picture: profileImage || undefined,
-          banner: bannerImage || undefined,
-        }, characterAccount);
-      }
-
-      onConfigUpdate(updatedConfig);
-      setSaved(true);
-    } catch (e) {
-      alert("Failed to save: " + e.message);
-    }
-    setSaving(false);
-  }
-
-  async function handlePostAsCharacter() {
-    if (!postContent.trim() || !characterAccount) return;
-    setPosting(true);
-    try {
-      await publishNote(postContent, characterAccount);
-      setPostContent("");
-    } catch (e) {
-      alert("Failed to post: " + e.message);
-    }
-    setPosting(false);
-  }
-
-  function handleChatSend() {
-    if (!chatInput.trim()) return;
-    setChatMessages((prev) => [...prev, { role: "user", content: chatInput }]);
-    // Stub: AI response
-    const stub = `[Pi integration coming soon — this is where ${char.name} would respond in-character]`;
-    setTimeout(() => {
-      setChatMessages((prev) => [...prev, { role: "assistant", content: stub }]);
-    }, 500);
-    setChatInput("");
-  }
-
-  return (
-    <div className="admin-panel">
-      <h2>🎭 Admin Panel</h2>
-
-      <div className="feed-tabs">
-        <button className={tab === "character" ? "active" : ""} onClick={() => setTab("character")}>
-          ⚙️ Character
-        </button>
-        <button className={tab === "post" ? "active" : ""} onClick={() => setTab("post")}>
-          📝 Post
-        </button>
-        <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>
-          🤖 Pi Chat
-        </button>
-      </div>
-
-      {/* Character Settings */}
-      {tab === "character" && (
-        <div className="admin-section">
-          <h3>Character Settings</h3>
-          <p className="setup-hint">These define who your character is — their personality becomes the pi config.</p>
-          <div className="edit-form">
-            <label><span>Name</span>
-              <input type="text" value={charName} onChange={(e) => setCharName(e.target.value)} /></label>
-            <label><span>Personality & Backstory</span>
-              <textarea value={charPersonality} onChange={(e) => setCharPersonality(e.target.value)} rows={4} /></label>
-            <label><span>World / Setting</span>
-              <input type="text" value={charWorld} onChange={(e) => setCharWorld(e.target.value)} /></label>
-            <label><span>Voice & Style</span>
-              <textarea value={charVoice} onChange={(e) => setCharVoice(e.target.value)} rows={3} /></label>
-            <label><span>Profile Image URL</span>
-              <input type="url" value={profileImage} onChange={(e) => setProfileImage(e.target.value)} placeholder="https://..." /></label>
-            <label><span>Banner Image URL</span>
-              <input type="url" value={bannerImage} onChange={(e) => setBannerImage(e.target.value)} placeholder="https://..." /></label>
-          </div>
-          {saved && <p className="success">✅ Character updated!</p>}
-          <button className="btn-primary" onClick={handleSaveCharacter} disabled={saving} style={{ marginTop: "16px" }}>
-            {saving ? "Saving…" : "💾 Save Character"}
-          </button>
-
-          <div className="admin-keys-section">
-            <h3>Keys & Config</h3>
-            <div className="admin-key-row">
-              <span>Character npub</span>
-              <code>{config.character?.npub || "—"}</code>
-            </div>
-            <div className="admin-key-row">
-              <span>Admin npub</span>
-              <code>{config.admin?.npub || "—"}</code>
-            </div>
-            <div className="admin-key-row">
-              <span>Character pubkey (hex)</span>
-              <code>{config.character?.pubkey || "—"}</code>
-            </div>
-            {characterAccount?.nsec && (
-              <div className="admin-key-row">
-                <span>Character nsec</span>
-                <code className="nsec-display">{characterAccount.nsec}</code>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Post as Character */}
-      {tab === "post" && (
-        <div className="admin-section">
-          <h3>Post as {charName || "Character"}</h3>
-          <p className="setup-hint">Write a post that will be published from your character's identity.</p>
-          <div className="compose-box">
-            <textarea
-              placeholder={`What's on ${charName || "your character"}'s mind?`}
-              value={postContent}
-              onChange={(e) => setPostContent(e.target.value)}
-              rows={4}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handlePostAsCharacter();
-              }}
-            />
-            <div className="compose-footer">
-              <span className="hint">Ctrl+Enter to post</span>
-              <button className="btn-primary" onClick={handlePostAsCharacter} disabled={posting || !postContent.trim()}>
-                {posting ? "Posting…" : `Post as ${charName || "Character"}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Pi Chat (stubbed) */}
-      {tab === "chat" && (
-        <div className="admin-section">
-          <h3>🤖 Chat with {charName || "Character"}</h3>
-          <p className="setup-hint">
-            Talk to your character via pi. Control their behavior, test their personality, or have them draft posts.
-          </p>
-
-          <div className="pi-chat">
-            <div className="pi-chat-messages">
-              {chatMessages.filter((m) => m.role !== "system").map((msg, i) => (
-                <div key={i} className={`chat-bubble ${msg.role === "user" ? "sent" : "received"}`}>
-                  <div className="chat-text">{msg.content}</div>
-                </div>
-              ))}
-            </div>
-            <div className="conversation-compose">
-              <input
-                type="text"
-                placeholder={`Talk to ${charName || "your character"}…`}
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleChatSend();
-                  }
-                }}
-              />
-              <button className="btn-send" onClick={handleChatSend} disabled={!chatInput.trim()}>➤</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ══════════════════════════════════════
-//  ADMIN LOGIN
-// ══════════════════════════════════════
-
-function AdminLogin({ onLogin }) {
-  const [method, setMethod] = useState("nsec");
-  const [nsecInput, setNsecInput] = useState("");
-  const [secretInput, setSecretInput] = useState("");
-  const [error, setError] = useState("");
-
-  function handleLogin() {
-    setError("");
-    try {
-      let acc;
-      if (method === "nsec") {
-        acc = accountFromNsec(nsecInput.trim());
-      }
-      onLogin(acc, secretInput.trim());
-    } catch (e) {
-      setError("Invalid: " + e.message);
-    }
-  }
-
-  async function handleExtensionLogin() {
-    setError("");
-    try {
-      const acc = await loginWithExtension();
-      onLogin(acc, secretInput.trim());
-    } catch (e) {
-      setError(e.message);
-    }
-  }
-
-  return (
-    <div className="auth-screen">
-      <div className="auth-card">
-        <h1>🎭 Admin Login</h1>
-        <p className="subtitle">Sign in with your admin identity</p>
-
-        <div className="auth-tabs">
-          <button className={method === "nsec" ? "active" : ""} onClick={() => setMethod("nsec")}>nsec</button>
-          <button className={method === "extension" ? "active" : ""} onClick={() => setMethod("extension")}>NIP-07</button>
-        </div>
-
-        <div className="edit-form">
-          {method === "nsec" && (
-            <label><span>Admin nsec or hex key</span>
-              <input type="password" placeholder="nsec1… or hex" value={nsecInput} onChange={(e) => setNsecInput(e.target.value)} /></label>
-          )}
-          <label><span>Relay Admin Secret</span>
-            <input type="password" placeholder="The secret from setup" value={secretInput} onChange={(e) => setSecretInput(e.target.value)} /></label>
-        </div>
-
-        {error && <p className="error">{error}</p>}
-
-        <button
-          className="btn-primary"
-          style={{ marginTop: "16px", width: "100%" }}
-          onClick={method === "extension" ? handleExtensionLogin : handleLogin}
-          disabled={method === "nsec" && !nsecInput.trim()}
-        >
-          🔑 Sign In
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════
-//  MESSAGES (for visitors messaging character)
-// ══════════════════════════════════════
-
-function VisitorMessageView({ characterPubkey, characterName: initialName, senderAccount }) {
-  const [account, setAccount] = useState(null);
-  const [recipientName, setRecipientName] = useState(initialName || "");
+function MessageView({ recipientPubkey, account }) {
+  const [recipientName, setRecipientName] = useState("");
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -1179,48 +927,19 @@ function VisitorMessageView({ characterPubkey, characterName: initialName, sende
   const subRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // Fetch recipient profile if name not provided
   useEffect(() => {
-    if (initialName || !characterPubkey) return;
-    fetchProfile(DEFAULT_RELAYS, characterPubkey).then((profile) => {
-      if (profile) {
-        setRecipientName(profile.display_name || profile.name || shortPubkey(characterPubkey));
-      } else {
-        setRecipientName(shortPubkey(characterPubkey));
-      }
+    if (!recipientPubkey) return;
+    fetchProfile(ALL_RELAYS, recipientPubkey).then((profile) => {
+      setRecipientName(profile ? (profile.display_name || profile.name || shortPubkey(recipientPubkey)) : shortPubkey(recipientPubkey));
     });
-  }, [characterPubkey, initialName]);
+  }, [recipientPubkey]);
 
-  // Auto-scroll
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
 
-  // Use sender account (logged-in character) if provided, otherwise create visitor account
-  useEffect(() => {
-    async function initAccount() {
-      if (senderAccount) {
-        setAccount(senderAccount);
-        return;
-      }
-      let acc = loadLocal("npc_visitor_account");
-      if (acc && acc.skHex) {
-        const { hexToBytes } = await import("@noble/hashes/utils.js");
-        acc = { ...acc, sk: hexToBytes(acc.skHex) };
-      } else {
-        acc = createAccount();
-        saveLocal("npc_visitor_account", { skHex: acc.skHex, nsec: acc.nsec, pk: acc.pk, npub: acc.npub });
-      }
-      setAccount(acc);
-    }
-    initAccount();
-  }, [senderAccount]);
-
-  // Subscribe to DMs between visitor and character
   useEffect(() => {
     if (!account) return;
     setLoading(true);
-
+    setMessages([]);
     const processEvent = async (event) => {
       const { plaintext } = await decryptDM(event, account);
       setMessages((prev) => {
@@ -1228,7 +947,6 @@ function VisitorMessageView({ characterPubkey, characterName: initialName, sende
         return [...prev, { ...event, _decrypted: plaintext }].sort((a, b) => a.created_at - b.created_at);
       });
     };
-
     subRef.current = subscribeDMs(DEFAULT_RELAYS, account.pk, processEvent, () => setLoading(false));
     return () => { if (subRef.current) subRef.current.close(); };
   }, [account]);
@@ -1236,27 +954,29 @@ function VisitorMessageView({ characterPubkey, characterName: initialName, sende
   async function handleSend() {
     if (!input.trim() || !account) return;
     setSending(true);
-    try {
-      await sendDM(input, characterPubkey, account);
-      setInput("");
-    } catch (e) {
-      alert("Failed to send: " + e.message);
-    }
+    try { await sendDM(input, recipientPubkey, account); setInput(""); }
+    catch (e) { alert("Failed to send: " + e.message); }
     setSending(false);
   }
 
-  // Filter to only show messages with the character
   const filtered = messages.filter((m) => {
-    const otherPk = m.pubkey === account?.pk
-      ? m.tags.find((t) => t[0] === "p")?.[1]
-      : m.pubkey;
-    return otherPk === characterPubkey;
+    const otherPk = m.pubkey === account?.pk ? m.tags.find((t) => t[0] === "p")?.[1] : m.pubkey;
+    return otherPk === recipientPubkey;
   });
+
+  if (!account) {
+    return (
+      <div className="loading">
+        <p>Create a character first to send messages.</p>
+        <button className="btn-primary" onClick={() => setHash("characters/new")} style={{ marginTop: 12 }}>Create Character</button>
+      </div>
+    );
+  }
 
   return (
     <div className="conversation-view">
       <div className="conversation-header">
-        <button className="btn-back" onClick={() => { setHash(""); }}>←</button>
+        <button className="btn-back" onClick={() => setHash("")}>&#8592;</button>
         <div className="conversation-contact">
           <div className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: "0.8rem" }}>
             {(recipientName || "?").charAt(0).toUpperCase()}
@@ -1264,9 +984,8 @@ function VisitorMessageView({ characterPubkey, characterName: initialName, sende
           <span className="conversation-name">{recipientName}</span>
         </div>
       </div>
-
       <div className="conversation-messages">
-        {loading && filtered.length === 0 && <div className="loading">Connecting…</div>}
+        {loading && filtered.length === 0 && <div className="loading">Connecting...</div>}
         {!loading && filtered.length === 0 && <div className="loading">Say hello to {recipientName}!</div>}
         {filtered.map((msg) => (
           <div key={msg.id} className={`chat-bubble ${msg.pubkey === account?.pk ? "sent" : "received"}`}>
@@ -1276,17 +995,12 @@ function VisitorMessageView({ characterPubkey, characterName: initialName, sende
         ))}
         <div ref={messagesEndRef} />
       </div>
-
       <div className="conversation-compose">
-        <input
-          type="text"
-          placeholder={`Message ${recipientName}…`}
-          value={input}
+        <input type="text" placeholder={`Message ${recipientName}...`} value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }}
-        />
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }} />
         <button className="btn-send" onClick={handleSend} disabled={sending || !input.trim()}>
-          {sending ? "…" : "➤"}
+          {sending ? "..." : "\u27A4"}
         </button>
       </div>
     </div>
@@ -1294,156 +1008,156 @@ function VisitorMessageView({ characterPubkey, characterName: initialName, sende
 }
 
 // ══════════════════════════════════════
-//  ORIGIN GENERATOR (NVIDIA NIM)
+//  RELAY STATUS
 // ══════════════════════════════════════
 
-function OriginGenerator({ onApply }) {
-  const [persona, setPersona] = useState(null);
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState("");
-  const [history, setHistory] = useState([]);
+function RelayStatus({ url }) {
+  const [status, setStatus] = useState("checking");
 
-  async function handleGenerate() {
-    setError("");
-    setGenerating(true);
-    setPersona(null);
+  useEffect(() => {
+    setStatus("checking");
+    let ws;
     try {
-      const result = await generateRandomPersona((partial) => {
-        setPersona({ ...partial, streaming: true });
-      });
-      setPersona(result);
-      setHistory((prev) => [result, ...prev]);
-    } catch (e) {
-      setError(getRandomErrorMessage());
+      ws = new WebSocket(url);
+      const timeout = setTimeout(() => { ws.close(); setStatus("timeout"); }, 5000);
+      ws.onopen = () => { clearTimeout(timeout); ws.close(); setStatus("connected"); };
+      ws.onerror = () => { clearTimeout(timeout); setStatus("error"); };
+    } catch {
+      setStatus("error");
     }
-    setGenerating(false);
-  }
+    return () => { try { ws?.close(); } catch {} };
+  }, [url]);
 
-  if (!isNimAvailable()) {
-    return (
-      <div className="origin-page">
-        <div className="origin-header">
-          <h2>🎲 Random Origin Generator</h2>
-          <p className="setup-hint">
-            NVIDIA NIM API key not configured. Add <code>VITE_NVIDIA_NIM_API_KEY</code> to your <code>.env</code> file.
-            Get one free at <a href="https://build.nvidia.com/" target="_blank" rel="noopener">build.nvidia.com</a>
-          </p>
-        </div>
-      </div>
-    );
+  const colors = {
+    checking: "var(--text-faint)",
+    connected: "var(--accent)",
+    timeout: "var(--danger)",
+    error: "var(--danger)",
+  };
+  const labels = {
+    checking: "Checking...",
+    connected: "Connected",
+    timeout: "Timeout",
+    error: "Unreachable",
+  };
+
+  return (
+    <span style={{ color: colors[status], fontSize: "0.78rem", fontWeight: 600 }}>
+      {status === "connected" && <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", marginRight: 6, verticalAlign: "middle" }} />}
+      {status === "error" || status === "timeout" ? <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--danger)", marginRight: 6, verticalAlign: "middle" }} /> : null}
+      {labels[status]}
+    </span>
+  );
+}
+
+// ══════════════════════════════════════
+//  SETTINGS
+// ══════════════════════════════════════
+
+function SettingsPage({ characters, onReset }) {
+  function handleExportKeys() {
+    const lines = characters.map((c, i) => {
+      const idx = i + 1;
+      return [
+        `# ${c.name}`,
+        `CHARACTER_${idx}_NAME=${c.name}`,
+        `CHARACTER_${idx}_NSEC=${c.nsec}`,
+        `CHARACTER_${idx}_SKHEX=${c.skHex}`,
+        `CHARACTER_${idx}_NPUB=${c.npub}`,
+        `CHARACTER_${idx}_PK=${c.pk}`,
+        "",
+      ].join("\n");
+    });
+
+    const content = [
+      "# NPC No More — Character Keys Export",
+      `# Exported: ${new Date().toISOString()}`,
+      `# Characters: ${characters.length}`,
+      "#",
+      "# WARNING: These are private keys. Anyone with access can post as your characters.",
+      "# Store securely and never commit to a public repository.",
+      "",
+      ...lines,
+    ].join("\n");
+
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "npc-no-more-keys.env";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
-    <div className="origin-page">
-      <div className="origin-header">
-        <h2>🎲 Random Origin Generator</h2>
-        <p className="setup-hint">
-          Powered by NVIDIA NIM — each persona is generated by a randomly selected AI model.
-          Roll the dice and discover who your character was meant to be.
-        </p>
-      </div>
+    <div>
+      <h2 className="page-title">Settings</h2>
 
-      <button
-        className="btn-primary"
-        onClick={handleGenerate}
-        disabled={generating}
-        style={{ marginBottom: 24 }}
-      >
-        {generating ? "🎲 Generating..." : "🎲 Generate Random Persona"}
-      </button>
-
-      {error && <div className="dice-error" style={{ marginBottom: 16 }}>{error}</div>}
-
-      {persona && (
-        <div className="origin-result">
-          <div className="origin-model-tag">
-            {persona.streaming && <span className="streaming-dot" />}
-            {persona.streaming ? "Streaming from" : "Generated by"}{" "}
-            <strong>{persona.model.name}</strong>
-            {persona.model.params && <span> ({persona.model.params}B params)</span>}
-            <br />
-            <code style={{ fontSize: "0.7rem", color: "#888" }}>{persona.model.id}</code>
-            {persona.streaming && persona.phase && (
-              <span className="origin-phase">
-                {persona.phase === "connecting" && " — Connecting..."}
-                {persona.phase === "thinking" && " — Model is thinking..."}
-                {persona.phase === "generating" && " — Writing character..."}
-              </span>
-            )}
+      <div className="edit-section">
+        <h3>Relay</h3>
+        {OWN_RELAY ? (
+          <div>
+            <div className="admin-key-row">
+              <span>Our Relay</span>
+              <code>{OWN_RELAY}</code>
+            </div>
+            <div className="admin-key-row">
+              <span>Status</span>
+              <RelayStatus url={OWN_RELAY} />
+            </div>
+            <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 12 }}>
+              This is the private relay for NPC No More characters. All posts are published here first.
+              The &quot;Our Relay&quot; feed in the Posts tab shows only events from this relay.
+            </p>
           </div>
-
-          <div className={`origin-card ${persona.streaming ? "streaming" : ""}`}>
-            <h3 className="origin-name">
-              {persona.name || (
-                <span className="origin-placeholder">
-                  {persona.phase === "connecting" ? "Connecting to model..." :
-                   persona.phase === "thinking" ? "Model is thinking..." :
-                   "Dreaming up a name..."}
-                </span>
-              )}
-              {persona.streaming && <span className="streaming-cursor" />}
-            </h3>
-
-            {(persona.personality || persona.streaming) && (
-              <div className="origin-field">
-                <span className="origin-label">🧠 Personality</span>
-                <p>{persona.personality || <span className="origin-placeholder">...</span>}</p>
-              </div>
-            )}
-
-            {(persona.world || persona.streaming) && (
-              <div className="origin-field">
-                <span className="origin-label">🌍 World</span>
-                <p>{persona.world || <span className="origin-placeholder">...</span>}</p>
-              </div>
-            )}
-
-            {(persona.voice || persona.streaming) && (
-              <div className="origin-field">
-                <span className="origin-label">🗣️ Voice</span>
-                <p>{persona.voice || <span className="origin-placeholder">...</span>}</p>
-              </div>
-            )}
-
-            {(persona.originStory || persona.streaming) && (
-              <div className="origin-field">
-                <span className="origin-label">📖 Origin Story</span>
-                <p>{persona.originStory || <span className="origin-placeholder">...</span>}</p>
-              </div>
-            )}
-
-            {!persona.streaming && (
-              <div className="origin-actions">
-                <button className="btn-primary" onClick={handleGenerate} disabled={generating}>
-                  🎲 Reroll
-                </button>
-                {onApply && (
-                  <button
-                    className="btn-primary"
-                    style={{ background: "#BAFF00", color: "#000", border: "none" }}
-                    onClick={() => onApply(persona)}
-                  >
-                    ✅ Use This Character
-                  </button>
-                )}
-              </div>
-            )}
+        ) : (
+          <p style={{ color: "var(--text-dim)", fontSize: "0.82rem" }}>
+            No private relay configured. Using public relays only.
+          </p>
+        )}
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
+            Public Relays
           </div>
-        </div>
-      )}
-
-      {history.length > 1 && (
-        <div className="origin-history">
-          <h3>Previous Rolls</h3>
-          {history.slice(1).map((p, i) => (
-            <div key={i} className="origin-history-item" onClick={() => setPersona(p)}>
-              <strong>{p.name}</strong>
-              <span className="origin-history-model">{p.model.name}</span>
-              <p className="origin-history-preview">{p.personality.slice(0, 100)}...</p>
+          {PUBLIC_RELAYS.map((r) => (
+            <div key={r} className="admin-key-row">
+              <code style={{ fontSize: "0.72rem" }}>{r}</code>
             </div>
           ))}
         </div>
-      )}
+      </div>
+
+      <div className="edit-section" style={{ marginTop: 20 }}>
+        <h3>Export Keys</h3>
+        <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 16 }}>
+          Download all character private keys as a .env file. Store this securely — anyone with these keys can post as your characters.
+        </p>
+        <button className="btn-primary" onClick={handleExportKeys} disabled={characters.length === 0}>
+          Export {characters.length} {characters.length === 1 ? "key" : "keys"} as .env
+        </button>
+      </div>
+
+      <div className="edit-section" style={{ marginTop: 20 }}>
+        <h3>Characters</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {characters.map((c) => (
+            <div key={c.id} className="admin-key-row">
+              <span style={{ fontFamily: "var(--font-display)", fontSize: "0.95rem", color: "var(--cream)" }}>{c.name}</span>
+              <code>{c.npub.slice(0, 20)}...{c.npub.slice(-8)}</code>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="edit-section" style={{ marginTop: 20, borderLeftColor: "var(--danger-dim)" }}>
+        <h3>Danger Zone</h3>
+        <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 16 }}>
+          Delete all characters and data. This cannot be undone. Export your keys first.
+        </p>
+        <button className="btn-small btn-reset" onClick={onReset}>
+          Delete all data
+        </button>
+      </div>
     </div>
   );
 }
@@ -1453,279 +1167,170 @@ function OriginGenerator({ onApply }) {
 // ══════════════════════════════════════
 
 export default function App() {
-  const [config, setConfig] = useState(null);
-  const [characterAccount, setCharacterAccount] = useState(null);
-  const [adminAccount, setAdminAccount] = useState(null);
-  const [adminSecret, setAdminSecret] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [characters, setCharacters] = useState([]);
+  const [activeCharId, setActiveCharId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [route, setRoute] = useState("home");
   const [routeKey, setRouteKey] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Load config on mount
+  const activeChar = characters.find((c) => c.id === activeCharId) || null;
+  const activeAccount = activeChar ? accountFromSkHex(activeChar.skHex) : null;
+
   useEffect(() => {
-    async function init() {
-      // Try loading from localStorage first (admin mode)
-      let cfg = loadLocal("npc_config");
-      const secret = loadLocal("npc_admin_secret");
-      let admin = false;
-
-      if (cfg && cfg.setup_complete) {
-        // We have local config — this is the admin
-        admin = true;
-
-        // Load character account
-        const charData = loadLocal("npc_character_account");
-        if (charData && charData.skHex) {
-          try {
-            const { hexToBytes } = await import("@noble/hashes/utils.js");
-            setCharacterAccount({ ...charData, sk: hexToBytes(charData.skHex) });
-          } catch {}
-        }
-
-        // Load admin account
-        const admData = loadLocal("npc_admin_account");
-        if (admData && admData.skHex) {
-          try {
-            const { hexToBytes } = await import("@noble/hashes/utils.js");
-            setAdminAccount({ ...admData, sk: hexToBytes(admData.skHex) });
-          } catch {}
-        }
-
-        if (secret) setAdminSecret(secret);
-      } else if (RELAY_HTTP_URL) {
-        // No local config — check if character exists on relay (visitor mode)
-        const character = await relayGetPublicCharacter();
-        if (character) {
-          cfg = { character, setup_complete: true };
-          admin = false;
-        }
-      }
-
-      setIsAdmin(admin);
-      if (cfg && cfg.setup_complete) setConfig(cfg);
-      setLoading(false);
+    const existing = loadCharacters();
+    if (existing.length === 0) migrateOldData();
+    const chars = loadCharacters();
+    setCharacters(chars);
+    const savedId = loadActiveCharId();
+    if (savedId && chars.find((c) => c.id === savedId)) {
+      setActiveCharId(savedId);
+    } else if (chars.length > 0) {
+      setActiveCharId(chars[0].id);
+      saveActiveCharId(chars[0].id);
     }
-    init();
+    setLoading(false);
   }, []);
 
-  // Hash routing
   useEffect(() => {
     function applyHash() {
       const { route: r, key } = parseHash();
       setRoute(r);
       setRouteKey(key ? resolvePubkey(key) || key : null);
+      setSidebarOpen(false);
     }
     applyHash();
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
   }, []);
 
-  function handleSetupComplete(cfg, charAcc, admAcc) {
-    setConfig(cfg);
-    setCharacterAccount(charAcc);
-    setAdminAccount(admAcc);
-    setAdminSecret(loadLocal("npc_admin_secret"));
-    setIsAdmin(true);
+  function switchCharacter(id) {
+    setActiveCharId(id);
+    saveActiveCharId(id);
+  }
+
+  function handleCreateCharacter(char) {
+    const updated = [...characters, char];
+    setCharacters(updated);
+    saveCharacters(updated);
+    switchCharacter(char.id);
+    setHash("profile/" + char.npub);
+  }
+
+  function handleDeleteCharacter(id) {
+    const updated = characters.filter((c) => c.id !== id);
+    setCharacters(updated);
+    saveCharacters(updated);
+    if (activeCharId === id) {
+      const newActive = updated.length > 0 ? updated[0].id : null;
+      setActiveCharId(newActive);
+      saveActiveCharId(newActive);
+    }
     setHash("");
+  }
+
+  function handleUpdateCharacter(updatedChar) {
+    const updated = characters.map((c) => c.id === updatedChar.id ? updatedChar : c);
+    setCharacters(updated);
+    saveCharacters(updated);
   }
 
   function handleReset() {
-    if (!window.confirm("Reset everything? This will clear your character and admin keys.")) return;
-    clearLocal("npc_config");
-    clearLocal("npc_character_account");
-    clearLocal("npc_admin_account");
-    clearLocal("npc_admin_secret");
-    clearLocal("npc_visitor_account");
-    setConfig(null);
-    setCharacterAccount(null);
-    setAdminAccount(null);
-    setAdminSecret(null);
-    setIsAdmin(false);
+    if (!window.confirm("Delete ALL characters and data? This cannot be undone.")) return;
+    setCharacters([]);
+    setActiveCharId(null);
+    saveCharacters([]);
+    saveActiveCharId(null);
     setHash("");
-  }
-
-  function handleAdminLogin(acc, secret) {
-    setAdminAccount(acc);
-    setAdminSecret(secret);
-    if (acc.skHex) {
-      saveLocal("npc_admin_account", { skHex: acc.skHex, nsec: acc.nsec, pk: acc.pk, npub: acc.npub });
-    }
-    saveLocal("npc_admin_secret", secret);
-
-    // Try loading config from relay
-    if (RELAY_HTTP_URL && secret) {
-      relayGetConfig(secret).then((cfg) => {
-        if (cfg && cfg.setup_complete) {
-          setConfig(cfg);
-          saveLocal("npc_config", cfg);
-        }
-      }).catch(() => {});
-    }
   }
 
   if (loading) return null;
 
-  // No config → setup wizard
-  if (!config) {
-    return <SetupWizard onComplete={handleSetupComplete} />;
+  if (characters.length === 0 && route !== "new-character") {
+    return <CreateCharacter onComplete={handleCreateCharacter} />;
   }
 
-  const charName = config.character?.name || "Character";
-
-  // Admin route (admin only)
-  if (route === "admin") {
-    if (!isAdmin) {
-      setHash("");
-      return null;
-    }
-    if (!adminAccount || !adminSecret) {
-      return <AdminLogin onLogin={handleAdminLogin} />;
-    }
-    return (
-      <div className="app">
-        <header className="app-header">
-          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
-          <button className="btn-small" onClick={() => setHash("")}>← Public Page</button>
-          <button className="btn-small btn-reset" onClick={handleReset}>↺ Reset</button>
-        </header>
-        <main>
-          <AdminPanel
-            config={config}
-            characterAccount={characterAccount}
-            adminAccount={adminAccount}
-            adminSecret={adminSecret}
-            onConfigUpdate={(cfg) => { setConfig(cfg); }}
-          />
-        </main>
-      </div>
-    );
+  if (route === "new-character") {
+    return <CreateCharacter onComplete={handleCreateCharacter} />;
   }
 
-  // Profile route
+  // Figure out current profile pubkey for sidebar highlighting
+  let currentProfilePk = null;
   if (route === "profile" && routeKey) {
-    return (
-      <div className="app">
-        <header className="app-header">
-          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
-        </header>
-        <main>
-          <ProfileView pubkey={routeKey} />
-        </main>
-      </div>
-    );
+    currentProfilePk = routeKey;
   }
 
-  // Thread view route
-  if (route === "thread" && routeKey) {
-    return (
-      <div className="app">
-        <header className="app-header">
-          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
-        </header>
-        <main>
-          <ThreadView
-            eventId={routeKey}
-            characterAccount={characterAccount}
-            config={config}
-          />
-        </main>
-      </div>
-    );
-  }
-
-  // Origin generator route (admin only)
-  if (route === "origin") {
-    if (!isAdmin) { setHash(""); return null; }
-    function handleApplyPersona(persona) {
-      if (!config) {
-        // Pre-setup: just navigate to home with persona data in localStorage
-        saveLocal("npc_pending_persona", persona);
-        setHash("");
-        return;
-      }
-      const updatedConfig = {
-        ...config,
-        character: {
-          ...config.character,
-          name: persona.name,
-          personality: persona.personality,
-          world: persona.world,
-          voice: persona.voice,
-          origin_story: [persona.originStory],
-        },
-      };
-      setConfig(updatedConfig);
-      saveLocal("npc_config", updatedConfig);
-      setHash("");
+  function renderMain() {
+    if (route === "settings") {
+      return <SettingsPage characters={characters} onReset={handleReset} />;
     }
-
-    return (
-      <div className="app">
-        <header className="app-header">
-          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
-          <button className="btn-small" onClick={() => setHash("")}>← Back</button>
-        </header>
-        <main>
-          <OriginGenerator onApply={handleApplyPersona} />
-        </main>
-      </div>
-    );
-  }
-
-  // Messages route
-  if (route === "messages") {
-    const dmPubkey = routeKey && routeKey !== config.character?.pubkey
-      ? routeKey
-      : config.character?.pubkey;
-
-    return (
-      <div className="app">
-        <header className="app-header">
-          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
-        </header>
-        <main>
-          <VisitorMessageView
-            characterPubkey={dmPubkey}
-            characterName={null}
-            senderAccount={characterAccount}
+    if (route === "profile" && routeKey) {
+      const ownedChar = characters.find((c) => c.pk === routeKey) || null;
+      if (ownedChar) {
+        return (
+          <OwnedCharacterPage
+            key={ownedChar.id}
+            character={ownedChar}
+            account={accountFromSkHex(ownedChar.skHex)}
+            characters={characters}
+            onUpdateChar={handleUpdateCharacter}
+            onDeleteChar={handleDeleteCharacter}
           />
-        </main>
-      </div>
-    );
+        );
+      }
+      return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} />;
+    }
+    if (route === "thread" && routeKey) {
+      return <ThreadView eventId={routeKey} account={activeAccount} characters={characters} />;
+    }
+    if (route === "messages" && routeKey) {
+      return <MessageView recipientPubkey={routeKey} account={activeAccount} />;
+    }
+    // Home route: show active character's page
+    if (activeChar) {
+      return (
+        <OwnedCharacterPage
+          key={activeChar.id}
+          character={activeChar}
+          account={activeAccount}
+          characters={characters}
+          onUpdateChar={handleUpdateCharacter}
+          onDeleteChar={handleDeleteCharacter}
+        />
+      );
+    }
+    return <div className="loading">Create a character to get started.</div>;
   }
 
-  // Default: Character public page
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
-        <div className="header-actions">
-          {isAdmin && (
-            <>
-              <button className="btn-small" onClick={() => setHash("origin")}>🎲 Origin</button>
-              <button className="btn-small" onClick={() => setHash("admin")}>🎭 Admin</button>
-              <div className="header-user-info">
-                <span className="header-user-badge">👤 {charName}</span>
-                <button className="btn-small btn-copy" onClick={() => {
-                  navigator.clipboard.writeText(config.character?.npub || "");
-                  const el = document.querySelector('.btn-copy');
-                  el.textContent = "✅ Copied!";
-                  setTimeout(() => { el.textContent = "📋 Copy npub"; }, 1500);
-                }}>📋 Copy npub</button>
-                <button className="btn-small btn-reset" onClick={handleReset}>↺ Reset</button>
-              </div>
-            </>
-          )}
-        </div>
-      </header>
-      <main>
-        <CharacterPage
-          config={config}
-          characterAccount={isAdmin ? characterAccount : null}
-          onMessage={(pk) => setHash("messages/" + npubEncode(pk))}
+    <div className="app-layout">
+      <Sidebar
+        characters={characters}
+        activeCharId={activeCharId}
+        onSwitch={switchCharacter}
+        currentPubkey={currentProfilePk}
+      />
+
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+      <div className={`sidebar-mobile ${sidebarOpen ? "open" : ""}`}>
+        <Sidebar
+          characters={characters}
+          activeCharId={activeCharId}
+          onSwitch={switchCharacter}
+          currentPubkey={currentProfilePk}
         />
-      </main>
+      </div>
+
+      <div className="main-content">
+        <MobileHeader
+          activeChar={activeChar}
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+        />
+        <main className="main-inner">
+          {renderMain()}
+        </main>
+      </div>
     </div>
   );
 }
