@@ -26,6 +26,7 @@ Only start if not already running. Write a starter script to /tmp, run it with n
 
 ```bash
 if lsof -i :5173 -t > /dev/null 2>&1; then echo "Already running at http://localhost:5173/npc-no-more/"; exit 0; fi
+rm -rf /tmp/vite-cache-npc
 cat > /tmp/start-vite.sh << 'EOF'
 #!/bin/bash
 cd /home/paul/projects/npc-no-more

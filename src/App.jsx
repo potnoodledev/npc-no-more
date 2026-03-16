@@ -5,6 +5,7 @@ import {
   accountFromNsec,
   loginWithExtension,
   publishNote,
+  publishEvent,
   publishProfile,
   subscribeFeed,
   subscribeUserFeed,
@@ -17,6 +18,7 @@ import {
   relaySaveConfig,
   relayAddPubkey,
   relayGetSetupStatus,
+  relayGetPublicCharacter,
   shortPubkey,
   formatTime,
   saveLocal,
@@ -40,6 +42,7 @@ function parseHash() {
   if (parts[0] === "admin" && parts[1] === "setup") return { route: "setup" };
   if (parts[0] === "admin") return { route: "admin" };
   if (parts[0] === "profile" && parts[1]) return { route: "profile", key: parts[1] };
+  if (parts[0] === "thread" && parts[1]) return { route: "thread", key: parts[1] };
   if (parts[0] === "messages" && parts[1]) return { route: "messages", key: parts[1] };
   if (parts[0] === "messages") return { route: "inbox" };
   if (parts[0] === "origin") return { route: "origin" };
@@ -57,7 +60,7 @@ function resolvePubkey(key) {
 }
 
 function setHash(path) {
-  window.history.pushState(null, "", "#/" + path);
+  window.location.hash = "#/" + path;
 }
 
 // ══════════════════════════════════════
@@ -105,7 +108,7 @@ function SetupWizard({ onComplete }) {
   // Step 3: Admin
   const [adminMethod, setAdminMethod] = useState("create");
   const [adminNsecInput, setAdminNsecInput] = useState("");
-  const [adminSecret, setAdminSecret] = useState("");
+  const [adminSecret, setAdminSecret] = useState(import.meta.env.VITE_ADMIN_SECRET || "");
 
   // Generated accounts (created in step 4)
   const [characterAccount, setCharacterAccount] = useState(null);
@@ -162,16 +165,16 @@ function SetupWizard({ onComplete }) {
         setup_complete: true,
       };
 
-      // Save to relay
+      // Save to relay (best-effort — setup succeeds even if relay is unavailable)
       if (RELAY_HTTP_URL) {
-        // First, try saving config — the admin secret might already be set on Railway
-        // We need the user-provided admin secret to auth
-        await relaySaveConfig(secret, config);
-        // Whitelist the character pubkey for writing
-        await relayAddPubkey(secret, charAcc.pk, "character");
-        // Whitelist the admin pubkey too
-        if (admAcc.pk) {
-          await relayAddPubkey(secret, admAcc.pk, "admin");
+        try {
+          await relaySaveConfig(secret, config);
+          await relayAddPubkey(secret, charAcc.pk, "character");
+          if (admAcc.pk) {
+            await relayAddPubkey(secret, admAcc.pk, "admin");
+          }
+        } catch (relayErr) {
+          console.warn("Relay save failed (non-fatal):", relayErr.message);
         }
       }
 
@@ -370,11 +373,16 @@ function SetupWizard({ onComplete }) {
 //  CHARACTER PUBLIC PAGE
 // ══════════════════════════════════════
 
-function CharacterPage({ config, onMessage }) {
+function CharacterPage({ config, characterAccount, onMessage }) {
   const char = config.character;
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [profiles, setProfiles] = useState({});
+  const [postContent, setPostContent] = useState("");
+  const [posting, setPosting] = useState(false);
+  const [feedMode, setFeedMode] = useState("global"); // "mine" or "global"
   const subRef = useRef(null);
+  const profileCache = useRef({});
 
   const addNote = useCallback((event) => {
     setNotes((prev) => {
@@ -383,18 +391,104 @@ function CharacterPage({ config, onMessage }) {
     });
   }, []);
 
+  // Fetch profiles for authors we haven't seen
+  useEffect(() => {
+    const unknownPubkeys = notes
+      .map((n) => n.pubkey)
+      .filter((pk) => pk !== char.pubkey && !profileCache.current[pk]);
+
+    if (unknownPubkeys.length === 0) return;
+
+    const unique = [...new Set(unknownPubkeys)];
+    unique.forEach((pk) => { profileCache.current[pk] = true; }); // mark as fetching
+
+    fetchProfiles(DEFAULT_RELAYS, unique).then((fetched) => {
+      const newProfiles = {};
+      for (const [pk, profile] of Object.entries(fetched)) {
+        newProfiles[pk] = profile;
+        profileCache.current[pk] = profile;
+      }
+      if (Object.keys(newProfiles).length > 0) {
+        setProfiles((prev) => ({ ...prev, ...newProfiles }));
+      }
+    });
+  }, [notes, char.pubkey]);
+
   useEffect(() => {
     setLoading(true);
     setNotes([]);
     if (subRef.current) subRef.current.close();
-    subRef.current = subscribeUserFeed(
-      DEFAULT_RELAYS, char.pubkey,
-      (event) => addNote(event),
-      () => setLoading(false),
-      50
-    );
+    if (feedMode === "global") {
+      subRef.current = subscribeFeed(
+        DEFAULT_RELAYS,
+        (event) => addNote(event),
+        () => setLoading(false),
+        50
+      );
+    } else {
+      subRef.current = subscribeUserFeed(
+        DEFAULT_RELAYS, char.pubkey,
+        (event) => addNote(event),
+        () => setLoading(false),
+        50
+      );
+    }
     return () => { if (subRef.current) subRef.current.close(); };
-  }, [char.pubkey, addNote]);
+  }, [char.pubkey, addNote, feedMode]);
+
+  function getAuthorName(ev) {
+    if (ev.pubkey === char.pubkey) return char.name;
+    const profile = profiles[ev.pubkey];
+    return profile?.display_name || profile?.name || shortPubkey(ev.pubkey);
+  }
+
+  function getAuthorInitial(ev) {
+    const name = getAuthorName(ev);
+    return name.charAt(0).toUpperCase();
+  }
+
+  function isReply(ev) {
+    return ev.tags?.some((t) => t[0] === "e");
+  }
+
+  function getRootId(ev) {
+    const rootTag = ev.tags?.find((t) => t[0] === "e" && t[3] === "root");
+    return rootTag?.[1] || null;
+  }
+
+  async function handlePost() {
+    if (!postContent.trim() || !characterAccount) return;
+    setPosting(true);
+    try {
+      await publishNote(postContent, characterAccount);
+      setPostContent("");
+    } catch (e) {
+      alert("Failed to post: " + e.message);
+    }
+    setPosting(false);
+  }
+
+  // Group notes into threads: root posts with their replies
+  const rootNotes = notes.filter((n) => !isReply(n));
+  const replyNotes = notes.filter((n) => isReply(n));
+  const replyMap = {};
+  for (const reply of replyNotes) {
+    const rootId = getRootId(reply);
+    if (rootId) {
+      if (!replyMap[rootId]) replyMap[rootId] = [];
+      replyMap[rootId].push(reply);
+    }
+  }
+  // Sort replies within each thread chronologically
+  for (const replies of Object.values(replyMap)) {
+    replies.sort((a, b) => a.created_at - b.created_at);
+  }
+
+  // Standalone replies (root not in our feed)
+  const orphanReplies = replyNotes.filter((r) => {
+    const rootId = getRootId(r);
+    return rootId && !notes.find((n) => n.id === rootId);
+  });
 
   return (
     <div className="character-page">
@@ -422,7 +516,14 @@ function CharacterPage({ config, onMessage }) {
             <button className="btn-primary" onClick={() => onMessage(char.pubkey)}>
               ✉️ Message {char.name}
             </button>
-            <code className="char-npub">{char.npub}</code>
+            <code className="char-npub" onClick={() => {
+              navigator.clipboard.writeText(char.npub);
+              const el = document.querySelector('.char-npub-copied');
+              if (el) { el.style.opacity = 1; setTimeout(() => { el.style.opacity = 0; }, 1500); }
+            }}>
+              {char.npub} <span className="copy-icon">📋</span>
+            </code>
+            <span className="char-npub-copied">Copied!</span>
           </div>
         </div>
       </div>
@@ -431,31 +532,93 @@ function CharacterPage({ config, onMessage }) {
       {char.origin_story && char.origin_story.length > 0 && (
         <div className="char-origin">
           <h2>📖 Origin Story</h2>
-          {/* TODO: Render origin story posts */}
           <p className="setup-hint">Coming soon — generated with Gemini</p>
+        </div>
+      )}
+
+      {/* Compose */}
+      {characterAccount && (
+        <div className="feed-compose">
+          <div className="compose-box">
+            <textarea
+              placeholder={`What's on ${char.name}'s mind?`}
+              value={postContent}
+              onChange={(e) => setPostContent(e.target.value)}
+              rows={3}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  handlePost();
+                }
+              }}
+            />
+            <div className="compose-footer">
+              <span className="hint">Ctrl+Enter to post</span>
+              <button
+                className="btn-primary"
+                disabled={posting || !postContent.trim()}
+                onClick={handlePost}
+              >
+                {posting ? "Posting…" : `Post as ${char.name}`}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
       {/* Feed */}
       <div className="char-feed">
-        <h2>Latest Posts</h2>
+        <div className="feed-header">
+          <h2>Latest Posts</h2>
+          <div className="feed-toggle">
+            <button
+              className={`feed-toggle-btn ${feedMode === "global" ? "active" : ""}`}
+              onClick={() => setFeedMode("global")}
+            >🌐 All</button>
+            <button
+              className={`feed-toggle-btn ${feedMode === "mine" ? "active" : ""}`}
+              onClick={() => setFeedMode("mine")}
+            >👤 Mine</button>
+          </div>
+        </div>
         {loading && notes.length === 0 && <div className="loading">Loading…</div>}
         {!loading && notes.length === 0 && (
           <div className="loading">{char.name} hasn't posted yet. Check back soon!</div>
         )}
         <div className="notes-list">
-          {notes.map((ev) => (
-            <div key={ev.id} className="note-card">
+          {rootNotes.map((ev) => (
+            <div key={ev.id} className="note-thread">
+              {/* Root post */}
+              <div className="note-card">
+                <div className="note-header">
+                  <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
+                    <div className="avatar-placeholder">{getAuthorInitial(ev)}</div>
+                  </div>
+                  <div className="note-meta">
+                    <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>{getAuthorName(ev)}</span>
+                    <span className="note-time">{formatTime(ev.created_at)}</span>
+                  </div>
+                </div>
+                <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{ev.content}</div>
+                {replyMap[ev.id] && (
+                  <div className="note-thread-link clickable" onClick={() => setHash("thread/" + ev.id)}>
+                    💬 {replyMap[ev.id].length} {replyMap[ev.id].length === 1 ? "reply" : "replies"}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {/* Orphan replies */}
+          {orphanReplies.map((ev) => (
+            <div key={ev.id} className="note-card note-reply">
               <div className="note-header">
-                <div className="note-avatar">
-                  {char.profile_image ? (
-                    <img src={char.profile_image} alt="" />
-                  ) : (
-                    <div className="avatar-placeholder">{char.name.charAt(0).toUpperCase()}</div>
-                  )}
+                <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
+                  <div className="avatar-placeholder small">{getAuthorInitial(ev)}</div>
                 </div>
                 <div className="note-meta">
-                  <span className="note-author">{char.name}</span>
+                  <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>{getAuthorName(ev)}</span>
+                  <span className="note-reply-tag">↩ reply</span>
                   <span className="note-time">{formatTime(ev.created_at)}</span>
                 </div>
               </div>
@@ -464,6 +627,253 @@ function CharacterPage({ config, onMessage }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  PROFILE VIEW
+// ══════════════════════════════════════
+
+function ProfileView({ pubkey }) {
+  const [profile, setProfile] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const subRef = useRef(null);
+
+  useEffect(() => {
+    fetchProfile(DEFAULT_RELAYS, pubkey).then((p) => {
+      setProfile(p || {});
+    });
+  }, [pubkey]);
+
+  useEffect(() => {
+    setLoading(true);
+    setNotes([]);
+    if (subRef.current) subRef.current.close();
+    subRef.current = getPool().subscribeMany(
+      DEFAULT_RELAYS,
+      { kinds: [1], authors: [pubkey], "#client": ["npc-no-more"], limit: 20 },
+      {
+        onevent: (ev) => {
+          setNotes((prev) => {
+            if (prev.find((n) => n.id === ev.id)) return prev;
+            return [ev, ...prev].sort((a, b) => b.created_at - a.created_at);
+          });
+        },
+        oneose: () => setLoading(false),
+      }
+    );
+    return () => { if (subRef.current) subRef.current.close(); };
+  }, [pubkey]);
+
+  const name = profile?.display_name || profile?.name || shortPubkey(pubkey);
+  const about = profile?.about || "";
+  const npub = npubEncode(pubkey);
+
+  return (
+    <div className="profile-view">
+      <button className="btn-back" onClick={() => setHash("")}>← Back</button>
+
+      <div className="profile-card">
+        <div className="profile-avatar">
+          {profile?.picture ? (
+            <img src={profile.picture} alt="" />
+          ) : (
+            <div className="avatar-placeholder large">{name.charAt(0).toUpperCase()}</div>
+          )}
+        </div>
+        <h2 className="profile-name">{name}</h2>
+        {about && <p className="profile-about">{about}</p>}
+        <code className="profile-npub">{npub}</code>
+        <div className="profile-actions">
+          <button className="btn-primary" onClick={() => setHash("messages/" + npub)}>
+            ✉️ Message {name}
+          </button>
+        </div>
+      </div>
+
+      <div className="profile-feed">
+        <h3>Posts</h3>
+        {loading && notes.length === 0 && <div className="loading">Loading…</div>}
+        {!loading && notes.length === 0 && <div className="loading">No posts yet.</div>}
+        {notes.map((ev) => (
+          <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
+            <div className="note-content">{ev.content}</div>
+            <div className="note-time" style={{ padding: "4px 12px" }}>{formatTime(ev.created_at)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  THREAD VIEW
+// ══════════════════════════════════════
+
+function ThreadView({ eventId, characterAccount, config }) {
+  const [rootEvent, setRootEvent] = useState(null);
+  const [replies, setReplies] = useState([]);
+  const [profiles, setProfiles] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [replyContent, setReplyContent] = useState("");
+  const [posting, setPosting] = useState(false);
+  const subRef = useRef(null);
+  const profileCache = useRef({});
+
+  // Fetch root event and replies
+  useEffect(() => {
+    setLoading(true);
+    setRootEvent(null);
+    setReplies([]);
+    if (subRef.current) subRef.current.close();
+
+    let eoseCount = 0;
+    const checkEose = () => { eoseCount++; if (eoseCount >= 2) setLoading(false); };
+
+    // Get the root event
+    const sub1 = getPool().subscribeMany(DEFAULT_RELAYS, { ids: [eventId] }, {
+      onevent: (ev) => setRootEvent(ev),
+      oneose: checkEose,
+    });
+
+    // Get replies to this event
+    const sub2 = getPool().subscribeMany(DEFAULT_RELAYS, { kinds: [1], "#e": [eventId] }, {
+      onevent: (ev) => {
+        setReplies((prev) => {
+          if (prev.find((r) => r.id === ev.id)) return prev;
+          return [...prev, ev].sort((a, b) => a.created_at - b.created_at);
+        });
+      },
+      oneose: checkEose,
+    });
+
+    subRef.current = { close() { sub1.close(); sub2.close(); } };
+    return () => { if (subRef.current) subRef.current.close(); };
+  }, [eventId]);
+
+  // Fetch profiles
+  useEffect(() => {
+    const allEvents = rootEvent ? [rootEvent, ...replies] : replies;
+    const unknownPks = allEvents
+      .map((e) => e.pubkey)
+      .filter((pk) => !profileCache.current[pk]);
+    const unique = [...new Set(unknownPks)];
+    if (unique.length === 0) return;
+    unique.forEach((pk) => { profileCache.current[pk] = true; });
+    fetchProfiles(DEFAULT_RELAYS, unique).then((fetched) => {
+      setProfiles((prev) => ({ ...prev, ...fetched }));
+      Object.assign(profileCache.current, fetched);
+    });
+  }, [rootEvent, replies]);
+
+  function getName(ev) {
+    const p = profiles[ev.pubkey];
+    return p?.display_name || p?.name || shortPubkey(ev.pubkey);
+  }
+
+  function getInitial(ev) {
+    return getName(ev).charAt(0).toUpperCase();
+  }
+
+  async function handleReply() {
+    if (!replyContent.trim() || !characterAccount || !rootEvent) return;
+    setPosting(true);
+    try {
+      const lastReply = replies.length > 0 ? replies[replies.length - 1] : rootEvent;
+      const tags = [
+        ["e", rootEvent.id, DEFAULT_RELAYS[0] || "", "root"],
+        ["p", rootEvent.pubkey],
+      ];
+      if (lastReply.id !== rootEvent.id) {
+        tags.push(["e", lastReply.id, DEFAULT_RELAYS[0] || "", "reply"]);
+        if (lastReply.pubkey !== rootEvent.pubkey) tags.push(["p", lastReply.pubkey]);
+      }
+      await publishEvent({
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content: replyContent,
+      }, characterAccount);
+      setReplyContent("");
+    } catch (e) {
+      alert("Failed to reply: " + e.message);
+    }
+    setPosting(false);
+  }
+
+  return (
+    <div className="thread-view">
+      <button className="btn-back" onClick={() => setHash("")}>← Back to feed</button>
+
+      {loading && !rootEvent && <div className="loading">Loading thread…</div>}
+
+      {rootEvent && (
+        <div className="note-card thread-root">
+          <div className="note-header">
+            <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(rootEvent.pubkey))}>
+              <div className="avatar-placeholder">{getInitial(rootEvent)}</div>
+            </div>
+            <div className="note-meta">
+              <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(rootEvent.pubkey))}>{getName(rootEvent)}</span>
+              <span className="note-time">{formatTime(rootEvent.created_at)}</span>
+            </div>
+          </div>
+          <div className="note-content thread-root-content">{rootEvent.content}</div>
+        </div>
+      )}
+
+      {replies.length > 0 && (
+        <div className="thread-replies">
+          {replies.map((reply) => (
+            <div key={reply.id} className="note-card note-reply">
+              <div className="note-header">
+                <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(reply.pubkey))}>
+                  <div className="avatar-placeholder small">{getInitial(reply)}</div>
+                </div>
+                <div className="note-meta">
+                  <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(reply.pubkey))}>{getName(reply)}</span>
+                  <span className="note-reply-tag">↩ reply</span>
+                  <span className="note-time">{formatTime(reply.created_at)}</span>
+                </div>
+              </div>
+              <div className="note-content">{reply.content}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!loading && replies.length === 0 && rootEvent && (
+        <p className="thread-no-replies">No replies yet. Be the first!</p>
+      )}
+
+      {characterAccount && rootEvent && (
+        <div className="thread-reply-compose">
+          <textarea
+            placeholder="Write a reply…"
+            value={replyContent}
+            onChange={(e) => setReplyContent(e.target.value)}
+            rows={3}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                handleReply();
+              }
+            }}
+          />
+          <div className="compose-footer">
+            <span className="hint">Ctrl+Enter to reply</span>
+            <button
+              className="btn-primary"
+              disabled={posting || !replyContent.trim()}
+              onClick={handleReply}
+            >
+              {posting ? "Replying…" : "↩ Reply"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -759,8 +1169,9 @@ function AdminLogin({ onLogin }) {
 //  MESSAGES (for visitors messaging character)
 // ══════════════════════════════════════
 
-function VisitorMessageView({ characterPubkey, characterName }) {
+function VisitorMessageView({ characterPubkey, characterName: initialName, senderAccount }) {
   const [account, setAccount] = useState(null);
+  const [recipientName, setRecipientName] = useState(initialName || "");
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -768,14 +1179,30 @@ function VisitorMessageView({ characterPubkey, characterName }) {
   const subRef = useRef(null);
   const messagesEndRef = useRef(null);
 
+  // Fetch recipient profile if name not provided
+  useEffect(() => {
+    if (initialName || !characterPubkey) return;
+    fetchProfile(DEFAULT_RELAYS, characterPubkey).then((profile) => {
+      if (profile) {
+        setRecipientName(profile.display_name || profile.name || shortPubkey(characterPubkey));
+      } else {
+        setRecipientName(shortPubkey(characterPubkey));
+      }
+    });
+  }, [characterPubkey, initialName]);
+
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
-  // Create or load visitor account
+  // Use sender account (logged-in character) if provided, otherwise create visitor account
   useEffect(() => {
     async function initAccount() {
+      if (senderAccount) {
+        setAccount(senderAccount);
+        return;
+      }
       let acc = loadLocal("npc_visitor_account");
       if (acc && acc.skHex) {
         const { hexToBytes } = await import("@noble/hashes/utils.js");
@@ -787,7 +1214,7 @@ function VisitorMessageView({ characterPubkey, characterName }) {
       setAccount(acc);
     }
     initAccount();
-  }, []);
+  }, [senderAccount]);
 
   // Subscribe to DMs between visitor and character
   useEffect(() => {
@@ -832,15 +1259,15 @@ function VisitorMessageView({ characterPubkey, characterName }) {
         <button className="btn-back" onClick={() => { setHash(""); }}>←</button>
         <div className="conversation-contact">
           <div className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: "0.8rem" }}>
-            {(characterName || "?").charAt(0).toUpperCase()}
+            {(recipientName || "?").charAt(0).toUpperCase()}
           </div>
-          <span className="conversation-name">{characterName}</span>
+          <span className="conversation-name">{recipientName}</span>
         </div>
       </div>
 
       <div className="conversation-messages">
         {loading && filtered.length === 0 && <div className="loading">Connecting…</div>}
-        {!loading && filtered.length === 0 && <div className="loading">Say hello to {characterName}!</div>}
+        {!loading && filtered.length === 0 && <div className="loading">Say hello to {recipientName}!</div>}
         {filtered.map((msg) => (
           <div key={msg.id} className={`chat-bubble ${msg.pubkey === account?.pk ? "sent" : "received"}`}>
             <div className="chat-text">{msg._decrypted}</div>
@@ -853,7 +1280,7 @@ function VisitorMessageView({ characterPubkey, characterName }) {
       <div className="conversation-compose">
         <input
           type="text"
-          placeholder={`Message ${characterName}…`}
+          placeholder={`Message ${recipientName}…`}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }}
@@ -1030,6 +1457,7 @@ export default function App() {
   const [characterAccount, setCharacterAccount] = useState(null);
   const [adminAccount, setAdminAccount] = useState(null);
   const [adminSecret, setAdminSecret] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [route, setRoute] = useState("home");
   const [routeKey, setRouteKey] = useState(null);
@@ -1037,39 +1465,44 @@ export default function App() {
   // Load config on mount
   useEffect(() => {
     async function init() {
-      // Try loading from localStorage first
+      // Try loading from localStorage first (admin mode)
       let cfg = loadLocal("npc_config");
       const secret = loadLocal("npc_admin_secret");
+      let admin = false;
 
-      // Try loading from relay if we have a secret
-      if (!cfg && RELAY_HTTP_URL && secret) {
-        try {
-          cfg = await relayGetConfig(secret);
-          if (cfg && cfg.setup_complete) {
-            saveLocal("npc_config", cfg);
-          }
-        } catch {}
+      if (cfg && cfg.setup_complete) {
+        // We have local config — this is the admin
+        admin = true;
+
+        // Load character account
+        const charData = loadLocal("npc_character_account");
+        if (charData && charData.skHex) {
+          try {
+            const { hexToBytes } = await import("@noble/hashes/utils.js");
+            setCharacterAccount({ ...charData, sk: hexToBytes(charData.skHex) });
+          } catch {}
+        }
+
+        // Load admin account
+        const admData = loadLocal("npc_admin_account");
+        if (admData && admData.skHex) {
+          try {
+            const { hexToBytes } = await import("@noble/hashes/utils.js");
+            setAdminAccount({ ...admData, sk: hexToBytes(admData.skHex) });
+          } catch {}
+        }
+
+        if (secret) setAdminSecret(secret);
+      } else if (RELAY_HTTP_URL) {
+        // No local config — check if character exists on relay (visitor mode)
+        const character = await relayGetPublicCharacter();
+        if (character) {
+          cfg = { character, setup_complete: true };
+          admin = false;
+        }
       }
 
-      // Load character account
-      const charData = loadLocal("npc_character_account");
-      if (charData && charData.skHex) {
-        try {
-          const { hexToBytes } = await import("@noble/hashes/utils.js");
-          setCharacterAccount({ ...charData, sk: hexToBytes(charData.skHex) });
-        } catch {}
-      }
-
-      // Load admin account
-      const admData = loadLocal("npc_admin_account");
-      if (admData && admData.skHex) {
-        try {
-          const { hexToBytes } = await import("@noble/hashes/utils.js");
-          setAdminAccount({ ...admData, sk: hexToBytes(admData.skHex) });
-        } catch {}
-      }
-
-      if (secret) setAdminSecret(secret);
+      setIsAdmin(admin);
       if (cfg && cfg.setup_complete) setConfig(cfg);
       setLoading(false);
     }
@@ -1084,8 +1517,8 @@ export default function App() {
       setRouteKey(key ? resolvePubkey(key) || key : null);
     }
     applyHash();
-    window.addEventListener("popstate", applyHash);
-    return () => window.removeEventListener("popstate", applyHash);
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
   }, []);
 
   function handleSetupComplete(cfg, charAcc, admAcc) {
@@ -1093,6 +1526,22 @@ export default function App() {
     setCharacterAccount(charAcc);
     setAdminAccount(admAcc);
     setAdminSecret(loadLocal("npc_admin_secret"));
+    setIsAdmin(true);
+    setHash("");
+  }
+
+  function handleReset() {
+    if (!window.confirm("Reset everything? This will clear your character and admin keys.")) return;
+    clearLocal("npc_config");
+    clearLocal("npc_character_account");
+    clearLocal("npc_admin_account");
+    clearLocal("npc_admin_secret");
+    clearLocal("npc_visitor_account");
+    setConfig(null);
+    setCharacterAccount(null);
+    setAdminAccount(null);
+    setAdminSecret(null);
+    setIsAdmin(false);
     setHash("");
   }
 
@@ -1124,8 +1573,12 @@ export default function App() {
 
   const charName = config.character?.name || "Character";
 
-  // Admin route
+  // Admin route (admin only)
   if (route === "admin") {
+    if (!isAdmin) {
+      setHash("");
+      return null;
+    }
     if (!adminAccount || !adminSecret) {
       return <AdminLogin onLogin={handleAdminLogin} />;
     }
@@ -1134,6 +1587,7 @@ export default function App() {
         <header className="app-header">
           <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
           <button className="btn-small" onClick={() => setHash("")}>← Public Page</button>
+          <button className="btn-small btn-reset" onClick={handleReset}>↺ Reset</button>
         </header>
         <main>
           <AdminPanel
@@ -1148,8 +1602,41 @@ export default function App() {
     );
   }
 
-  // Origin generator route
+  // Profile route
+  if (route === "profile" && routeKey) {
+    return (
+      <div className="app">
+        <header className="app-header">
+          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
+        </header>
+        <main>
+          <ProfileView pubkey={routeKey} />
+        </main>
+      </div>
+    );
+  }
+
+  // Thread view route
+  if (route === "thread" && routeKey) {
+    return (
+      <div className="app">
+        <header className="app-header">
+          <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
+        </header>
+        <main>
+          <ThreadView
+            eventId={routeKey}
+            characterAccount={characterAccount}
+            config={config}
+          />
+        </main>
+      </div>
+    );
+  }
+
+  // Origin generator route (admin only)
   if (route === "origin") {
+    if (!isAdmin) { setHash(""); return null; }
     function handleApplyPersona(persona) {
       if (!config) {
         // Pre-setup: just navigate to home with persona data in localStorage
@@ -1188,6 +1675,10 @@ export default function App() {
 
   // Messages route
   if (route === "messages") {
+    const dmPubkey = routeKey && routeKey !== config.character?.pubkey
+      ? routeKey
+      : config.character?.pubkey;
+
     return (
       <div className="app">
         <header className="app-header">
@@ -1195,8 +1686,9 @@ export default function App() {
         </header>
         <main>
           <VisitorMessageView
-            characterPubkey={config.character?.pubkey}
-            characterName={charName}
+            characterPubkey={dmPubkey}
+            characterName={null}
+            senderAccount={characterAccount}
           />
         </main>
       </div>
@@ -1208,12 +1700,29 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1 className="clickable" onClick={() => setHash("")}>🟣 {charName}</h1>
-        <button className="btn-small" onClick={() => setHash("origin")}>🎲 Origin</button>
-        <button className="btn-small" onClick={() => setHash("admin")}>🎭 Admin</button>
+        <div className="header-actions">
+          {isAdmin && (
+            <>
+              <button className="btn-small" onClick={() => setHash("origin")}>🎲 Origin</button>
+              <button className="btn-small" onClick={() => setHash("admin")}>🎭 Admin</button>
+              <div className="header-user-info">
+                <span className="header-user-badge">👤 {charName}</span>
+                <button className="btn-small btn-copy" onClick={() => {
+                  navigator.clipboard.writeText(config.character?.npub || "");
+                  const el = document.querySelector('.btn-copy');
+                  el.textContent = "✅ Copied!";
+                  setTimeout(() => { el.textContent = "📋 Copy npub"; }, 1500);
+                }}>📋 Copy npub</button>
+                <button className="btn-small btn-reset" onClick={handleReset}>↺ Reset</button>
+              </div>
+            </>
+          )}
+        </div>
       </header>
       <main>
         <CharacterPage
           config={config}
+          characterAccount={isAdmin ? characterAccount : null}
           onMessage={(pk) => setHash("messages/" + npubEncode(pk))}
         />
       </main>

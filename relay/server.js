@@ -351,7 +351,7 @@ function broadcastEvent(event) {
 const server = http.createServer((req, res) => {
   // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -489,6 +489,25 @@ const server = http.createServer((req, res) => {
     const row = stmts.getConfig.get("character");
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ setup_complete: !!row }));
+    return;
+  }
+
+  // Public character info (no auth — returns character config only)
+  if (req.method === "GET" && req.url === "/character") {
+    const charRow = stmts.getConfig.get("character");
+    if (!charRow) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "not set up" }));
+      return;
+    }
+    try {
+      const character = JSON.parse(charRow.value);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ character }));
+    } catch {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid config" }));
+    }
     return;
   }
 

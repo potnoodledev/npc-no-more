@@ -18,10 +18,9 @@ const PUBLIC_RELAYS = [
   "wss://relay.primal.net",
 ];
 
-export const DEFAULT_RELAYS = [
-  ...(OWN_RELAY ? [OWN_RELAY] : []),
-  ...PUBLIC_RELAYS,
-];
+// If we have our own relay, use it exclusively for the feed.
+// Public relays are fallback only when no private relay is configured.
+export const DEFAULT_RELAYS = OWN_RELAY ? [OWN_RELAY] : PUBLIC_RELAYS;
 
 export const PERSISTENT_RELAYS = OWN_RELAY ? [OWN_RELAY] : PUBLIC_RELAYS;
 
@@ -77,14 +76,23 @@ export async function loginWithExtension() {
   return { sk: null, skHex: null, nsec: null, pk, npub: npubEncode(pk), isExtension: true };
 }
 
+// ── Client tag ──
+
+export const CLIENT_TAG = ["client", "npc-no-more"];
+
 // ── Publishing ──
 
 export async function publishEvent(event, account, relays = DEFAULT_RELAYS) {
+  // Add client tag to all events
+  const tagged = {
+    ...event,
+    tags: [...(event.tags || []), CLIENT_TAG],
+  };
   let signed;
   if (account.isExtension) {
-    signed = await window.nostr.signEvent(event);
+    signed = await window.nostr.signEvent(tagged);
   } else {
-    signed = finalizeEvent(event, account.sk);
+    signed = finalizeEvent(tagged, account.sk);
   }
   const p = getPool();
   await Promise.allSettled(p.publish(relays, signed));
@@ -146,11 +154,17 @@ export async function decryptDM(event, account) {
 // ── Subscriptions ──
 
 export function subscribeFeed(relays, onEvent, onEose, limit = 50) {
-  return getPool().subscribeMany(relays, { kinds: [1], limit }, { onevent: onEvent, oneose: onEose });
+  return getPool().subscribeMany(relays, { kinds: [1], "#client": ["npc-no-more"], limit }, { onevent: onEvent, oneose: onEose });
 }
 
 export function subscribeUserFeed(relays, pubkey, onEvent, onEose, limit = 50) {
-  return getPool().subscribeMany(relays, { kinds: [1], authors: [pubkey], limit }, { onevent: onEvent, oneose: onEose });
+  // Subscribe to both the user's own posts AND replies mentioning them (threads)
+  // Filter to only npc-no-more client events
+  let eoseCount = 0;
+  const checkEose = () => { eoseCount++; if (eoseCount >= 2 && onEose) onEose(); };
+  const sub1 = getPool().subscribeMany(relays, { kinds: [1], authors: [pubkey], "#client": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
+  const sub2 = getPool().subscribeMany(relays, { kinds: [1], "#p": [pubkey], "#client": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
+  return { close() { sub1.close(); sub2.close(); } };
 }
 
 export function subscribeDMs(relays, myPubkey, onEvent, onEose) {
@@ -217,6 +231,17 @@ export async function relayAddPubkey(adminSecret, pubkey, label) {
   });
   if (!res.ok) throw new Error("Failed to add pubkey");
   return res.json();
+}
+
+export async function relayGetPublicCharacter() {
+  try {
+    const res = await fetch(`${RELAY_HTTP_URL}/character`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.character || null;
+  } catch {
+    return null;
+  }
 }
 
 export async function relayGetSetupStatus() {
