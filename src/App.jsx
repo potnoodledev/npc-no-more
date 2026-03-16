@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { isNimAvailable, generateRandomPersona, getRandomErrorMessage } from "./nim";
+import { isNimAvailable, generateRandomPersona, generateAvatar, getRandomErrorMessage } from "./nim";
 import {
   createAccount,
   accountFromNsec,
@@ -149,6 +149,9 @@ function CreateCharacter({ onComplete }) {
   const [rolledModel, setRolledModel] = useState(null);
   const [mode, setMode] = useState("create");
   const [nsecInput, setNsecInput] = useState("");
+  const [generatingAvatar, setGeneratingAvatar] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarModal, setAvatarModal] = useState(null);
 
   async function handleRollDice() {
     setRolling(true);
@@ -172,6 +175,19 @@ function CreateCharacter({ onComplete }) {
     setRolling(false);
   }
 
+  async function handleGenerateAvatar() {
+    if (!charName.trim()) return;
+    setGeneratingAvatar(true);
+    setError("");
+    try {
+      const result = await generateAvatar({ name: charName, personality: charPersonality, world: charWorld });
+      setAvatarUrl(result.url);
+    } catch (e) {
+      setError("Avatar generation failed: " + e.message);
+    }
+    setGeneratingAvatar(false);
+  }
+
   async function handleCreate() {
     setError("");
     setSaving(true);
@@ -188,7 +204,7 @@ function CreateCharacter({ onComplete }) {
         personality: charPersonality,
         world: charWorld,
         voice: charVoice,
-        profile_image: "",
+        profile_image: avatarUrl || "",
         banner_image: "",
         origin_story: [],
         skHex: acc.skHex,
@@ -201,6 +217,7 @@ function CreateCharacter({ onComplete }) {
         name: charName,
         display_name: charName,
         about: charPersonality,
+        ...(avatarUrl ? { picture: avatarUrl } : {}),
       }, acc);
       onComplete(char);
     } catch (e) {
@@ -263,6 +280,38 @@ function CreateCharacter({ onComplete }) {
             <textarea placeholder="Sardonic, curious, drops historical references..." value={charVoice} onChange={(e) => setCharVoice(e.target.value)} rows={3} /></label>
         </div>
 
+        {/* Avatar generation */}
+        {isNimAvailable() && (
+          <div className="avatar-gen-section">
+            <div className="avatar-gen-header">
+              <span className="avatar-gen-label">Profile Picture</span>
+              <button
+                className="btn-small"
+                onClick={handleGenerateAvatar}
+                disabled={generatingAvatar || !charName.trim()}
+              >
+                {generatingAvatar ? "Generating..." : "Generate Avatar"}
+              </button>
+            </div>
+            {generatingAvatar && (
+              <div className="avatar-gen-loading">
+                <span className="streaming-dot" />
+                <span>Generating via <strong>NVIDIA NIM</strong> — Stable Diffusion 3 Medium</span>
+              </div>
+            )}
+            {avatarUrl && !generatingAvatar && (
+              <div className="avatar-gen-preview">
+                <img src={avatarUrl} alt="Generated avatar" />
+                <div>
+                  <span className="avatar-gen-model">Generated via NVIDIA NIM / Stable Diffusion 3</span>
+                  <br />
+                  <button type="button" className="btn-link" onClick={() => setAvatarModal(avatarUrl)}>View full size</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {error && <p className="error">{error}</p>}
 
         <div className="setup-nav">
@@ -275,6 +324,30 @@ function CreateCharacter({ onComplete }) {
             {saving ? "Creating..." : "Create Character"}
           </button>
         </div>
+      </div>
+      <ImageModal src={avatarModal} onClose={() => setAvatarModal(null)} />
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  IMAGE MODAL
+// ══════════════════════════════════════
+
+function ImageModal({ src, onClose }) {
+  if (!src) return null;
+
+  useEffect(() => {
+    function handleKey(e) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  return (
+    <div className="image-modal-overlay" onClick={onClose}>
+      <div className="image-modal" onClick={(e) => e.stopPropagation()}>
+        <img src={src} alt="" />
+        <button className="image-modal-close" onClick={onClose}>&times;</button>
       </div>
     </div>
   );
@@ -309,6 +382,32 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
   const [editFields, setEditFields] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [generatingAvatar, setGeneratingAvatar] = useState(false);
+  const [modalImage, setModalImage] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const originalFieldsRef = useRef({});
+
+  // Warn on browser close/reload when dirty
+  useEffect(() => {
+    if (!dirty) return;
+    function handleBeforeUnload(e) { e.preventDefault(); }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [dirty]);
+
+  // Warn on hash navigation when dirty
+  useEffect(() => {
+    if (!dirty) return;
+    function handleHashChange(e) {
+      if (!window.confirm("You have unsaved profile changes. Leave without saving?")) {
+        e.preventDefault();
+        // Restore the hash
+        window.history.pushState(null, "", e.oldURL.split("#")[1] ? "#" + e.oldURL.split("#")[1] : "#/");
+      }
+    }
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, [dirty]);
 
   // Fetch profile from Nostr
   useEffect(() => {
@@ -431,7 +530,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
   }
 
   function startEditing() {
-    setEditFields({
+    const fields = {
       name: profile?.name || profile?.display_name || character.name || "",
       display_name: profile?.display_name || profile?.name || character.name || "",
       about: profile?.about || "",
@@ -440,13 +539,36 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
       nip05: profile?.nip05 || "",
       lud16: profile?.lud16 || "",
       website: profile?.website || "",
-    });
+    };
+    setEditFields(fields);
+    originalFieldsRef.current = { ...fields };
     setEditing(true);
     setSaved(false);
+    setDirty(false);
   }
 
   function updateField(field, value) {
-    setEditFields((prev) => ({ ...prev, [field]: value }));
+    setEditFields((prev) => {
+      const updated = { ...prev, [field]: value };
+      const isDirty = Object.keys(updated).some((k) => updated[k] !== originalFieldsRef.current[k]);
+      setDirty(isDirty);
+      return updated;
+    });
+  }
+
+  async function handleGenerateAvatar() {
+    setGeneratingAvatar(true);
+    try {
+      const result = await generateAvatar({
+        name: editFields.display_name || editFields.name || character.name,
+        personality: editFields.about || "",
+        world: "",
+      });
+      updateField("picture", result.url);
+    } catch (e) {
+      alert("Avatar generation failed: " + e.message);
+    }
+    setGeneratingAvatar(false);
   }
 
   async function handleSaveProfile() {
@@ -477,6 +599,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
       // Refresh profile from what we just published
       setProfile({ ...profile, ...metadata });
       setEditing(false);
+      setDirty(false);
       setSaved(true);
     } catch (e) {
       alert("Failed to save: " + e.message);
@@ -653,8 +776,39 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                   <input type="text" value={editFields.display_name} onChange={(e) => { updateField("display_name", e.target.value); updateField("name", e.target.value); }} placeholder="Your character's name" /></label>
                 <label><span>About</span>
                   <textarea value={editFields.about} onChange={(e) => updateField("about", e.target.value)} rows={4} placeholder="Bio, personality, backstory..." /></label>
-                <label><span>Picture URL</span>
-                  <input type="url" value={editFields.picture} onChange={(e) => updateField("picture", e.target.value)} placeholder="https://..." /></label>
+                <label>
+                  <div className="avatar-gen-header">
+                    <span>Picture URL</span>
+                    {isNimAvailable() && (
+                      <button
+                        type="button"
+                        className="btn-small"
+                        onClick={handleGenerateAvatar}
+                        disabled={generatingAvatar}
+                        style={{ marginLeft: "auto" }}
+                      >
+                        {generatingAvatar ? "Generating..." : "Generate Avatar"}
+                      </button>
+                    )}
+                  </div>
+                  <input type="url" value={editFields.picture} onChange={(e) => updateField("picture", e.target.value)} placeholder="https://..." />
+                  {generatingAvatar && (
+                    <div className="avatar-gen-loading">
+                      <span className="streaming-dot" />
+                      <span>Generating via <strong>NVIDIA NIM</strong> — Stable Diffusion 3 Medium</span>
+                    </div>
+                  )}
+                  {editFields.picture && !generatingAvatar && (
+                    <div className="avatar-gen-preview">
+                      <img src={editFields.picture} alt="preview" onError={(e) => { e.target.style.display = "none"; }} />
+                      <div>
+                        <span className="avatar-gen-model">Picture preview</span>
+                        <br />
+                        <button type="button" className="btn-link" onClick={() => setModalImage(editFields.picture)}>View full size</button>
+                      </div>
+                    </div>
+                  )}
+                </label>
                 <label><span>Banner URL</span>
                   <input type="url" value={editFields.banner} onChange={(e) => updateField("banner", e.target.value)} placeholder="https://..." /></label>
                 <label><span>NIP-05 (Nostr Address)</span>
@@ -665,24 +819,22 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                   <input type="url" value={editFields.website} onChange={(e) => updateField("website", e.target.value)} placeholder="https://..." /></label>
               </div>
 
-              {editFields.picture && (
-                <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
-                  <img src={editFields.picture} alt="preview" style={{ width: 48, height: 48, borderRadius: 2, objectFit: "cover", border: "1px solid var(--border)" }}
-                    onError={(e) => { e.target.style.display = "none"; }} />
-                  <span style={{ fontSize: "0.72rem", color: "var(--text-faint)" }}>Picture preview</span>
-                </div>
-              )}
-
               <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
                 <button className="btn-primary" onClick={handleSaveProfile} disabled={saving}>
                   {saving ? "Publishing..." : "Publish to Nostr"}
                 </button>
-                <button className="btn-back" onClick={() => setEditing(false)}>Cancel</button>
+                <button className="btn-back" onClick={() => {
+                  if (!dirty || window.confirm("Discard unsaved changes?")) {
+                    setEditing(false);
+                    setDirty(false);
+                  }
+                }}>Cancel</button>
               </div>
             </div>
           )}
         </div>
       )}
+      <ImageModal src={modalImage} onClose={() => setModalImage(null)} />
     </div>
   );
 }

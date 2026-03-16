@@ -183,3 +183,31 @@ const ERROR_MESSAGES = [
 export function getRandomErrorMessage() {
   return ERROR_MESSAGES[Math.floor(Math.random() * ERROR_MESSAGES.length)];
 }
+
+/**
+ * Generate an avatar image via the API service (NVIDIA NIM / Stable Diffusion 3).
+ * @param {{ name: string, personality?: string, world?: string }} character
+ * @returns {Promise<{ url: string, id: string }>}
+ */
+export async function generateAvatar(character) {
+  if (!API_URL) throw new Error("API service not configured");
+
+  const res = await fetch(`${API_URL}/generate/avatar`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: character.name,
+      personality: character.personality || "",
+      world: character.world || "",
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    throw new Error(err.error || `Image generation failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  // Return full URL through the API service
+  return { url: `${API_URL}${data.url}`, id: data.id };
+}

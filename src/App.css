@@ -1284,6 +1284,139 @@ a:hover { color: var(--accent-bright); }
 }
 .dice-hint strong { color: var(--accent); }
 
+/* ── Avatar Generation ── */
+
+.avatar-gen-section {
+  margin-top: 20px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-dim);
+  border-radius: var(--radius);
+}
+
+.avatar-gen-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.avatar-gen-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+
+.avatar-gen-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  animation: fadeIn 0.25s ease;
+}
+.avatar-gen-loading strong {
+  color: var(--accent);
+}
+
+.avatar-gen-preview {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+  animation: fadeIn 0.25s ease;
+}
+
+.avatar-gen-preview img {
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius);
+  object-fit: cover;
+  border: 2px solid var(--border-light);
+}
+
+.avatar-gen-model {
+  font-size: 0.68rem;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* ── Image Modal ── */
+
+.image-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  cursor: pointer;
+  animation: fadeIn 0.15s ease;
+}
+
+.image-modal {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  cursor: default;
+}
+
+.image-modal img {
+  max-width: 100%;
+  max-height: 85vh;
+  border-radius: var(--radius-lg);
+  border: 2px solid var(--border-light);
+  display: block;
+}
+
+.image-modal-close {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  color: var(--text);
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.image-modal-close:hover {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+
+/* ── Link Button ── */
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-family: var(--font-body);
+  padding: 0;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.btn-link:hover {
+  color: var(--accent-bright);
+}
+
 /* ── Streaming ── */
 
 .streaming-dot {

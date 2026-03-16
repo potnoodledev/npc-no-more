@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import crypto from "crypto";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const app = express();
 app.use(cors());
@@ -12,7 +11,6 @@ const PORT = process.env.PORT || 3456;
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 
 // ── S3 Bucket (Railway Storage Buckets are S3-compatible) ──
 const S3_ENDPOINT = process.env.S3_ENDPOINT || "";
@@ -37,12 +35,6 @@ if (S3_ENDPOINT && S3_ACCESS_KEY && S3_SECRET_KEY) {
   console.log("S3 not configured — image storage disabled");
 }
 
-// ── Gemini ──
-let genAI = null;
-if (GEMINI_API_KEY) {
-  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-  console.log("Gemini API configured");
-}
 
 // ── NIM Models ──
 const NIM_MODELS = [
@@ -79,7 +71,6 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     nim: !!NIM_API_KEY,
-    gemini: !!GEMINI_API_KEY,
     s3: !!s3,
     bucket: S3_BUCKET || null,
   });
@@ -235,43 +226,54 @@ app.get("/images/:filename", async (req, res) => {
 });
 
 // ══════════════════════════════════════
-//  Gemini: Image generation
+//  NVIDIA NIM: Image generation (Stable Diffusion 3)
 // ══════════════════════════════════════
 
+const NIM_IMAGE_URL = "https://ai.api.nvidia.com/v1/genai/stabilityai/stable-diffusion-3-medium";
+
+async function nimGenerateImage(prompt) {
+  if (!NIM_API_KEY) throw new Error("NIM API key not configured");
+
+  const response = await fetch(NIM_IMAGE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${NIM_API_KEY}`,
+      "Accept": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+      cfg_scale: 5,
+      aspect_ratio: "1:1",
+      seed: Math.floor(Math.random() * 2147483647),
+      steps: 50,
+      negative_prompt: "text, watermark, signature, blurry, low quality, deformed",
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    throw new Error(`NIM image API error ${response.status}: ${errBody.slice(0, 300)}`);
+  }
+
+  const data = await response.json();
+  if (!data.image) throw new Error("No image in NIM response");
+
+  return Buffer.from(data.image, "base64");
+}
+
 app.post("/generate/avatar", async (req, res) => {
-  if (!genAI) return res.status(503).json({ error: "Gemini API not configured" });
+  if (!NIM_API_KEY) return res.status(503).json({ error: "NIM API key not configured" });
   if (!s3) return res.status(503).json({ error: "S3 storage not configured" });
 
   const { name, personality, world } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-image" });
-    const prompt = `Generate a stylized portrait avatar for a fictional character.
-Name: ${name}
-Personality: ${personality || "mysterious"}
-World: ${world || "unknown"}
-Style: Digital art portrait, square aspect ratio, suitable as a social media profile picture. Bold colors, distinctive features, no text.`;
+    const prompt = `Stylized portrait avatar of a fictional character named "${name}". ${personality || "Mysterious personality"}. World: ${world || "unknown"}. Digital art, bold colors, distinctive features, square profile picture, detailed, high quality`;
 
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseModalities: ["TEXT", "IMAGE"],
-      },
-    });
-
-    const response = result.response;
-    const imagePart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-
-    if (!imagePart) {
-      return res.status(500).json({ error: "No image generated" });
-    }
-
-    const imageBuffer = Buffer.from(imagePart.inlineData.data, "base64");
-    const mimeType = imagePart.inlineData.mimeType || "image/png";
-    const ext = mimeType.includes("jpeg") ? "jpg" : "png";
-
-    const uploaded = await uploadImage(imageBuffer, mimeType, ext);
+    const imageBuffer = await nimGenerateImage(prompt);
+    const uploaded = await uploadImage(imageBuffer, "image/png", "png");
     res.json({ url: uploaded.url, id: uploaded.id });
   } catch (err) {
     console.error("Avatar generation error:", err.message);
@@ -280,37 +282,19 @@ Style: Digital art portrait, square aspect ratio, suitable as a social media pro
 });
 
 app.post("/generate/post-image", async (req, res) => {
-  if (!genAI) return res.status(503).json({ error: "Gemini API not configured" });
+  if (!NIM_API_KEY) return res.status(503).json({ error: "NIM API key not configured" });
   if (!s3) return res.status(503).json({ error: "S3 storage not configured" });
 
   const { prompt, character } = req.body;
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-image" });
     const fullPrompt = character
-      ? `Create an image for a social media post by "${character.name}" (${character.personality || ""}). The post says: "${prompt}". Style: evocative, atmospheric, no text overlays.`
-      : `Create an image: ${prompt}. Style: evocative, atmospheric, no text overlays.`;
+      ? `${prompt}. Art style inspired by "${character.name}" (${character.personality || ""}). Evocative, atmospheric, no text`
+      : `${prompt}. Evocative, atmospheric, no text`;
 
-    const result = await model.generateContent({
-      contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
-      generationConfig: {
-        responseModalities: ["TEXT", "IMAGE"],
-      },
-    });
-
-    const response = result.response;
-    const imagePart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-
-    if (!imagePart) {
-      return res.status(500).json({ error: "No image generated" });
-    }
-
-    const imageBuffer = Buffer.from(imagePart.inlineData.data, "base64");
-    const mimeType = imagePart.inlineData.mimeType || "image/png";
-    const ext = mimeType.includes("jpeg") ? "jpg" : "png";
-
-    const uploaded = await uploadImage(imageBuffer, mimeType, ext);
+    const imageBuffer = await nimGenerateImage(fullPrompt);
+    const uploaded = await uploadImage(imageBuffer, "image/png", "png");
     res.json({ url: uploaded.url, id: uploaded.id });
   } catch (err) {
     console.error("Post image generation error:", err.message);
@@ -325,6 +309,5 @@ app.post("/generate/post-image", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`NPC API service running on port ${PORT}`);
   console.log(`  NIM: ${NIM_API_KEY ? "configured" : "NOT configured"}`);
-  console.log(`  Gemini: ${GEMINI_API_KEY ? "configured" : "NOT configured"}`);
   console.log(`  S3: ${s3 ? `configured (${S3_BUCKET})` : "NOT configured"}`);
 });
