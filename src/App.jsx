@@ -1728,7 +1728,7 @@ function PiChat({ characters, activeCharId }) {
                 paletteTitle = "Select Model" + (submenuFilter ? `: ${submenuFilter}` : "");
                 const filter = submenuFilter.toLowerCase();
                 paletteItems = availableModels
-                  .filter((m) => !filter || (m.name || m.id).toLowerCase().includes(filter) || m.id.toLowerCase().includes(filter))
+                  .filter((m) => !filter || (m.name || m.id).toLowerCase().startsWith(filter))
                   .map((m) => ({
                     label: m.name || m.id,
                     sublabel: m.provider,

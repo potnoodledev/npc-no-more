@@ -34,7 +34,7 @@ function setupPiConfig() {
   // Filter to models with NIM tool calling support, sorted by active params
   const nimModelsAll = nimModelsRaw
     .filter((m) => m.nim_tool_calling)
-    .sort((a, b) => (a.active_params_b || 0) - (b.active_params_b || 0))
+    .sort((a, b) => a.id.localeCompare(b.id))
     .map((m) => {
       const parts = m.id.split("/");
       const rawName = parts[parts.length - 1]
@@ -57,7 +57,7 @@ function setupPiConfig() {
   for (const m of nimModelsAll) {
     seen.set(m.name, m);
   }
-  const nimModels = [...seen.values()];
+  const nimModels = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
 
   const modelsConfig = {
     providers: {
