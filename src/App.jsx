@@ -1555,6 +1555,7 @@ function PiChat({ characters, activeCharId }) {
 
   // Command system: RPC commands execute directly, prompt commands go through input
   const [cmdSubmenu, setCmdSubmenu] = useState(null); // null or "model" or "thinking"
+  const [submenuFilter, setSubmenuFilter] = useState("");
 
   const currentModelKey = piState?.model ? `${piState.model.provider}::${piState.model.id}` : "";
   const thinkingLevels = ["off", "minimal", "low", "medium", "high"];
@@ -1565,10 +1566,7 @@ function PiChat({ characters, activeCharId }) {
       { name: "thinking", kind: "submenu", description: `Set thinking (${piState?.thinkingLevel || "off"})`, submenu: "thinking" },
       { name: "new", kind: "rpc", description: "Start a new session", rpcType: "new_session" },
       { name: "compact", kind: "rpc", description: "Compress context", rpcType: "compact" },
-      { name: "auto-compact", kind: "rpc", description: `Toggle auto-compaction (${piState?.autoCompactionEnabled ? "on" : "off"})`, rpcType: "set_auto_compaction", rpcExtra: { enabled: !piState?.autoCompactionEnabled } },
       { name: "abort", kind: "rpc", description: "Stop current generation", rpcType: "abort" },
-      { name: "export", kind: "rpc", description: "Export as HTML", rpcType: "export_html" },
-      { name: "stats", kind: "rpc", description: "Session stats", rpcType: "get_session_stats" },
     ];
     const custom = commands.map((c) => ({
       name: c.name,
@@ -1580,8 +1578,9 @@ function PiChat({ characters, activeCharId }) {
 
   function executeCommand(cmd) {
     if (cmd.kind === "submenu") {
-      setShowCommands(true); // Keep palette open
+      setShowCommands(true);
       setCmdSubmenu(cmd.submenu);
+      setSubmenuFilter("");
       setCmdIndex(0);
       return;
     }
@@ -1639,29 +1638,6 @@ function PiChat({ characters, activeCharId }) {
 
       {PI_URL && (
         <div className="pi-chat-container">
-          <div className="pi-status-bar">
-            <span className={`pi-status-dot ${connected ? "connected" : ""}`} />
-            <span className="pi-status-model">{piState?.model?.name || piState?.model?.id || "—"}</span>
-            {piState?.model?.contextWindow && (
-              <span className="pi-status-dim">{(piState.model.contextWindow / 1000).toFixed(0)}k ctx</span>
-            )}
-            {piState?.thinkingLevel && piState.thinkingLevel !== "off" && (
-              <span className="pi-status-tag">thinking: {piState.thinkingLevel}</span>
-            )}
-            {piState?.model?.reasoning && (
-              <span className="pi-status-tag">reasoning</span>
-            )}
-            {compacting && <span className="pi-status-tag" style={{ borderColor: "var(--danger)" }}>compacting</span>}
-            <span className="pi-status-ctx">
-              {sessionStats && (
-                <>
-                  {sessionStats.totalMessages || 0} msgs
-                  {sessionStats.tokens?.total ? ` · ${(sessionStats.tokens.total / 1000).toFixed(1)}k tok` : ""}
-                  {sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(4)}` : ""}
-                </>
-              )}
-            </span>
-          </div>
           <div className="pi-chat-messages">
             {messages.length === 0 && (
               <div className="pi-welcome">
@@ -1717,6 +1693,29 @@ function PiChat({ characters, activeCharId }) {
             <div ref={messagesEndRef} />
           </div>
 
+          <div className="pi-status-bar">
+            <span className={`pi-status-dot ${connected ? "connected" : ""}`} />
+            <span className="pi-status-model">{piState?.model?.name || piState?.model?.id || "—"}</span>
+            {piState?.model?.contextWindow && (
+              <span className="pi-status-dim">{(piState.model.contextWindow / 1000).toFixed(0)}k ctx</span>
+            )}
+            {piState?.thinkingLevel && piState.thinkingLevel !== "off" && (
+              <span className="pi-status-tag">thinking: {piState.thinkingLevel}</span>
+            )}
+            {piState?.model?.reasoning && (
+              <span className="pi-status-tag">reasoning</span>
+            )}
+            {compacting && <span className="pi-status-tag" style={{ borderColor: "var(--danger)" }}>compacting</span>}
+            <span className="pi-status-ctx">
+              {sessionStats && (
+                <>
+                  {sessionStats.totalMessages || 0} msgs
+                  {sessionStats.tokens?.total ? ` · ${(sessionStats.tokens.total / 1000).toFixed(1)}k tok` : ""}
+                  {sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(4)}` : ""}
+                </>
+              )}
+            </span>
+          </div>
           <div className="pi-chat-compose">
             {(() => {
               const query = input.startsWith("/") ? input.slice(1).trim().toLowerCase() : "";
@@ -1726,13 +1725,16 @@ function PiChat({ characters, activeCharId }) {
               let paletteTitle = "Commands";
 
               if (showCommands && cmdSubmenu === "model") {
-                paletteTitle = "Select Model";
-                paletteItems = availableModels.map((m) => ({
-                  label: m.name || m.id,
-                  sublabel: m.provider,
-                  active: `${m.provider}::${m.id}` === currentModelKey,
-                  action: () => selectModel(m.provider, m.id, m.name),
-                }));
+                paletteTitle = "Select Model" + (submenuFilter ? `: ${submenuFilter}` : "");
+                const filter = submenuFilter.toLowerCase();
+                paletteItems = availableModels
+                  .filter((m) => !filter || (m.name || m.id).toLowerCase().includes(filter) || m.id.toLowerCase().includes(filter))
+                  .map((m) => ({
+                    label: m.name || m.id,
+                    sublabel: m.provider,
+                    active: `${m.provider}::${m.id}` === currentModelKey,
+                    action: () => selectModel(m.provider, m.id, m.name),
+                  }));
               } else if (showCommands && cmdSubmenu === "thinking") {
                 paletteTitle = "Thinking Level";
                 paletteItems = thinkingLevels.map((l) => ({
@@ -1789,22 +1791,27 @@ function PiChat({ characters, activeCharId }) {
                 <input
                   ref={inputRef}
                   type="text"
-                  placeholder={connected
-                    ? `${piState?.model?.name || "Pi"} · ${piState?.messageCount || 0} msgs · / for commands`
-                    : "Connecting..."}
-                  value={input}
+                  placeholder={!connected ? "Connecting..."
+                    : cmdSubmenu === "model" ? "Type to filter models... (Tab to select, Esc to cancel)"
+                    : cmdSubmenu === "thinking" ? "Select thinking level..."
+                    : `${piState?.model?.name || "Pi"} · ${piState?.messageCount || 0} msgs · / for commands`}
+                  value={cmdSubmenu ? submenuFilter : input}
                   onChange={(e) => {
-                    setInput(e.target.value);
-                    if (e.target.value.startsWith("/")) {
-                      setShowCommands(true);
-                      setCmdSubmenu(null);
+                    if (cmdSubmenu) {
+                      // Typing filters the submenu
+                      setSubmenuFilter(e.target.value);
                       setCmdIndex(0);
-                    } else if (!e.target.value) {
-                      setShowCommands(false);
-                      setCmdSubmenu(null);
                     } else {
-                      setShowCommands(false);
-                      setCmdSubmenu(null);
+                      setInput(e.target.value);
+                      if (e.target.value.startsWith("/")) {
+                        setShowCommands(true);
+                        setCmdSubmenu(null);
+                        setCmdIndex(0);
+                      } else if (!e.target.value) {
+                        setShowCommands(false);
+                      } else {
+                        setShowCommands(false);
+                      }
                     }
                   }}
                   onKeyDown={(e) => {
@@ -1831,27 +1838,34 @@ function PiChat({ characters, activeCharId }) {
                         });
                         return;
                       }
-                      if (e.key === "Tab" || (e.key === " " && input.startsWith("/"))) {
-                        // Tab/Space: always autocomplete the name into the input
+                      if (e.key === "Tab" || (e.key === " " && !cmdSubmenu && input.startsWith("/")) || (e.key === "Tab" && cmdSubmenu)) {
+                        // Tab: select item (in submenu: execute, in main: autocomplete)
                         e.preventDefault();
                         const item = paletteItems[cmdIndex];
                         if (item) {
-                          const label = item.label?.startsWith("/") ? item.label : "/" + (item.label || "");
-                          setInput(label + " ");
-                          setShowCommands(false);
-                          setCmdSubmenu(null);
+                          if (cmdSubmenu) {
+                            item.action();
+                            setSubmenuFilter("");
+                          } else {
+                            const label = item.label?.startsWith("/") ? item.label : "/" + (item.label || "");
+                            setInput(label + " ");
+                            setShowCommands(false);
+                            setCmdSubmenu(null);
+                          }
                         }
                         return;
                       }
                       if (e.key === "Enter") {
-                        // Enter: execute the command
                         e.preventDefault();
                         const item = paletteItems[cmdIndex];
-                        if (item) item.action();
+                        if (item) {
+                          item.action();
+                          if (cmdSubmenu) setSubmenuFilter("");
+                        }
                         return;
                       }
                       if (e.key === "Escape") {
-                        if (cmdSubmenu) { setCmdSubmenu(null); setCmdIndex(0); }
+                        if (cmdSubmenu) { setCmdSubmenu(null); setSubmenuFilter(""); setCmdIndex(0); }
                         else { setShowCommands(false); }
                         return;
                       }

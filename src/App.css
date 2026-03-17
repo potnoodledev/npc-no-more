@@ -2043,10 +2043,10 @@ a:hover { color: var(--accent-bright); }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 6px 14px;
   background: var(--bg-warm);
-  border-bottom: 1px solid var(--border);
-  font-size: 0.68rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.65rem;
   font-family: var(--font-mono);
   color: var(--text-dim);
   flex-shrink: 0;
