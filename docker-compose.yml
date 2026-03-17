@@ -26,9 +26,7 @@ services:
     restart: unless-stopped
 
   pi-bridge:
-    build:
-      context: .
-      dockerfile: pi-bridge/Dockerfile
+    build: ./pi-bridge
     container_name: npc-pi-bridge
     ports:
       - "3457:3457"

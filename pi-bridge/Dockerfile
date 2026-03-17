@@ -5,19 +5,14 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install pi-mono from the submodule
-COPY references/pi-mono/ /app/pi-mono/
-RUN cd /app/pi-mono && npm install && npm run build 2>/dev/null || true
-RUN cd /app/pi-mono/packages/coding-agent && npm link
+# Install pi coding agent from npm
+RUN npm install -g @mariozechner/pi-coding-agent
 
 # Install bridge dependencies
-COPY pi-bridge/package.json /app/bridge/
+COPY package.json package-lock.json* /app/bridge/
 RUN cd /app/bridge && npm install
 
-COPY pi-bridge/server.js /app/bridge/
-COPY pi-bridge/profile.js /app/bridge/
-COPY pi-bridge/prompt-builder.js /app/bridge/
-COPY pi-bridge/nim-models.json /app/bridge/
+COPY server.js profile.js prompt-builder.js nim-models.json /app/bridge/
 
 # Create workspace
 RUN mkdir -p /workspace
