@@ -49,6 +49,9 @@ function setupPiConfig() {
         contextWindow: 131072,
         maxTokens: isThinking ? 16384 : 8192,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        _totalParams: m.total_params_b,
+        _activeParams: m.active_params_b,
+        _arch: m.architecture,
       };
     });
 
@@ -57,7 +60,12 @@ function setupPiConfig() {
   for (const m of nimModelsAll) {
     seen.set(m.name, m);
   }
-  const nimModels = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const nimModels = [...seen.values()].sort((a, b) => {
+    const sizeA = a._activeParams || a._totalParams || 0;
+    const sizeB = b._activeParams || b._totalParams || 0;
+    if (sizeA !== sizeB) return sizeA - sizeB;
+    return a.name.localeCompare(b.name);
+  });
 
   const modelsConfig = {
     providers: {
@@ -69,8 +77,14 @@ function setupPiConfig() {
       },
     },
   };
-  writeFileSync(modelsPath, JSON.stringify(modelsConfig, null, 2));
+  // Strip _fields for pi (strict schema), but keep metadata for our API
+  const modelsForPi = nimModels.map(({ _totalParams, _activeParams, _arch, ...rest }) => rest);
+  const modelsConfigForPi = { ...modelsConfig, providers: { "nvidia-nim": { ...modelsConfig.providers["nvidia-nim"], models: modelsForPi } } };
+  writeFileSync(modelsPath, JSON.stringify(modelsConfigForPi, null, 2));
   console.log(`Wrote ${nimModels.length} NIM models to ${modelsPath}`);
+
+  // Store full metadata for the /models endpoint
+  global.__modelMeta = Object.fromEntries(nimModels.map((m) => [m.id, { totalParams: m._totalParams, activeParams: m._activeParams, arch: m._arch }]));
 
   // Ensure workspace exists
   mkdirSync(WORKSPACE, { recursive: true });
@@ -222,6 +236,10 @@ app.get("/health", (req, res) => {
     nim: !!NVIDIA_NIM_API_KEY,
     activeSessions: sessions.size,
   });
+});
+
+app.get("/models-meta", (req, res) => {
+  res.json(global.__modelMeta || {});
 });
 
 app.get("/sessions", (req, res) => {

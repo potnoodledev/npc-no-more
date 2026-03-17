@@ -1260,6 +1260,7 @@ function PiChat({ characters, activeCharId }) {
   const [streaming, setStreaming] = useState(false);
   const [piState, setPiState] = useState(null);
   const [availableModels, setAvailableModels] = useState([]);
+  const [modelMeta, setModelMeta] = useState({});
   const [commands, setCommands] = useState([]);
   const [showCommands, setShowCommands] = useState(false);
   const [cmdIndex, setCmdIndex] = useState(0);
@@ -1278,6 +1279,13 @@ function PiChat({ characters, activeCharId }) {
   const messagesEndRef = useRef(null);
   const currentTextRef = useRef("");
   const currentThinkingRef = useRef("");
+
+  // Fetch model metadata from bridge HTTP endpoint
+  useEffect(() => {
+    if (!PI_URL) return;
+    const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
+    fetch(`${httpUrl}/models-meta`).then((r) => r.json()).then(setModelMeta).catch(() => {});
+  }, []);
 
   const activeChar = characters.find((c) => c.id === activeCharId);
   const sessionId = activeChar ? activeChar.pk.slice(0, 16) : "default";
@@ -1696,6 +1704,11 @@ function PiChat({ characters, activeCharId }) {
           <div className="pi-status-bar">
             <span className={`pi-status-dot ${connected ? "connected" : ""}`} />
             <span className="pi-status-model">{piState?.model?.name || piState?.model?.id || "—"}</span>
+            {(() => {
+              const meta = piState?.model?.id ? modelMeta[piState.model.id] : null;
+              const sizeB = meta?.activeParams || meta?.totalParams;
+              return sizeB ? <span className="pi-status-tag">{sizeB >= 1000 ? `${(sizeB / 1000).toFixed(1)}T` : `${sizeB}B`}</span> : null;
+            })()}
             {piState?.model?.contextWindow && (
               <span className="pi-status-dim">{(piState.model.contextWindow / 1000).toFixed(0)}k ctx</span>
             )}
@@ -1729,12 +1742,20 @@ function PiChat({ characters, activeCharId }) {
                 const filter = submenuFilter.toLowerCase();
                 paletteItems = availableModels
                   .filter((m) => !filter || (m.name || m.id).toLowerCase().startsWith(filter))
-                  .map((m) => ({
-                    label: m.name || m.id,
-                    sublabel: m.provider,
-                    active: `${m.provider}::${m.id}` === currentModelKey,
-                    action: () => selectModel(m.provider, m.id, m.name),
-                  }));
+                  .map((m) => {
+                    const meta = modelMeta[m.id];
+                    const sizeB = meta?.activeParams || meta?.totalParams;
+                    const sizeTag = sizeB ? (sizeB >= 1000 ? `${(sizeB / 1000).toFixed(1)}T` : `${sizeB}B`) : null;
+                    return {
+                      label: m.name || m.id,
+                      sublabel: meta?.arch === "MoE" && meta?.totalParams !== meta?.activeParams
+                        ? `${meta.totalParams}B total · ${meta.activeParams}B active`
+                        : m.provider,
+                      sizeTag,
+                      active: `${m.provider}::${m.id}` === currentModelKey,
+                      action: () => selectModel(m.provider, m.id, m.name),
+                    };
+                  });
               } else if (showCommands && cmdSubmenu === "thinking") {
                 paletteTitle = "Thinking Level";
                 paletteItems = thinkingLevels.map((l) => ({
@@ -1780,7 +1801,10 @@ function PiChat({ characters, activeCharId }) {
                           onClick={item.action}
                           onMouseEnter={() => setCmdIndex(i)}
                         >
-                          <span className="pi-cmd-name">{item.label}{item.active ? " \u2713" : ""}</span>
+                          <span className="pi-cmd-name">
+                            {item.label}{item.active ? " \u2713" : ""}
+                            {item.sizeTag && <span className="pi-size-tag">{item.sizeTag}</span>}
+                          </span>
                           {item.sublabel && <span className="pi-cmd-desc">{item.sublabel}</span>}
                           {item.hasSubmenu && <span className="pi-cmd-arrow">&rarr;</span>}
                         </button>
