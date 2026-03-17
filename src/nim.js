@@ -3,14 +3,9 @@
  * Calls POST /nim/generate on the API service, which streams SSE back.
  */
 
-const API_URL = import.meta.env.VITE_API_URL || "";
-const API_KEY = import.meta.env.VITE_API_KEY || "";
+import { getAuthHeaders } from "./nostr.js";
 
-function apiHeaders() {
-  const h = { "Content-Type": "application/json" };
-  if (API_KEY) h["Authorization"] = `Bearer ${API_KEY}`;
-  return h;
-}
+const API_URL = import.meta.env.VITE_API_URL || "";
 
 /** Check if NIM is available (API service configured). */
 export function isNimAvailable() {
@@ -55,7 +50,7 @@ function parsePartialPersona(text) {
  * @param {function} [onUpdate] - Called with partial persona as tokens stream in
  * @returns {Promise<{name, personality, world, voice, originStory, model}>}
  */
-export async function generateRandomPersona(onUpdate) {
+export async function generateRandomPersona(onUpdate, account) {
   if (!API_URL) throw new Error("API service not configured");
 
   let model = { id: "unknown", name: "Unknown", params: null };
@@ -67,9 +62,12 @@ export async function generateRandomPersona(onUpdate) {
     });
   }
 
-  const response = await fetch(`${API_URL}/nim/generate`, {
+  const url = `${API_URL}/nim/generate`;
+  const headers = account ? await getAuthHeaders(url, "POST", account) : { "Content-Type": "application/json" };
+
+  const response = await fetch(url, {
     method: "POST",
-    headers: apiHeaders(),
+    headers,
     body: "{}",
   });
 
@@ -196,12 +194,15 @@ export function getRandomErrorMessage() {
  * @param {{ name: string, personality?: string, world?: string }} character
  * @returns {Promise<{ url: string, id: string }>}
  */
-export async function generateAvatar(character) {
+export async function generateAvatar(character, account) {
   if (!API_URL) throw new Error("API service not configured");
 
-  const res = await fetch(`${API_URL}/generate/avatar`, {
+  const url = `${API_URL}/generate/avatar`;
+  const headers = account ? await getAuthHeaders(url, "POST", account) : { "Content-Type": "application/json" };
+
+  const res = await fetch(url, {
     method: "POST",
-    headers: apiHeaders(),
+    headers,
     body: JSON.stringify({
       name: character.name,
       personality: character.personality || "",

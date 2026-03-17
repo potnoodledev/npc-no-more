@@ -10,9 +10,10 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
+import { verifyNostrAuth, getAdminPubkey } from "./nostr-auth.js";
+
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
-const API_SERVICE_KEY = process.env.API_SERVICE_KEY || "";
 
 // ── Rate Limiting ──
 const rateLimits = new Map(); // ip -> { count, resetAt }
@@ -37,18 +38,13 @@ function checkRateLimit(ip) {
   return data.count <= RATE_LIMIT;
 }
 
-function checkApiKey(req) {
-  if (!API_SERVICE_KEY) return true;
-  const auth = req.headers.authorization;
-  if (auth?.startsWith("Bearer ")) return auth.slice(7) === API_SERVICE_KEY;
-  return false;
-}
-
 // Auth + rate limit middleware for generate endpoints
 function protectEndpoint(req, res, next) {
-  if (!checkApiKey(req)) {
-    return res.status(401).json({ error: "unauthorized" });
+  const auth = verifyNostrAuth(req.headers.authorization);
+  if (!auth) {
+    return res.status(401).json({ error: "unauthorized — valid Nostr signature required" });
   }
+  req.pubkey = auth.pubkey;
   if (!checkRateLimit(req.ip)) {
     return res.status(429).json({ error: "rate limit exceeded, try again later" });
   }
@@ -110,6 +106,10 @@ const NIM_MODELS = [
 ];
 
 // ── Health ──
+app.get("/setup-status", (req, res) => {
+  res.json({ adminSet: !!getAdminPubkey() });
+});
+
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -353,6 +353,6 @@ app.listen(PORT, () => {
   console.log(`NPC API service running on port ${PORT}`);
   console.log(`  NIM: ${NIM_API_KEY ? "configured" : "NOT configured"}`);
   console.log(`  S3: ${s3 ? `configured (${S3_BUCKET})` : "NOT configured"}`);
-  console.log(`  Auth: ${API_SERVICE_KEY ? "enabled" : "OPEN (no key configured)"}`);
+  console.log(`  Auth: Nostr NIP-98 signature verification`);
   console.log(`  Rate limit: ${RATE_LIMIT} req/${RATE_WINDOW / 1000}s per IP`);
 });

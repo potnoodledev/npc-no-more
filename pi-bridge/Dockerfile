@@ -12,7 +12,7 @@ RUN npm install -g @mariozechner/pi-coding-agent
 COPY package.json package-lock.json* /app/bridge/
 RUN cd /app/bridge && npm install
 
-COPY server.js profile.js prompt-builder.js nim-models.json /app/bridge/
+COPY server.js profile.js prompt-builder.js nostr-auth.js nim-models.json /app/bridge/
 
 # Create workspace
 RUN mkdir -p /workspace

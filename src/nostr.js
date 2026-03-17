@@ -76,6 +76,36 @@ export const CLIENT_TAG = ["client", "npc-no-more"];
 // Single-letter tag for relay-compatible filtering (relays only support #<single-char> filters)
 export const CLIENT_FILTER_TAG = ["l", "npc-no-more"];
 
+// ── NIP-98 HTTP Auth ──
+
+export async function createAuthEvent(url, method, account) {
+  const event = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ["u", url],
+      ["method", method.toUpperCase()],
+    ],
+    content: "",
+  };
+  if (account.isExtension) {
+    return await window.nostr.signEvent(event);
+  }
+  return finalizeEvent(event, account.sk);
+}
+
+export function authHeader(signedEvent) {
+  return "Nostr " + btoa(JSON.stringify(signedEvent));
+}
+
+export async function getAuthHeaders(url, method, account) {
+  const event = await createAuthEvent(url, method, account);
+  return {
+    "Content-Type": "application/json",
+    "Authorization": authHeader(event),
+  };
+}
+
 // ── Publishing ──
 
 export async function publishEvent(event, account, relays = DEFAULT_RELAYS) {
@@ -210,6 +240,26 @@ export async function fetchProfiles(relays, pubkeys) {
     } catch {}
   }
   return profiles;
+}
+
+// ── Admin Account ──
+
+export function loadAdminAccount() {
+  const data = loadLocal("npc_admin_account");
+  if (data?.skHex) {
+    return accountFromSkHex(data.skHex);
+  }
+  return null;
+}
+
+export function saveAdminAccount(account) {
+  saveLocal("npc_admin_account", { skHex: account.skHex, pk: account.pk, npub: account.npub });
+}
+
+export function createAdminAccount() {
+  const acc = createAccount();
+  saveAdminAccount(acc);
+  return acc;
 }
 
 // ── Characters Persistence ──

@@ -10,6 +10,7 @@ import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { fetchProfile, closePool } from "./profile.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
+import { verifyNostrAuth, getAdminPubkey } from "./nostr-auth.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -22,28 +23,15 @@ const PI_BIN = process.env.PI_BIN || "pi";
 const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
 const RELAY_URL = process.env.RELAY_URL || "ws://localhost:7777";
-const PI_BRIDGE_API_KEY = process.env.PI_BRIDGE_API_KEY || "";
+// ── Auth (NIP-98 Nostr signature) ──
 
-// ── Auth ──
-
-function checkAuth(keyFromRequest) {
-  if (!PI_BRIDGE_API_KEY) return true; // No key configured = open (local dev)
-  return keyFromRequest === PI_BRIDGE_API_KEY;
-}
-
-function getKeyFromReq(req) {
-  const auth = req.headers?.authorization;
-  if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  const url = new URL(req.url, `http://localhost:${PORT}`);
-  return url.searchParams.get("key") || "";
-}
-
-// Auth middleware for HTTP (skip /health)
 app.use((req, res, next) => {
-  if (req.path === "/health") return next();
-  if (!checkAuth(getKeyFromReq(req))) {
-    return res.status(401).json({ error: "unauthorized" });
+  if (req.path === "/health" || req.path === "/setup-status") return next();
+  const auth = verifyNostrAuth(req.headers.authorization);
+  if (!auth) {
+    return res.status(401).json({ error: "unauthorized — valid Nostr signature required" });
   }
+  req.pubkey = auth.pubkey;
   next();
 });
 
@@ -254,6 +242,10 @@ async function getOrCreateSession(pubkeyHex) {
 
 // ── HTTP Endpoints ──
 
+app.get("/setup-status", (req, res) => {
+  res.json({ adminSet: !!getAdminPubkey() });
+});
+
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -304,18 +296,7 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
-
-  // Auth check
-  if (!checkAuth(url.searchParams.get("key") || "")) {
-    ws.send(JSON.stringify({ type: "error", error: "unauthorized" }));
-    ws.close(1008, "unauthorized");
-    return;
-  }
-
   const pubkeyHex = url.searchParams.get("pubkey") || "";
-  const sessionId = pubkeyHex.slice(0, 16) || "default";
-
-  console.log(`[ws] Client connected, pubkey=${pubkeyHex.slice(0, 16)}...`);
 
   if (!pubkeyHex) {
     ws.send(JSON.stringify({ type: "error", error: "pubkey parameter required" }));
@@ -323,37 +304,59 @@ wss.on("connection", async (ws, req) => {
     return;
   }
 
-  let rpc;
-  try {
-    rpc = await getOrCreateSession(pubkeyHex);
-  } catch (err) {
-    ws.send(JSON.stringify({ type: "error", error: err.message }));
-    ws.close();
-    return;
-  }
+  // Wait for auth message before processing commands
+  let authenticated = false;
+  let rpc = null;
 
-  const listener = (msg) => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify(msg));
-    }
-  };
-  rpc.addListener(listener);
-
-  ws.on("message", (data) => {
+  ws.on("message", async (data) => {
     try {
-      const command = JSON.parse(data.toString());
-      rpc.send(command);
+      const msg = JSON.parse(data.toString());
+
+      // First message must be auth
+      if (!authenticated) {
+        if (msg.type === "auth" && msg.event) {
+          const authResult = verifyNostrAuth("Nostr " + btoa(JSON.stringify(msg.event)));
+          if (!authResult) {
+            ws.send(JSON.stringify({ type: "error", error: "invalid auth signature" }));
+            ws.close(1008, "unauthorized");
+            return;
+          }
+          authenticated = true;
+          console.log(`[ws] Authenticated pubkey=${pubkeyHex.slice(0, 16)}...`);
+
+          // Now start the session
+          try {
+            rpc = await getOrCreateSession(pubkeyHex);
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "error", error: err.message }));
+            ws.close();
+            return;
+          }
+
+          const listener = (piMsg) => {
+            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(piMsg));
+          };
+          rpc.addListener(listener);
+          ws.on("close", () => {
+            console.log(`[ws] Disconnected pubkey=${pubkeyHex.slice(0, 16)}...`);
+            rpc.removeListener(listener);
+          });
+
+          // Send initial state
+          ws.send(JSON.stringify({ type: "auth_ok" }));
+          rpc.send({ type: "get_state" });
+          return;
+        }
+        ws.send(JSON.stringify({ type: "error", error: "auth required — send {type: 'auth', event: <signedEvent>} first" }));
+        return;
+      }
+
+      // Authenticated — forward to pi
+      if (rpc) rpc.send(msg);
     } catch (err) {
       ws.send(JSON.stringify({ type: "error", error: "Invalid JSON: " + err.message }));
     }
   });
-
-  ws.on("close", () => {
-    console.log(`[ws] Client disconnected, pubkey=${pubkeyHex.slice(0, 16)}...`);
-    rpc.removeListener(listener);
-  });
-
-  rpc.send({ type: "get_state" });
 });
 
 // ── Start ──
@@ -364,7 +367,7 @@ server.listen(PORT, () => {
   console.log(`Pi Bridge running on port ${PORT}`);
   console.log(`  NIM: ${NVIDIA_NIM_API_KEY ? "configured" : "NOT configured"}`);
   console.log(`  Relay: ${RELAY_URL}`);
-  console.log(`  Auth: ${PI_BRIDGE_API_KEY ? "enabled" : "OPEN (no key configured)"}`);
+  console.log(`  Auth: Nostr NIP-98 signature verification`);
   console.log(`  Workspace: ${WORKSPACE}`);
 });
 

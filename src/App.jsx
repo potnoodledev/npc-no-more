@@ -29,6 +29,10 @@ import {
   PUBLIC_RELAYS,
   OWN_RELAY,
   getPool,
+  loadAdminAccount,
+  createAdminAccount,
+  createAuthEvent,
+  getAuthHeaders,
 } from "./nostr";
 import { npubEncode, decode as nip19decode } from "nostr-tools/nip19";
 import "./App.css";
@@ -149,7 +153,7 @@ function MobileHeader({ activeChar, sidebarOpen, setSidebarOpen }) {
 //  CREATE CHARACTER
 // ══════════════════════════════════════
 
-function CreateCharacter({ onComplete }) {
+function CreateCharacter({ onComplete, adminAccount }) {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [charName, setCharName] = useState("");
@@ -174,7 +178,7 @@ function CreateCharacter({ onComplete }) {
         if (partial.world) setCharWorld(partial.world);
         if (partial.voice) setCharVoice(partial.voice);
         setRolledModel(partial.model);
-      });
+      }, adminAccount);
       setCharName(persona.name);
       setCharPersonality(persona.personality);
       setCharWorld(persona.world);
@@ -191,7 +195,7 @@ function CreateCharacter({ onComplete }) {
     setGeneratingAvatar(true);
     setError("");
     try {
-      const result = await generateAvatar({ name: charName, personality: charPersonality, world: charWorld });
+      const result = await generateAvatar({ name: charName, personality: charPersonality, world: charWorld }, adminAccount);
       setAvatarUrl(result.url);
     } catch (e) {
       setError("Avatar generation failed: " + e.message);
@@ -426,7 +430,7 @@ function CharacterSwitcher({ characters, selectedCharId, onSelect }) {
 //  OWNED CHARACTER PAGE (tabs: Posts / Profile)
 // ══════════════════════════════════════
 
-function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDeleteChar }) {
+function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDeleteChar, adminAccount }) {
   const [tab, setTab] = useState("posts"); // "posts" | "profile"
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
@@ -635,7 +639,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
         name: editFields.display_name || editFields.name || character.name,
         personality: editFields.about || "",
         world: "",
-      });
+      }, adminAccount);
       updateField("picture", result.url);
     } catch (e) {
       alert("Avatar generation failed: " + e.message);
@@ -1253,7 +1257,7 @@ function MessageView({ recipientPubkey, account, characters = [] }) {
 
 const PI_URL = import.meta.env.VITE_PI_URL || "";
 
-function PiChat({ characters, activeCharId }) {
+function PiChat({ characters, activeCharId, adminAccount }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
@@ -1283,10 +1287,12 @@ function PiChat({ characters, activeCharId }) {
   // Fetch model metadata from bridge HTTP endpoint
   useEffect(() => {
     if (!PI_URL) return;
+    if (!adminAccount) return;
     const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
-    const piKey = import.meta.env.VITE_PI_API_KEY || "";
-    const headers = piKey ? { Authorization: `Bearer ${piKey}` } : {};
-    fetch(`${httpUrl}/models-meta`, { headers }).then((r) => r.json()).then(setModelMeta).catch(() => {});
+    const metaUrl = `${httpUrl}/models-meta`;
+    getAuthHeaders(metaUrl, "GET", adminAccount).then((headers) => {
+      fetch(metaUrl, { headers }).then((r) => r.json()).then(setModelMeta).catch(() => {});
+    });
   }, []);
 
   const activeChar = characters.find((c) => c.id === activeCharId);
@@ -1294,20 +1300,17 @@ function PiChat({ characters, activeCharId }) {
 
   // Connect WebSocket
   useEffect(() => {
-    if (!PI_URL) return;
+    if (!PI_URL || !adminAccount) return;
     const pubkey = activeChar?.pk || "";
-    const piApiKey = import.meta.env.VITE_PI_API_KEY || "";
-    const url = `${PI_URL}/ws?session=${sessionId}&pubkey=${pubkey}${piApiKey ? `&key=${piApiKey}` : ""}`;
+    const url = `${PI_URL}/ws?session=${sessionId}&pubkey=${pubkey}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      setConnected(true);
-      console.log("[pi] Connected to", url);
-      // Request state, models, and commands
-      ws.send(JSON.stringify({ type: "get_available_models" }));
-      ws.send(JSON.stringify({ type: "get_commands" }));
-      ws.send(JSON.stringify({ type: "get_session_stats" }));
+    ws.onopen = async () => {
+      console.log("[pi] Connected, authenticating...");
+      // Send auth as first message
+      const authEvent = await createAuthEvent(url, "GET", adminAccount);
+      ws.send(JSON.stringify({ type: "auth", event: authEvent }));
     };
 
     ws.onmessage = (e) => {
@@ -1332,6 +1335,18 @@ function PiChat({ characters, activeCharId }) {
   }, [messages]);
 
   function handlePiEvent(msg) {
+    // Auth OK — now request state/models/commands
+    if (msg.type === "auth_ok") {
+      setConnected(true);
+      console.log("[pi] Authenticated");
+      if (wsRef.current) {
+        wsRef.current.send(JSON.stringify({ type: "get_available_models" }));
+        wsRef.current.send(JSON.stringify({ type: "get_commands" }));
+        wsRef.current.send(JSON.stringify({ type: "get_session_stats" }));
+      }
+      return;
+    }
+
     // Response to get_state
     if (msg.type === "response" && msg.command === "get_state" && msg.success) {
       setPiState(msg.data);
@@ -2460,6 +2475,7 @@ function SettingsPage({ characters, onReset }) {
 export default function App() {
   const [characters, setCharacters] = useState([]);
   const [activeCharId, setActiveCharId] = useState(null);
+  const [adminAccount, setAdminAccount] = useState(null);
   const [loading, setLoading] = useState(true);
   const [route, setRoute] = useState("home");
   const [routeKey, setRouteKey] = useState(null);
@@ -2469,6 +2485,12 @@ export default function App() {
   const activeAccount = activeChar ? accountFromSkHex(activeChar.skHex) : null;
 
   useEffect(() => {
+    // Load admin account
+    const admin = loadAdminAccount();
+    if (admin) {
+      setAdminAccount(admin);
+    }
+
     const existing = loadCharacters();
     if (existing.length === 0) migrateOldData();
     const chars = loadCharacters();
@@ -2537,12 +2559,34 @@ export default function App() {
 
   if (loading) return null;
 
+  // Admin setup — first time visiting the site
+  if (!adminAccount) {
+    return (
+      <div className="setup-wizard">
+        <div className="setup-card">
+          <h1>NPC No More</h1>
+          <p className="setup-tagline">First-time setup — create your admin key</p>
+          <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 20 }}>
+            This generates a Nostr keypair that authenticates you as the admin of this instance.
+            All API calls will be signed with this key. Store it safely.
+          </p>
+          <button className="btn-primary" style={{ width: "100%" }} onClick={() => {
+            const acc = createAdminAccount();
+            setAdminAccount(acc);
+          }}>
+            Generate Admin Key
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (characters.length === 0 && route !== "new-character") {
-    return <CreateCharacter onComplete={handleCreateCharacter} />;
+    return <CreateCharacter onComplete={handleCreateCharacter} adminAccount={adminAccount} />;
   }
 
   if (route === "new-character") {
-    return <CreateCharacter onComplete={handleCreateCharacter} />;
+    return <CreateCharacter onComplete={handleCreateCharacter} adminAccount={adminAccount} />;
   }
 
   // Figure out current profile pubkey for sidebar highlighting
@@ -2553,7 +2597,7 @@ export default function App() {
 
   function renderMain() {
     if (route === "pi") {
-      return <PiChat characters={characters} activeCharId={activeCharId} />;
+      return <PiChat characters={characters} activeCharId={activeCharId} adminAccount={adminAccount} />;
     }
     if (route === "network") {
       return <NetworkPage characters={characters} activeAccount={activeAccount} />;
@@ -2565,7 +2609,7 @@ export default function App() {
       const ownedChar = characters.find((c) => c.pk === routeKey) || null;
       if (ownedChar) {
         return (
-          <OwnedCharacterPage
+          <OwnedCharacterPage adminAccount={adminAccount}
             key={ownedChar.id}
             character={ownedChar}
             account={accountFromSkHex(ownedChar.skHex)}
@@ -2586,7 +2630,7 @@ export default function App() {
     // Home route: show active character's page
     if (activeChar) {
       return (
-        <OwnedCharacterPage
+        <OwnedCharacterPage adminAccount={adminAccount}
           key={activeChar.id}
           character={activeChar}
           account={activeAccount}
