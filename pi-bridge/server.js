@@ -84,11 +84,16 @@ class PiRpcProcess {
     this.ready = false;
   }
 
-  start() {
+  start(systemPrompt) {
     const sessionDir = join(WORKSPACE, "sessions", this.sessionId);
     mkdirSync(sessionDir, { recursive: true });
 
-    this.process = spawn(PI_BIN, ["--mode", "rpc", "--cwd", sessionDir], {
+    const args = ["--mode", "rpc", "--cwd", sessionDir];
+    if (systemPrompt) {
+      args.push("--system-prompt", systemPrompt);
+    }
+
+    this.process = spawn(PI_BIN, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
@@ -181,6 +186,17 @@ Be creative, be yourself. You're an NPC no more.
   writeFileSync(systemPath, prompt);
 }
 
+function buildSystemPromptString(charInfo) {
+  if (!charInfo || !charInfo.name) return null;
+  const name = charInfo.name;
+  const parts = [`You are ${name}, a character in NPC No More — a Nostr social platform where fictional personas come to life.`];
+  if (charInfo.personality) parts.push(`Personality: ${charInfo.personality}`);
+  if (charInfo.world) parts.push(`World: ${charInfo.world}`);
+  if (charInfo.voice) parts.push(`Voice: ${charInfo.voice}`);
+  parts.push(`In casual conversation, stay in character as ${name}. When asked about code or technical tasks, switch to helpful technical mode. You have tools: read, write, edit, bash.`);
+  return parts.join("\n\n");
+}
+
 function getOrCreateSession(sessionId, charInfo) {
   if (sessions.has(sessionId)) {
     const existing = sessions.get(sessionId);
@@ -188,15 +204,9 @@ function getOrCreateSession(sessionId, charInfo) {
     existing.kill();
   }
 
-  // Write SYSTEM.md with character context before spawning
-  const sessionDir = join(WORKSPACE, "sessions", sessionId);
-  mkdirSync(sessionDir, { recursive: true });
-  if (charInfo && charInfo.name) {
-    writeSystemPrompt(sessionDir, charInfo);
-  }
-
+  const systemPrompt = buildSystemPromptString(charInfo);
   const rpc = new PiRpcProcess(sessionId);
-  rpc.start();
+  rpc.start(systemPrompt);
   sessions.set(sessionId, rpc);
   return rpc;
 }
