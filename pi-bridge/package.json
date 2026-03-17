@@ -7,8 +7,10 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
+    "@noble/hashes": "^2.0.1",
     "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "nostr-tools": "^2.23.3",
     "ws": "^8.19.0"
   }
 }

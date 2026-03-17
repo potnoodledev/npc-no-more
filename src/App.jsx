@@ -1293,14 +1293,8 @@ function PiChat({ characters, activeCharId }) {
   // Connect WebSocket
   useEffect(() => {
     if (!PI_URL) return;
-    const params = new URLSearchParams({ session: sessionId });
-    if (activeChar) {
-      params.set("name", activeChar.name);
-      if (activeChar.personality) params.set("personality", activeChar.personality);
-      if (activeChar.world) params.set("world", activeChar.world);
-      if (activeChar.voice) params.set("voice", activeChar.voice);
-    }
-    const url = `${PI_URL}/ws?${params}`;
+    const pubkey = activeChar?.pk || "";
+    const url = `${PI_URL}/ws?session=${sessionId}&pubkey=${pubkey}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 

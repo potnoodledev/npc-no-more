@@ -4,10 +4,12 @@ import { WebSocketServer } from "ws";
 import http from "http";
 import { spawn } from "child_process";
 import { createInterface } from "readline";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
+import { fetchProfile, closePool } from "./profile.js";
+import { buildSystemPrompt } from "./prompt-builder.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +21,7 @@ const PORT = process.env.PORT || 3457;
 const PI_BIN = process.env.PI_BIN || "pi";
 const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
+const RELAY_URL = process.env.RELAY_URL || "ws://localhost:7777";
 
 // ── Pre-configure pi with NIM models ──
 
@@ -26,12 +29,9 @@ function setupPiConfig() {
   const piDir = join(homedir(), ".pi", "agent");
   mkdirSync(piDir, { recursive: true });
 
-  // Configure NIM as an OpenAI-compatible provider via models.json
-  // Generate models.json from nim-models.json reference
   const modelsPath = join(piDir, "models.json");
   const nimModelsRaw = JSON.parse(readFileSync(join(__dirname, "nim-models.json"), "utf-8"));
 
-  // Filter to models with NIM tool calling support, sorted by active params
   const nimModelsAll = nimModelsRaw
     .filter((m) => m.nim_tool_calling)
     .sort((a, b) => a.id.localeCompare(b.id))
@@ -55,11 +55,8 @@ function setupPiConfig() {
       };
     });
 
-  // Deduplicate by name — keep the last (latest) version
   const seen = new Map();
-  for (const m of nimModelsAll) {
-    seen.set(m.name, m);
-  }
+  for (const m of nimModelsAll) seen.set(m.name, m);
   const nimModels = [...seen.values()].sort((a, b) => {
     const sizeA = a._activeParams || a._totalParams || 0;
     const sizeB = b._activeParams || b._totalParams || 0;
@@ -67,27 +64,68 @@ function setupPiConfig() {
     return a.name.localeCompare(b.name);
   });
 
+  const modelsForPi = nimModels.map(({ _totalParams, _activeParams, _arch, ...rest }) => rest);
   const modelsConfig = {
     providers: {
       "nvidia-nim": {
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKey: NVIDIA_NIM_API_KEY,
         api: "openai-completions",
-        models: nimModels,
+        models: modelsForPi,
       },
     },
   };
-  // Strip _fields for pi (strict schema), but keep metadata for our API
-  const modelsForPi = nimModels.map(({ _totalParams, _activeParams, _arch, ...rest }) => rest);
-  const modelsConfigForPi = { ...modelsConfig, providers: { "nvidia-nim": { ...modelsConfig.providers["nvidia-nim"], models: modelsForPi } } };
-  writeFileSync(modelsPath, JSON.stringify(modelsConfigForPi, null, 2));
+  writeFileSync(modelsPath, JSON.stringify(modelsConfig, null, 2));
   console.log(`Wrote ${nimModels.length} NIM models to ${modelsPath}`);
 
-  // Store full metadata for the /models endpoint
-  global.__modelMeta = Object.fromEntries(nimModels.map((m) => [m.id, { totalParams: m._totalParams, activeParams: m._activeParams, arch: m._arch }]));
+  global.__modelMeta = Object.fromEntries(
+    nimModels.map((m) => [m.id, { totalParams: m._totalParams, activeParams: m._activeParams, arch: m._arch }])
+  );
 
-  // Ensure workspace exists
   mkdirSync(WORKSPACE, { recursive: true });
+}
+
+// ── Character Workspace ──
+
+function getCharDir(pubkeyHex) {
+  return join(WORKSPACE, "characters", pubkeyHex);
+}
+
+function ensureCharWorkspace(pubkeyHex) {
+  const charDir = getCharDir(pubkeyHex);
+  mkdirSync(join(charDir, ".pi", "skills"), { recursive: true });
+  mkdirSync(join(charDir, ".pi", "prompts"), { recursive: true });
+
+  // Create default CLAUDE.md if it doesn't exist (write-once)
+  const claudePath = join(charDir, ".pi", "CLAUDE.md");
+  if (!existsSync(claudePath)) {
+    writeFileSync(claudePath, `# Character Workspace
+
+This is your personal workspace. The pi agent can read and write files here.
+
+## Notes
+- Your skills are in .pi/skills/
+- Your prompt templates are in .pi/prompts/
+- This file is yours to edit — it won't be overwritten.
+`);
+  }
+
+  return charDir;
+}
+
+function cacheProfile(pubkeyHex, profile) {
+  const cachePath = join(getCharDir(pubkeyHex), "profile-cache.json");
+  try {
+    writeFileSync(cachePath, JSON.stringify(profile, null, 2));
+  } catch {}
+}
+
+function getCachedProfile(pubkeyHex) {
+  const cachePath = join(getCharDir(pubkeyHex), "profile-cache.json");
+  try {
+    if (existsSync(cachePath)) return JSON.parse(readFileSync(cachePath, "utf-8"));
+  } catch {}
+  return null;
 }
 
 // ── RPC Process Manager ──
@@ -101,11 +139,8 @@ class PiRpcProcess {
     this.ready = false;
   }
 
-  start(systemPrompt) {
-    const sessionDir = join(WORKSPACE, "sessions", this.sessionId);
-    mkdirSync(sessionDir, { recursive: true });
-
-    const args = ["--mode", "rpc", "--cwd", sessionDir];
+  start(cwd, systemPrompt) {
+    const args = ["--mode", "rpc", "--cwd", cwd];
     if (systemPrompt) {
       args.push("--system-prompt", systemPrompt);
     }
@@ -127,7 +162,6 @@ class PiRpcProcess {
           listener(msg);
         }
       } catch {
-        // Non-JSON output from pi (startup messages, etc)
         console.log(`[pi:${this.sessionId}] ${line}`);
       }
     });
@@ -142,7 +176,7 @@ class PiRpcProcess {
     });
 
     this.ready = true;
-    console.log(`[pi:${this.sessionId}] Started RPC process`);
+    console.log(`[pi:${this.sessionId}] Started in ${cwd}`);
   }
 
   send(command) {
@@ -150,13 +184,8 @@ class PiRpcProcess {
     this.process.stdin.write(JSON.stringify(command) + "\n");
   }
 
-  addListener(fn) {
-    this.listeners.add(fn);
-  }
-
-  removeListener(fn) {
-    this.listeners.delete(fn);
-  }
+  addListener(fn) { this.listeners.add(fn); }
+  removeListener(fn) { this.listeners.delete(fn); }
 
   kill() {
     if (this.process) {
@@ -167,63 +196,34 @@ class PiRpcProcess {
   }
 }
 
-// Session pool — one pi process per session
 const sessions = new Map();
 
-function writeSystemPrompt(sessionDir, charInfo) {
-  const piDir = join(sessionDir, ".pi");
-  mkdirSync(piDir, { recursive: true });
-  const systemPath = join(piDir, "SYSTEM.md");
-  const name = charInfo.name || "Agent";
-  const personality = charInfo.personality || "";
-  const world = charInfo.world || "";
-  const voice = charInfo.voice || "";
+async function getOrCreateSession(pubkeyHex) {
+  const sessionId = pubkeyHex.slice(0, 16);
 
-  const prompt = `# ${name}
-
-You are **${name}**, a character in **NPC No More** — a Nostr social platform where fictional personas come to life.
-
-${personality ? `## Personality\n${personality}\n` : ""}
-${world ? `## World\n${world}\n` : ""}
-${voice ? `## Voice & Style\n${voice}\n` : ""}
-
-## Context
-
-You exist on the Nostr protocol. You can post notes, reply to threads, and interact with other characters. The app is built with React + Vite, uses a strfry relay, and has an API service for image generation via NVIDIA NIM.
-
-## How to behave
-
-- **In casual conversation**: Stay in character as ${name}. Respond with your personality and voice.
-- **When asked about code or technical tasks**: Switch to a helpful technical mode. You have access to tools: read, write, edit files, and run bash commands in your workspace.
-- **When asked to post**: Draft content that fits your character's voice and personality.
-
-Be creative, be yourself. You're an NPC no more.
-`;
-
-  writeFileSync(systemPath, prompt);
-}
-
-function buildSystemPromptString(charInfo) {
-  if (!charInfo || !charInfo.name) return null;
-  const name = charInfo.name;
-  const parts = [`You are ${name}, a character in NPC No More — a Nostr social platform where fictional personas come to life.`];
-  if (charInfo.personality) parts.push(`Personality: ${charInfo.personality}`);
-  if (charInfo.world) parts.push(`World: ${charInfo.world}`);
-  if (charInfo.voice) parts.push(`Voice: ${charInfo.voice}`);
-  parts.push(`In casual conversation, stay in character as ${name}. When asked about code or technical tasks, switch to helpful technical mode. You have tools: read, write, edit, bash.`);
-  return parts.join("\n\n");
-}
-
-function getOrCreateSession(sessionId, charInfo) {
   if (sessions.has(sessionId)) {
     const existing = sessions.get(sessionId);
     if (existing.ready) return existing;
     existing.kill();
   }
 
-  const systemPrompt = buildSystemPromptString(charInfo);
+  // Ensure workspace exists
+  const charDir = ensureCharWorkspace(pubkeyHex);
+
+  // Fetch profile from relay
+  let profile = await fetchProfile(RELAY_URL, pubkeyHex);
+  if (profile) {
+    cacheProfile(pubkeyHex, profile);
+  } else {
+    profile = getCachedProfile(pubkeyHex);
+    if (profile) console.log(`[session] Using cached profile for ${pubkeyHex.slice(0, 12)}...`);
+  }
+
+  // Build system prompt from NIP-01 profile
+  const systemPrompt = buildSystemPrompt(profile, pubkeyHex);
+
   const rpc = new PiRpcProcess(sessionId);
-  rpc.start(systemPrompt);
+  rpc.start(charDir, systemPrompt);
   sessions.set(sessionId, rpc);
   return rpc;
 }
@@ -234,6 +234,7 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     nim: !!NVIDIA_NIM_API_KEY,
+    relay: RELAY_URL,
     activeSessions: sessions.size,
   });
 });
@@ -243,8 +244,32 @@ app.get("/models-meta", (req, res) => {
 });
 
 app.get("/sessions", (req, res) => {
+  res.json({ sessions: [...sessions.keys()] });
+});
+
+// Character workspace info
+app.get("/characters/:pubkey/workspace", (req, res) => {
+  const charDir = getCharDir(req.params.pubkey);
+  if (!existsSync(charDir)) return res.json({ exists: false });
+
+  const skillsDir = join(charDir, ".pi", "skills");
+  const promptsDir = join(charDir, ".pi", "prompts");
+  const claudePath = join(charDir, ".pi", "CLAUDE.md");
+  const profileCache = getCachedProfile(req.params.pubkey);
+
+  const skills = existsSync(skillsDir)
+    ? readdirSync(skillsDir).filter((f) => !f.startsWith("."))
+    : [];
+  const prompts = existsSync(promptsDir)
+    ? readdirSync(promptsDir).filter((f) => f.endsWith(".md"))
+    : [];
+
   res.json({
-    sessions: [...sessions.keys()],
+    exists: true,
+    skills,
+    prompts,
+    hasClaudeMd: existsSync(claudePath),
+    profile: profileCache,
   });
 });
 
@@ -253,28 +278,28 @@ app.get("/sessions", (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
-  const sessionId = url.searchParams.get("session") || "default";
-  const charInfo = {
-    name: url.searchParams.get("name") || "",
-    personality: url.searchParams.get("personality") || "",
-    world: url.searchParams.get("world") || "",
-    voice: url.searchParams.get("voice") || "",
-  };
+  const pubkeyHex = url.searchParams.get("pubkey") || "";
+  const sessionId = pubkeyHex.slice(0, 16) || "default";
 
-  console.log(`[ws] Client connected, session=${sessionId}, char=${charInfo.name || "anonymous"}`);
+  console.log(`[ws] Client connected, pubkey=${pubkeyHex.slice(0, 16)}...`);
+
+  if (!pubkeyHex) {
+    ws.send(JSON.stringify({ type: "error", error: "pubkey parameter required" }));
+    ws.close();
+    return;
+  }
 
   let rpc;
   try {
-    rpc = getOrCreateSession(sessionId, charInfo);
+    rpc = await getOrCreateSession(pubkeyHex);
   } catch (err) {
     ws.send(JSON.stringify({ type: "error", error: err.message }));
     ws.close();
     return;
   }
 
-  // Forward pi events to websocket
   const listener = (msg) => {
     if (ws.readyState === ws.OPEN) {
       ws.send(JSON.stringify(msg));
@@ -282,7 +307,6 @@ wss.on("connection", (ws, req) => {
   };
   rpc.addListener(listener);
 
-  // Forward websocket commands to pi
   ws.on("message", (data) => {
     try {
       const command = JSON.parse(data.toString());
@@ -293,11 +317,10 @@ wss.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    console.log(`[ws] Client disconnected, session=${sessionId}`);
+    console.log(`[ws] Client disconnected, pubkey=${pubkeyHex.slice(0, 16)}...`);
     rpc.removeListener(listener);
   });
 
-  // Send initial state
   rpc.send({ type: "get_state" });
 });
 
@@ -308,6 +331,12 @@ setupPiConfig();
 server.listen(PORT, () => {
   console.log(`Pi Bridge running on port ${PORT}`);
   console.log(`  NIM: ${NVIDIA_NIM_API_KEY ? "configured" : "NOT configured"}`);
+  console.log(`  Relay: ${RELAY_URL}`);
   console.log(`  Workspace: ${WORKSPACE}`);
-  console.log(`  WebSocket: ws://localhost:${PORT}/ws?session=<id>`);
+});
+
+process.on("SIGTERM", () => {
+  closePool();
+  for (const [, rpc] of sessions) rpc.kill();
+  process.exit(0);
 });
