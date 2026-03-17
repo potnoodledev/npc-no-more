@@ -32,11 +32,10 @@ function setupPiConfig() {
   const nimModelsRaw = JSON.parse(readFileSync(join(__dirname, "nim-models.json"), "utf-8"));
 
   // Filter to models with NIM tool calling support, sorted by active params
-  const nimModels = nimModelsRaw
+  const nimModelsAll = nimModelsRaw
     .filter((m) => m.nim_tool_calling)
     .sort((a, b) => (a.active_params_b || 0) - (b.active_params_b || 0))
     .map((m) => {
-      // Derive a clean name from the model ID
       const parts = m.id.split("/");
       const rawName = parts[parts.length - 1]
         .replace(/-instruct.*$/, "")
@@ -52,6 +51,13 @@ function setupPiConfig() {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       };
     });
+
+  // Deduplicate by name — keep the last (latest) version
+  const seen = new Map();
+  for (const m of nimModelsAll) {
+    seen.set(m.name, m);
+  }
+  const nimModels = [...seen.values()];
 
   const modelsConfig = {
     providers: {
