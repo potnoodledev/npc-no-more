@@ -22,6 +22,30 @@ const PI_BIN = process.env.PI_BIN || "pi";
 const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
 const RELAY_URL = process.env.RELAY_URL || "ws://localhost:7777";
+const PI_BRIDGE_API_KEY = process.env.PI_BRIDGE_API_KEY || "";
+
+// ── Auth ──
+
+function checkAuth(keyFromRequest) {
+  if (!PI_BRIDGE_API_KEY) return true; // No key configured = open (local dev)
+  return keyFromRequest === PI_BRIDGE_API_KEY;
+}
+
+function getKeyFromReq(req) {
+  const auth = req.headers?.authorization;
+  if (auth?.startsWith("Bearer ")) return auth.slice(7);
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  return url.searchParams.get("key") || "";
+}
+
+// Auth middleware for HTTP (skip /health)
+app.use((req, res, next) => {
+  if (req.path === "/health") return next();
+  if (!checkAuth(getKeyFromReq(req))) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  next();
+});
 
 // ── Pre-configure pi with NIM models ──
 
@@ -280,6 +304,14 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // Auth check
+  if (!checkAuth(url.searchParams.get("key") || "")) {
+    ws.send(JSON.stringify({ type: "error", error: "unauthorized" }));
+    ws.close(1008, "unauthorized");
+    return;
+  }
+
   const pubkeyHex = url.searchParams.get("pubkey") || "";
   const sessionId = pubkeyHex.slice(0, 16) || "default";
 
@@ -332,6 +364,7 @@ server.listen(PORT, () => {
   console.log(`Pi Bridge running on port ${PORT}`);
   console.log(`  NIM: ${NVIDIA_NIM_API_KEY ? "configured" : "NOT configured"}`);
   console.log(`  Relay: ${RELAY_URL}`);
+  console.log(`  Auth: ${PI_BRIDGE_API_KEY ? "enabled" : "OPEN (no key configured)"}`);
   console.log(`  Workspace: ${WORKSPACE}`);
 });
 

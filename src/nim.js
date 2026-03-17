@@ -4,6 +4,13 @@
  */
 
 const API_URL = import.meta.env.VITE_API_URL || "";
+const API_KEY = import.meta.env.VITE_API_KEY || "";
+
+function apiHeaders() {
+  const h = { "Content-Type": "application/json" };
+  if (API_KEY) h["Authorization"] = `Bearer ${API_KEY}`;
+  return h;
+}
 
 /** Check if NIM is available (API service configured). */
 export function isNimAvailable() {
@@ -62,7 +69,7 @@ export async function generateRandomPersona(onUpdate) {
 
   const response = await fetch(`${API_URL}/nim/generate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: "{}",
   });
 
@@ -194,7 +201,7 @@ export async function generateAvatar(character) {
 
   const res = await fetch(`${API_URL}/generate/avatar`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(),
     body: JSON.stringify({
       name: character.name,
       personality: character.personality || "",

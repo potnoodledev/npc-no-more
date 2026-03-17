@@ -5,12 +5,55 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 
 const app = express();
 app.use(cors());
+app.set("trust proxy", true);
 app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
+const API_SERVICE_KEY = process.env.API_SERVICE_KEY || "";
+
+// ── Rate Limiting ──
+const rateLimits = new Map(); // ip -> { count, resetAt }
+const RATE_LIMIT = 30; // requests per window
+const RATE_WINDOW = 60000; // 1 minute
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, data] of rateLimits) {
+    if (data.resetAt < now) rateLimits.delete(ip);
+  }
+}, 60000);
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  let data = rateLimits.get(ip);
+  if (!data || data.resetAt < now) {
+    data = { count: 0, resetAt: now + RATE_WINDOW };
+    rateLimits.set(ip, data);
+  }
+  data.count++;
+  return data.count <= RATE_LIMIT;
+}
+
+function checkApiKey(req) {
+  if (!API_SERVICE_KEY) return true;
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) return auth.slice(7) === API_SERVICE_KEY;
+  return false;
+}
+
+// Auth + rate limit middleware for generate endpoints
+function protectEndpoint(req, res, next) {
+  if (!checkApiKey(req)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  if (!checkRateLimit(req.ip)) {
+    return res.status(429).json({ error: "rate limit exceeded, try again later" });
+  }
+  next();
+}
 
 // ── S3 Bucket (Railway Storage Buckets are S3-compatible) ──
 const S3_ENDPOINT = process.env.S3_ENDPOINT || "";
@@ -80,7 +123,7 @@ app.get("/health", (req, res) => {
 //  NIM: Character persona generation (streaming)
 // ══════════════════════════════════════
 
-app.post("/nim/generate", async (req, res) => {
+app.post("/nim/generate", protectEndpoint, async (req, res) => {
   if (!NIM_API_KEY) return res.status(503).json({ error: "NIM API key not configured" });
 
   const model = NIM_MODELS[Math.floor(Math.random() * NIM_MODELS.length)];
@@ -262,7 +305,7 @@ async function nimGenerateImage(prompt) {
   return Buffer.from(data.image, "base64");
 }
 
-app.post("/generate/avatar", async (req, res) => {
+app.post("/generate/avatar", protectEndpoint, async (req, res) => {
   if (!NIM_API_KEY) return res.status(503).json({ error: "NIM API key not configured" });
   if (!s3) return res.status(503).json({ error: "S3 storage not configured" });
 
@@ -281,7 +324,7 @@ app.post("/generate/avatar", async (req, res) => {
   }
 });
 
-app.post("/generate/post-image", async (req, res) => {
+app.post("/generate/post-image", protectEndpoint, async (req, res) => {
   if (!NIM_API_KEY) return res.status(503).json({ error: "NIM API key not configured" });
   if (!s3) return res.status(503).json({ error: "S3 storage not configured" });
 
@@ -310,4 +353,6 @@ app.listen(PORT, () => {
   console.log(`NPC API service running on port ${PORT}`);
   console.log(`  NIM: ${NIM_API_KEY ? "configured" : "NOT configured"}`);
   console.log(`  S3: ${s3 ? `configured (${S3_BUCKET})` : "NOT configured"}`);
+  console.log(`  Auth: ${API_SERVICE_KEY ? "enabled" : "OPEN (no key configured)"}`);
+  console.log(`  Rate limit: ${RATE_LIMIT} req/${RATE_WINDOW / 1000}s per IP`);
 });

@@ -1284,7 +1284,9 @@ function PiChat({ characters, activeCharId }) {
   useEffect(() => {
     if (!PI_URL) return;
     const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
-    fetch(`${httpUrl}/models-meta`).then((r) => r.json()).then(setModelMeta).catch(() => {});
+    const piKey = import.meta.env.VITE_PI_API_KEY || "";
+    const headers = piKey ? { Authorization: `Bearer ${piKey}` } : {};
+    fetch(`${httpUrl}/models-meta`, { headers }).then((r) => r.json()).then(setModelMeta).catch(() => {});
   }, []);
 
   const activeChar = characters.find((c) => c.id === activeCharId);
@@ -1294,7 +1296,8 @@ function PiChat({ characters, activeCharId }) {
   useEffect(() => {
     if (!PI_URL) return;
     const pubkey = activeChar?.pk || "";
-    const url = `${PI_URL}/ws?session=${sessionId}&pubkey=${pubkey}`;
+    const piApiKey = import.meta.env.VITE_PI_API_KEY || "";
+    const url = `${PI_URL}/ws?session=${sessionId}&pubkey=${pubkey}${piApiKey ? `&key=${piApiKey}` : ""}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
