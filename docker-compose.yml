@@ -35,7 +35,7 @@ services:
     environment:
       - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY}
       - RELAY_URL=ws://nostr-relay:7777
-      - ADMIN_FILE=/workspace/admin-pubkey.txt
+      - API_URL=http://npc-api:3456
     restart: unless-stopped
 
 volumes:

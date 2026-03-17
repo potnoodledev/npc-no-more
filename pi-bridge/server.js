@@ -10,7 +10,6 @@ import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { fetchProfile, closePool } from "./profile.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
-import { verifyNostrAuth, getAuthState, addToWhitelist, removeFromWhitelist } from "./nostr-auth.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -23,11 +22,31 @@ const PI_BIN = process.env.PI_BIN || "pi";
 const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
 const RELAY_URL = process.env.RELAY_URL || "ws://localhost:7777";
-// ── Auth (NIP-98 Nostr signature) ──
+const API_URL = process.env.API_URL || "http://localhost:3456";
 
-app.use((req, res, next) => {
-  if (req.path === "/health" || req.path === "/setup-status") return next();
-  const auth = verifyNostrAuth(req.headers.authorization);
+// ── Auth — delegate to api-service ──
+
+async function verifyViaApi(authHeaderValue) {
+  if (!authHeaderValue) return null;
+  try {
+    const res = await fetch(`${API_URL}/admin/auth`, {
+      headers: { authorization: authHeaderValue },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    // api-service returns { admin, whitelist } — if we got 200, the pubkey is authorized
+    // Extract pubkey from the auth event
+    const base64 = authHeaderValue.slice(6);
+    const event = JSON.parse(atob(base64));
+    return { pubkey: event.pubkey, isAdmin: event.pubkey === data.admin };
+  } catch {
+    return null;
+  }
+}
+
+app.use(async (req, res, next) => {
+  if (req.path === "/health") return next();
+  const auth = await verifyViaApi(req.headers.authorization);
   if (!auth) {
     return res.status(401).json({ error: "unauthorized — valid Nostr signature required" });
   }
@@ -243,11 +262,6 @@ async function getOrCreateSession(pubkeyHex) {
 
 // ── HTTP Endpoints ──
 
-app.get("/setup-status", (req, res) => {
-  const state = getAuthState();
-  res.json({ adminSet: !!state.admin });
-});
-
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -317,7 +331,7 @@ wss.on("connection", async (ws, req) => {
       // First message must be auth
       if (!authenticated) {
         if (msg.type === "auth" && msg.event) {
-          const authResult = verifyNostrAuth("Nostr " + btoa(JSON.stringify(msg.event)));
+          const authResult = await verifyViaApi("Nostr " + btoa(JSON.stringify(msg.event)));
           if (!authResult) {
             ws.send(JSON.stringify({ type: "error", error: "invalid auth signature" }));
             ws.close(1008, "unauthorized");

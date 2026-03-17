@@ -10,7 +10,7 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
-import { verifyNostrAuth, getAuthState, addToWhitelist, removeFromWhitelist } from "./nostr-auth.js";
+import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist } from "./nostr-auth.js";
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
@@ -109,7 +109,16 @@ const NIM_MODELS = [
 // ── Health ──
 app.get("/setup-status", (req, res) => {
   const state = getAuthState();
-  res.json({ adminSet: !!state.admin });
+  res.json({ adminSet: !!state.admin, adminPubkey: state.admin || null });
+});
+
+// Claim admin — only works when no admin exists yet
+app.post("/claim-admin", (req, res) => {
+  const auth = verifyNostrAuth(req.headers.authorization);
+  if (!auth) return res.status(401).json({ error: "valid Nostr signature required" });
+  const claimed = claimAdmin(auth.pubkey);
+  if (!claimed) return res.status(409).json({ error: "admin already set" });
+  res.json({ ok: true, adminPubkey: auth.pubkey });
 });
 
 // Admin-only: whitelist management (requires auth via protectEndpoint pattern)
@@ -289,6 +298,21 @@ app.get("/images/:filename", async (req, res) => {
     }
     console.error("Image fetch error:", err.message);
     res.status(500).send("Error fetching image");
+  }
+});
+
+// Upload avatar image (base64 in JSON body)
+app.post("/upload/avatar", protectEndpoint, async (req, res) => {
+  try {
+    const { data, contentType } = req.body;
+    if (!data) return res.status(400).json({ error: "data field required (base64)" });
+    const ext = (contentType || "image/png").split("/")[1] || "png";
+    const buffer = Buffer.from(data, "base64");
+    if (buffer.length > 5 * 1024 * 1024) return res.status(413).json({ error: "Image too large (max 5MB)" });
+    const uploaded = await uploadImage(buffer, contentType || "image/png", ext);
+    res.json({ url: uploaded.url, id: uploaded.id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

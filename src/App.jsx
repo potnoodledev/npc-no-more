@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
 const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
-import { isNimAvailable, generateRandomPersona, generateAvatar, getRandomErrorMessage } from "./nim";
+import { forceCollide, forceManyBody } from "d3-force-3d";
+import { isNimAvailable, generateRandomPersona, generateAvatar, uploadAvatar, getRandomErrorMessage } from "./nim";
 import {
   createAccount,
   accountFromNsec,
@@ -31,6 +32,8 @@ import {
   getPool,
   loadAdminAccount,
   createAdminAccount,
+  saveAdminAccount,
+  clearLocal,
   createAuthEvent,
   getAuthHeaders,
 } from "./nostr";
@@ -75,15 +78,34 @@ function setHash(path) {
 //  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
-function Sidebar({ characters, activeCharId, currentPubkey }) {
+function Sidebar({ characters, activeCharId, currentPubkey, adminAccount, serverAdminPubkey }) {
+  const isAdmin = !!serverAdminPubkey && serverAdminPubkey === adminAccount?.pk;
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
         <h1 className="sidebar-title clickable" onClick={() => setHash("")}>NPC No More</h1>
       </div>
 
-      <div className="sidebar-section-label">Your Characters</div>
+      <div className="sidebar-section-label">Identities</div>
       <div className="sidebar-characters">
+        {adminAccount && (
+          <button
+            className={`sidebar-char ${adminAccount.pk === currentPubkey ? "active-char" : ""}`}
+            onClick={() => setHash("profile/" + adminAccount.npub)}
+          >
+            <span className="sidebar-char-avatar">
+              {adminAccount.profile_image ? (
+                <img src={adminAccount.profile_image} alt="" />
+              ) : (
+                (adminAccount.profile_name || "U").charAt(0).toUpperCase()
+              )}
+            </span>
+            <span className="sidebar-char-name">
+              {adminAccount.profile_name || adminAccount.npub.slice(0, 12)}
+              <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 6 }}>{isAdmin ? "ADMIN" : "USER"}</span>
+            </span>
+          </button>
+        )}
         {characters.map((c) => (
           <button
             key={c.id}
@@ -150,42 +172,263 @@ function MobileHeader({ activeChar, sidebarOpen, setSidebarOpen }) {
 }
 
 // ══════════════════════════════════════
-//  CREATE CHARACTER
+//  USER / ADMIN SETUP
 // ══════════════════════════════════════
 
-function CreateCharacter({ onComplete, adminAccount }) {
-  const [error, setError] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [charName, setCharName] = useState("");
-  const [charPersonality, setCharPersonality] = useState("");
-  const [charWorld, setCharWorld] = useState("");
-  const [charVoice, setCharVoice] = useState("");
+function UserSetup({ serverAdminPubkey, onComplete }) {
+  // Create keypair in memory only — persisted on save
+  const [account] = useState(() => createAccount());
+  const [name, setName] = useState("");
+  const [about, setAbout] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [generatingAvatar, setGeneratingAvatar] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [rolling, setRolling] = useState(false);
   const [rolledModel, setRolledModel] = useState(null);
-  const [mode, setMode] = useState("create");
-  const [nsecInput, setNsecInput] = useState("");
-  const [generatingAvatar, setGeneratingAvatar] = useState(false);
-  const [avatarUrl, setAvatarUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef(null);
+  const [error, setError] = useState("");
   const [avatarModal, setAvatarModal] = useState(null);
+
+  const hasAdmin = !!serverAdminPubkey;
+  const canUseNim = isNimAvailable();
 
   async function handleRollDice() {
     setRolling(true);
     setError("");
     try {
       const persona = await generateRandomPersona((partial) => {
+        if (partial.name) setName(partial.name);
+        if (partial.personality) setAbout(partial.personality);
+        setRolledModel(partial.model);
+      }, account);
+      setName(persona.name);
+      setAbout(persona.personality);
+      setRolledModel(persona.model);
+    } catch (e) {
+      const msg = e?.message || "";
+      setError(hasAdmin && (msg.includes("401") || msg.includes("unauthorized"))
+        ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features."
+        : getRandomErrorMessage());
+    }
+    setRolling(false);
+  }
+
+  async function handleGenerateAvatar() {
+    if (!name.trim() || !account) return;
+    setGeneratingAvatar(true);
+    setError("");
+    try {
+      const result = await generateAvatar({ name, personality: about, world: "" }, account);
+      setAvatarUrl(result.url);
+    } catch (e) {
+      const msg = e?.message || "";
+      setError(hasAdmin && (msg.includes("401") || msg.includes("unauthorized"))
+        ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features."
+        : "Avatar generation failed: " + msg);
+    }
+    setGeneratingAvatar(false);
+  }
+
+  async function handleUploadAvatar(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError("");
+    try {
+      const result = await uploadAvatar(file, account);
+      setAvatarUrl(result.url);
+    } catch (err) {
+      const msg = err?.message || "";
+      setError(hasAdmin && (msg.includes("401") || msg.includes("unauthorized"))
+        ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features."
+        : "Upload failed: " + msg);
+    }
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function handleFinish() {
+    if (!name.trim()) { setError("Name is required"); return; }
+    setSaving(true);
+    setError("");
+    try {
+      // Claim admin if no admin exists yet
+      if (!hasAdmin) {
+        const apiUrl = import.meta.env.VITE_API_URL || "";
+        if (apiUrl) {
+          const claimUrl = `${apiUrl}/claim-admin`;
+          const headers = await getAuthHeaders(claimUrl, "POST", account);
+          const res = await fetch(claimUrl, { method: "POST", headers });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || "Failed to claim admin");
+          }
+        }
+      }
+      account.profile_name = name;
+      account.profile_about = about;
+      account.profile_image = avatarUrl;
+      saveAdminAccount(account);
+      await publishProfile({
+        name,
+        display_name: name,
+        about,
+        ...(avatarUrl ? { picture: avatarUrl } : {}),
+      }, account);
+      onComplete(account);
+    } catch (e) {
+      setError("Failed: " + e.message);
+    }
+    setSaving(false);
+  }
+
+  return (
+    <div className="setup-wizard">
+      <div className="setup-card">
+        <h1>NPC No More</h1>
+        <p className="setup-tagline">
+          {hasAdmin ? "Welcome — set up your profile" : "First-time setup — create your profile"}
+        </p>
+        <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 12 }}>
+          {hasAdmin
+            ? "Create your profile so other users and the admin can identify you. Your Nostr keypair will be generated when you save."
+            : "This is you — not a character. Your Nostr keypair and admin privileges are created when you save."
+          }
+        </p>
+
+        {canUseNim && (
+          <div className="dice-roll-section">
+            {hasAdmin && (
+              <p style={{ color: "var(--neon)", fontSize: "0.78rem", marginBottom: 8 }}>
+                AI features are disabled until the admin whitelists your key.
+              </p>
+            )}
+            <button className={`btn-dice${rolling ? " loading" : ""}`} onClick={handleRollDice} disabled={rolling || hasAdmin}>
+              {rolling ? "Generating..." : "Generate Profile with AI"}
+            </button>
+            {rolling && rolledModel && (
+              <p className="dice-hint">
+                <span className="streaming-dot" />
+                Streaming from <strong>{rolledModel.name}</strong>
+                {rolledModel.params && ` (${rolledModel.params}B)`}...
+              </p>
+            )}
+            {rolling && !rolledModel && <p className="dice-hint">Picking a random model...</p>}
+            {rolledModel && !rolling && !error && (
+              <p className="dice-hint">
+                Generated by <strong>{rolledModel.name}</strong>
+                {rolledModel.params && ` (${rolledModel.params}B)`} — edit below!
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="edit-form">
+          <label><span>Display Name</span>
+            <input type="text" placeholder="Your name or handle" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          </label>
+          <label><span>About</span>
+            <textarea placeholder="A short bio..." value={about} onChange={(e) => setAbout(e.target.value)} rows={3} />
+          </label>
+        </div>
+
+        <div className="avatar-gen-section">
+          <div className="avatar-gen-header">
+            <span className="avatar-gen-label">Profile Picture</span>
+            <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+              {canUseNim && (
+                <button className="btn-small" onClick={handleGenerateAvatar} disabled={generatingAvatar || !name.trim() || hasAdmin} title={!name.trim() ? "Enter a display name first" : ""}>
+                  {generatingAvatar ? "Generating..." : "Generate"}
+                </button>
+              )}
+              <button className="btn-small" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                {uploading ? "Uploading..." : "Upload"}
+              </button>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleUploadAvatar} style={{ display: "none" }} />
+            </div>
+          </div>
+          {canUseNim && !name.trim() && !avatarUrl && (
+            <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 6 }}>Enter a display name to enable avatar generation.</p>
+          )}
+          {(generatingAvatar || uploading) && (
+            <div className="avatar-gen-loading">
+              <span className="streaming-dot" />
+              <span>{uploading ? "Uploading image..." : "Generating via NVIDIA NIM — Stable Diffusion 3 Medium"}</span>
+            </div>
+          )}
+          {avatarUrl && !generatingAvatar && !uploading && (
+            <div className="avatar-gen-preview">
+              <img src={avatarUrl} alt="Avatar" style={{ cursor: "pointer" }} onClick={() => setAvatarModal(avatarUrl)} />
+            </div>
+          )}
+        </div>
+
+        {error && <div className="dice-error">{error}</div>}
+
+        <div className="setup-nav">
+          <button className="btn-primary" onClick={handleFinish} disabled={saving || !name.trim()}>
+            {saving ? "Saving..." : "Save & Continue"}
+          </button>
+        </div>
+      </div>
+      <ImageModal src={avatarModal} onClose={() => setAvatarModal(null)} />
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  CREATE CHARACTER
+// ══════════════════════════════════════
+
+function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [charName, setCharName] = useState("");
+  const [charAbout, setCharAbout] = useState("");
+  const [rolling, setRolling] = useState(false);
+  const [rolledModel, setRolledModel] = useState(null);
+  const [mode, setMode] = useState("create");
+  const [nsecInput, setNsecInput] = useState("");
+  const [generatingAvatar, setGeneratingAvatar] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarModal, setAvatarModal] = useState(null);
+  const fileInputRef = useRef(null);
+
+  async function handleUploadAvatar(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError("");
+    try {
+      const result = await uploadAvatar(file, adminAccount);
+      setAvatarUrl(result.url);
+    } catch (err) {
+      setError("Upload failed: " + (err?.message || ""));
+    }
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function handleRollDice() {
+    setRolling(true);
+    setError("");
+    const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === adminAccount?.pk;
+    try {
+      const persona = await generateRandomPersona((partial) => {
         if (partial.name) setCharName(partial.name);
-        if (partial.personality) setCharPersonality(partial.personality);
-        if (partial.world) setCharWorld(partial.world);
-        if (partial.voice) setCharVoice(partial.voice);
+        if (partial.personality) setCharAbout(partial.personality);
         setRolledModel(partial.model);
       }, adminAccount);
       setCharName(persona.name);
-      setCharPersonality(persona.personality);
-      setCharWorld(persona.world);
-      setCharVoice(persona.voice);
+      setCharAbout(persona.personality);
       setRolledModel(persona.model);
-    } catch {
-      setError(getRandomErrorMessage());
+    } catch (e) {
+      const msg = e?.message || "";
+      setError(!isWhitelisted && (msg.includes("401") || msg.includes("unauthorized"))
+        ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features."
+        : getRandomErrorMessage());
     }
     setRolling(false);
   }
@@ -194,11 +437,15 @@ function CreateCharacter({ onComplete, adminAccount }) {
     if (!charName.trim()) return;
     setGeneratingAvatar(true);
     setError("");
+    const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === adminAccount?.pk;
     try {
-      const result = await generateAvatar({ name: charName, personality: charPersonality, world: charWorld }, adminAccount);
+      const result = await generateAvatar({ name: charName, personality: charAbout, world: "" }, adminAccount);
       setAvatarUrl(result.url);
     } catch (e) {
-      setError("Avatar generation failed: " + e.message);
+      const msg = e?.message || "";
+      setError(!isWhitelisted && (msg.includes("401") || msg.includes("unauthorized"))
+        ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features."
+        : "Avatar generation failed: " + msg);
     }
     setGeneratingAvatar(false);
   }
@@ -216,12 +463,9 @@ function CreateCharacter({ onComplete, adminAccount }) {
       const char = {
         id: crypto.randomUUID(),
         name: charName,
-        personality: charPersonality,
-        world: charWorld,
-        voice: charVoice,
+        personality: charAbout,
         profile_image: avatarUrl || "",
         banner_image: "",
-        origin_story: [],
         skHex: acc.skHex,
         nsec: acc.nsec,
         pk: acc.pk,
@@ -231,7 +475,7 @@ function CreateCharacter({ onComplete, adminAccount }) {
       await publishProfile({
         name: charName,
         display_name: charName,
-        about: charPersonality,
+        about: charAbout,
         ...(avatarUrl ? { picture: avatarUrl } : {}),
       }, acc);
       onComplete(char);
@@ -263,8 +507,13 @@ function CreateCharacter({ onComplete, adminAccount }) {
 
         {isNimAvailable() && (
           <div className="dice-roll-section">
-            <button className="btn-dice" onClick={handleRollDice} disabled={rolling}>
-              {rolling ? "Rolling..." : "Roll the dice!"}
+            {serverAdminPubkey && serverAdminPubkey !== adminAccount?.pk && (
+              <p style={{ color: "var(--neon)", fontSize: "0.78rem", marginBottom: 8 }}>
+                AI features are disabled until the admin whitelists your key.
+              </p>
+            )}
+            <button className={`btn-dice${rolling ? " loading" : ""}`} onClick={handleRollDice} disabled={rolling || (serverAdminPubkey && serverAdminPubkey !== adminAccount?.pk)}>
+              {rolling ? "Rolling..." : "Generate Character with AI"}
             </button>
             {rolling && rolledModel && (
               <p className="dice-hint">
@@ -277,57 +526,51 @@ function CreateCharacter({ onComplete, adminAccount }) {
             {rolledModel && !rolling && !error && (
               <p className="dice-hint">
                 Generated by <strong>{rolledModel.name}</strong>
-                {rolledModel.params && ` (${rolledModel.params}B)`} — edit below or roll again!
+                {rolledModel.params && ` (${rolledModel.params}B)`} — edit below!
               </p>
             )}
-            {error && !rolling && <div className="dice-error">{error}</div>}
           </div>
         )}
 
         <div className="edit-form">
           <label><span>Character Name</span>
             <input type="text" placeholder="Zara, ARIA-7, The Chronicler..." value={charName} onChange={(e) => setCharName(e.target.value)} /></label>
-          <label><span>Personality & Backstory</span>
-            <textarea placeholder="A rogue AI archaeologist from 2187..." value={charPersonality} onChange={(e) => setCharPersonality(e.target.value)} rows={4} /></label>
-          <label><span>World / Setting</span>
-            <input type="text" placeholder="Post-singularity Earth, cyberpunk Tokyo..." value={charWorld} onChange={(e) => setCharWorld(e.target.value)} /></label>
-          <label><span>Voice & Style</span>
-            <textarea placeholder="Sardonic, curious, drops historical references..." value={charVoice} onChange={(e) => setCharVoice(e.target.value)} rows={3} /></label>
+          <label><span>About</span>
+            <textarea placeholder="Personality, backstory, how they speak..." value={charAbout} onChange={(e) => setCharAbout(e.target.value)} rows={4} /></label>
         </div>
 
-        {/* Avatar generation */}
-        {isNimAvailable() && (
-          <div className="avatar-gen-section">
-            <div className="avatar-gen-header">
-              <span className="avatar-gen-label">Profile Picture</span>
-              <button
-                className="btn-small"
-                onClick={handleGenerateAvatar}
-                disabled={generatingAvatar || !charName.trim()}
-              >
-                {generatingAvatar ? "Generating..." : "Generate Avatar"}
+        <div className="avatar-gen-section">
+          <div className="avatar-gen-header">
+            <span className="avatar-gen-label">Profile Picture</span>
+            <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+              {isNimAvailable() && (
+                <button className="btn-small" onClick={handleGenerateAvatar} disabled={generatingAvatar || !charName.trim() || (serverAdminPubkey && serverAdminPubkey !== adminAccount?.pk)} title={!charName.trim() ? "Enter a character name first" : ""}>
+                  {generatingAvatar ? "Generating..." : "Generate"}
+                </button>
+              )}
+              <button className="btn-small" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+                {uploading ? "Uploading..." : "Upload"}
               </button>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={handleUploadAvatar} style={{ display: "none" }} />
             </div>
-            {generatingAvatar && (
-              <div className="avatar-gen-loading">
-                <span className="streaming-dot" />
-                <span>Generating via <strong>NVIDIA NIM</strong> — Stable Diffusion 3 Medium</span>
-              </div>
-            )}
-            {avatarUrl && !generatingAvatar && (
-              <div className="avatar-gen-preview">
-                <img src={avatarUrl} alt="Generated avatar" />
-                <div>
-                  <span className="avatar-gen-model">Generated via NVIDIA NIM / Stable Diffusion 3</span>
-                  <br />
-                  <button type="button" className="btn-link" onClick={() => setAvatarModal(avatarUrl)}>View full size</button>
-                </div>
-              </div>
-            )}
           </div>
-        )}
+          {isNimAvailable() && !charName.trim() && !avatarUrl && (
+            <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 6 }}>Enter a character name to enable avatar generation.</p>
+          )}
+          {(generatingAvatar || uploading) && (
+            <div className="avatar-gen-loading">
+              <span className="streaming-dot" />
+              <span>{uploading ? "Uploading image..." : "Generating via NVIDIA NIM — Stable Diffusion 3 Medium"}</span>
+            </div>
+          )}
+          {avatarUrl && !generatingAvatar && !uploading && (
+            <div className="avatar-gen-preview">
+              <img src={avatarUrl} alt="Avatar" style={{ cursor: "pointer" }} onClick={() => setAvatarModal(avatarUrl)} />
+            </div>
+          )}
+        </div>
 
-        {error && <p className="error">{error}</p>}
+        {error && <div className="dice-error">{error}</div>}
 
         <div className="setup-nav">
           <button className="btn-back" onClick={() => setHash("")}>Cancel</button>
@@ -797,7 +1040,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
               <div className="char-hero">
                 {profile?.banner && <div className="char-hero-banner"><img src={profile.banner} alt="" /></div>}
                 <div className="char-hero-content">
-                  <div className="char-hero-avatar">
+                  <div className="char-hero-avatar" style={{ cursor: profile?.picture ? "pointer" : undefined }} onClick={() => profile?.picture && setModalImage(profile.picture)}>
                     {profile?.picture ? (
                       <img src={profile.picture} alt="" />
                     ) : (
@@ -806,7 +1049,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                       </div>
                     )}
                   </div>
-                  <h2 className="char-hero-name">{profile?.display_name || profile?.name || character.name}</h2>
+                  <h2 className="char-hero-name">{profile?.display_name || profile?.name || character.name} <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>YOU</span></h2>
                   {profile?.about && <p className="char-hero-personality">{profile.about}</p>}
                   {profile?.website && (
                     <p className="char-hero-world">
@@ -916,13 +1159,228 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
 }
 
 // ══════════════════════════════════════
+//  OWN PROFILE PAGE (admin/user account)
+// ══════════════════════════════════════
+
+function OwnProfilePage({ adminAccount, onUpdateProfile }) {
+  const account = adminAccount;
+  const [profile, setProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [editFields, setEditFields] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [generatingAvatar, setGeneratingAvatar] = useState(false);
+  const [modalImage, setModalImage] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const originalFieldsRef = useRef({});
+
+  useEffect(() => {
+    if (!dirty) return;
+    function handleBeforeUnload(e) { e.preventDefault(); }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [dirty]);
+
+  useEffect(() => {
+    setProfileLoading(true);
+    fetchProfile(ALL_RELAYS, account.pk).then((p) => {
+      setProfile(p || {});
+      setProfileLoading(false);
+    });
+  }, [account.pk]);
+
+  function startEditing() {
+    const fields = {
+      name: profile?.name || profile?.display_name || account.profile_name || "",
+      display_name: profile?.display_name || profile?.name || account.profile_name || "",
+      about: profile?.about || account.profile_about || "",
+      picture: profile?.picture || account.profile_image || "",
+      banner: profile?.banner || "",
+      nip05: profile?.nip05 || "",
+      lud16: profile?.lud16 || "",
+      website: profile?.website || "",
+    };
+    setEditFields(fields);
+    originalFieldsRef.current = { ...fields };
+    setEditing(true);
+    setSaved(false);
+    setDirty(false);
+  }
+
+  function updateField(field, value) {
+    setEditFields((prev) => {
+      const updated = { ...prev, [field]: value };
+      setDirty(Object.keys(updated).some((k) => updated[k] !== originalFieldsRef.current[k]));
+      return updated;
+    });
+  }
+
+  async function handleGenerateAvatar() {
+    setGeneratingAvatar(true);
+    try {
+      const result = await generateAvatar({
+        name: editFields.display_name || editFields.name || "",
+        personality: editFields.about || "",
+        world: "",
+      }, account);
+      updateField("picture", result.url);
+    } catch (e) {
+      alert("Avatar generation failed: " + e.message);
+    }
+    setGeneratingAvatar(false);
+  }
+
+  async function handleSaveProfile() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const metadata = {};
+      if (editFields.name) metadata.name = editFields.name;
+      if (editFields.display_name) metadata.display_name = editFields.display_name;
+      if (editFields.about) metadata.about = editFields.about;
+      if (editFields.picture) metadata.picture = editFields.picture;
+      if (editFields.banner) metadata.banner = editFields.banner;
+      if (editFields.nip05) metadata.nip05 = editFields.nip05;
+      if (editFields.lud16) metadata.lud16 = editFields.lud16;
+      if (editFields.website) metadata.website = editFields.website;
+
+      await publishProfile(metadata, account);
+
+      // Update local admin account data
+      account.profile_name = editFields.display_name || editFields.name || "";
+      account.profile_about = editFields.about || "";
+      account.profile_image = editFields.picture || "";
+      saveAdminAccount(account);
+      if (onUpdateProfile) onUpdateProfile(account);
+
+      setProfile({ ...profile, ...metadata });
+      setEditing(false);
+      setDirty(false);
+      setSaved(true);
+    } catch (e) {
+      alert("Failed to save: " + e.message);
+    }
+    setSaving(false);
+  }
+
+  if (profileLoading) return <div className="loading">Loading profile...</div>;
+
+  return (
+    <div>
+      <h2 className="page-title">Your Profile</h2>
+
+      {!editing && (
+        <div className="edit-section">
+          <div className="char-hero">
+            {profile?.banner && <div className="char-hero-banner"><img src={profile.banner} alt="" /></div>}
+            <div className="char-hero-content">
+              <div className="char-hero-avatar" style={{ cursor: (profile?.picture || account.profile_image) ? "pointer" : undefined }} onClick={() => (profile?.picture || account.profile_image) && setModalImage(profile?.picture || account.profile_image)}>
+                {(profile?.picture || account.profile_image) ? (
+                  <img src={profile?.picture || account.profile_image} alt="" />
+                ) : (
+                  <div className="avatar-placeholder large">
+                    {(profile?.display_name || profile?.name || account.profile_name || "U").charAt(0).toUpperCase()}
+                  </div>
+                )}
+              </div>
+              <h2 className="char-hero-name">{profile?.display_name || profile?.name || account.profile_name || account.npub.slice(0, 12)} <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>YOU</span></h2>
+              {(profile?.about || account.profile_about) && <p className="char-hero-personality">{profile?.about || account.profile_about}</p>}
+              {profile?.website && (
+                <p className="char-hero-world">
+                  <a href={profile.website.startsWith("http") ? profile.website : "https://" + profile.website} target="_blank" rel="noopener noreferrer">{profile.website}</a>
+                </p>
+              )}
+              {profile?.nip05 && <p className="char-hero-world">{profile.nip05}</p>}
+              {profile?.lud16 && <p className="char-hero-world">{profile.lud16}</p>}
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <code className="char-npub">{account.npub}</code>
+                <CopyBtn text={account.npub} label="npub" />
+              </div>
+              <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
+                <button className="btn-primary" onClick={startEditing}>Edit Profile</button>
+              </div>
+            </div>
+          </div>
+          {saved && <p className="success" style={{ marginTop: 12 }}>Profile saved to Nostr!</p>}
+        </div>
+      )}
+
+      {editing && (
+        <div className="edit-section">
+          <h3>Edit Profile (NIP-01)</h3>
+          <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginBottom: 16 }}>
+            These fields are saved to Nostr as a kind:0 metadata event. Other Nostr clients will display this profile.
+          </p>
+          <div className="edit-form">
+            <label><span>Display Name</span>
+              <input type="text" value={editFields.display_name} onChange={(e) => { updateField("display_name", e.target.value); updateField("name", e.target.value); }} placeholder="Your display name" /></label>
+            <label><span>About</span>
+              <textarea value={editFields.about} onChange={(e) => updateField("about", e.target.value)} rows={4} placeholder="A short bio..." /></label>
+            <label>
+              <div className="avatar-gen-header">
+                <span>Picture URL</span>
+                {isNimAvailable() && (
+                  <button type="button" className="btn-small" onClick={handleGenerateAvatar} disabled={generatingAvatar} style={{ marginLeft: "auto" }}>
+                    {generatingAvatar ? "Generating..." : "Generate Avatar"}
+                  </button>
+                )}
+              </div>
+              <input type="url" value={editFields.picture} onChange={(e) => updateField("picture", e.target.value)} placeholder="https://..." />
+              {generatingAvatar && (
+                <div className="avatar-gen-loading">
+                  <span className="streaming-dot" />
+                  <span>Generating via <strong>NVIDIA NIM</strong> — Stable Diffusion 3 Medium</span>
+                </div>
+              )}
+              {editFields.picture && !generatingAvatar && (
+                <div className="avatar-gen-preview">
+                  <img src={editFields.picture} alt="preview" onError={(e) => { e.target.style.display = "none"; }} />
+                  <div>
+                    <span className="avatar-gen-model">Picture preview</span>
+                    <br />
+                    <button type="button" className="btn-link" onClick={() => setModalImage(editFields.picture)}>View full size</button>
+                  </div>
+                </div>
+              )}
+            </label>
+            <label><span>Banner URL</span>
+              <input type="url" value={editFields.banner} onChange={(e) => updateField("banner", e.target.value)} placeholder="https://..." /></label>
+            <label><span>NIP-05 (Nostr Address)</span>
+              <input type="text" value={editFields.nip05} onChange={(e) => updateField("nip05", e.target.value)} placeholder="name@domain.com" /></label>
+            <label><span>Lightning Address (LUD-16)</span>
+              <input type="text" value={editFields.lud16} onChange={(e) => updateField("lud16", e.target.value)} placeholder="name@walletofsatoshi.com" /></label>
+            <label><span>Website</span>
+              <input type="url" value={editFields.website} onChange={(e) => updateField("website", e.target.value)} placeholder="https://..." /></label>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+            <button className="btn-primary" onClick={handleSaveProfile} disabled={saving}>
+              {saving ? "Publishing..." : "Publish to Nostr"}
+            </button>
+            <button className="btn-back" onClick={() => {
+              if (!dirty || window.confirm("Discard unsaved changes?")) {
+                setEditing(false);
+                setDirty(false);
+              }
+            }}>Cancel</button>
+          </div>
+        </div>
+      )}
+      <ImageModal src={modalImage} onClose={() => setModalImage(null)} />
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
 //  EXTERNAL PROFILE VIEW (not owned)
 // ══════════════════════════════════════
 
-function ExternalProfileView({ pubkey, activeAccount }) {
+function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey }) {
   const [profile, setProfile] = useState(null);
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [modalImage, setModalImage] = useState(null);
   const subRef = useRef(null);
 
   useEffect(() => {
@@ -960,14 +1418,19 @@ function ExternalProfileView({ pubkey, activeAccount }) {
       <div className="char-hero">
         {profile?.banner && <div className="char-hero-banner"><img src={profile.banner} alt="" /></div>}
         <div className="char-hero-content">
-          <div className="char-hero-avatar">
+          <div className="char-hero-avatar" style={{ cursor: profile?.picture ? "pointer" : undefined }} onClick={() => profile?.picture && setModalImage(profile.picture)}>
             {profile?.picture ? (
               <img src={profile.picture} alt="" />
             ) : (
               <div className="avatar-placeholder large">{name.charAt(0).toUpperCase()}</div>
             )}
           </div>
-          <h2 className="char-hero-name">{name}</h2>
+          <h2 className="char-hero-name">
+            {name}
+            {serverAdminPubkey && pubkey === serverAdminPubkey && (
+              <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>ADMIN</span>
+            )}
+          </h2>
           {about && <p className="char-hero-personality">{about}</p>}
           <code className="char-npub" onClick={() => navigator.clipboard.writeText(npub)}>{npub}</code>
           {activeAccount && (
@@ -1144,6 +1607,7 @@ function ThreadView({ eventId, account, characters = [] }) {
           </div>
         </div>
       )}
+      <ImageModal src={modalImage} onClose={() => setModalImage(null)} />
     </div>
   );
 }
@@ -1261,6 +1725,7 @@ function PiChat({ characters, activeCharId, adminAccount }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
+  const [connError, setConnError] = useState(null);
   const [streaming, setStreaming] = useState(false);
   const [piState, setPiState] = useState(null);
   const [availableModels, setAvailableModels] = useState([]);
@@ -1306,6 +1771,8 @@ function PiChat({ characters, activeCharId, adminAccount }) {
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
+    setConnError(null);
+
     ws.onopen = async () => {
       console.log("[pi] Connected, authenticating...");
       // Send auth as first message
@@ -1316,12 +1783,17 @@ function PiChat({ characters, activeCharId, adminAccount }) {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
+        if (msg.type === "error" && !connected) {
+          setConnError(msg.error);
+          return;
+        }
         handlePiEvent(msg);
       } catch {}
     };
 
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       setConnected(false);
+      if (e.code === 1008) setConnError("Unauthorized — your key is not whitelisted. Ask the admin to add your npub.");
       console.log("[pi] Disconnected");
     };
 
@@ -1661,7 +2133,12 @@ function PiChat({ characters, activeCharId, adminAccount }) {
           <div className="pi-chat-messages">
             {messages.length === 0 && (
               <div className="pi-welcome">
-                {!connected && <div className="loading">Connecting to Pi Agent...</div>}
+                {!connected && !connError && <div className="loading">Connecting to Pi Agent...</div>}
+                {!connected && connError && (
+                  <div className="loading" style={{ color: "var(--neon)" }}>
+                    {connError}
+                  </div>
+                )}
                 {connected && piState && (
                   <>
                     <div className="pi-welcome-title">Pi Agent Ready</div>
@@ -1827,7 +2304,7 @@ function PiChat({ characters, activeCharId, adminAccount }) {
                 <input
                   ref={inputRef}
                   type="text"
-                  placeholder={!connected ? "Connecting..."
+                  placeholder={!connected ? (connError ? "Not connected" : "Connecting...")
                     : cmdSubmenu === "model" ? "Type to filter models... (Tab to select, Esc to cancel)"
                     : cmdSubmenu === "thinking" ? "Select thinking level..."
                     : `${piState?.model?.name || "Pi"} · ${piState?.messageCount || 0} msgs · / for commands`}
@@ -1952,8 +2429,25 @@ function NetworkPage({ characters = [], activeAccount }) {
   const [search, setSearch] = useState("");
   const [followingInProgress, setFollowingInProgress] = useState(false);
   const containerRef = useRef(null);
+  const graphRef = useRef();
   const [dimensions, setDimensions] = useState({ width: 600, height: 500 });
   const imageCache = useRef({});
+
+  // Configure forces to space out nodes
+  useEffect(() => {
+    if (graphRef.current) {
+      // Use collide force to prevent overlapping
+      // Radius matches node size (8 + followCount) + generous padding
+      graphRef.current.d3Force("collide", forceCollide((node) => 16 + (node.followCount || 0)));
+      // Weak repulsion only at short range (distanceMax)
+      // This keeps things spread but stops pushing nodes once they are a bit apart
+      graphRef.current.d3Force("charge", forceManyBody().strength(-50).distanceMax(80));
+      // Significantly increase link distance to space out connected clusters
+      graphRef.current.d3Force("link").distance(160);
+      // Increase link strength to maintain structure
+      graphRef.current.d3Force("link").strength(0.8);
+    }
+  }, [graphRef.current]);
 
   // Measure graph container
   useEffect(() => {
@@ -2143,8 +2637,9 @@ function NetworkPage({ characters = [], activeAccount }) {
     const tgtId = link.target?.id || link.target;
     const isHighlighted = selectedPk === srcId || selectedPk === tgtId ||
       hoverNode?.id === srcId || hoverNode?.id === tgtId;
-    ctx.strokeStyle = isHighlighted ? "rgba(186,255,0,0.5)" : "rgba(50,50,50,0.4)";
-    ctx.lineWidth = isHighlighted ? 1.5 : 0.5;
+    // More visible default: from 50,50,50,0.4 to 100,100,100,0.5
+    ctx.strokeStyle = isHighlighted ? "rgba(186,255,0,0.7)" : "rgba(100,100,100,0.5)";
+    ctx.lineWidth = isHighlighted ? 1.5 : 0.8;
     ctx.beginPath();
     ctx.moveTo(link.source.x, link.source.y);
     ctx.lineTo(link.target.x, link.target.y);
@@ -2207,6 +2702,7 @@ function NetworkPage({ characters = [], activeAccount }) {
               <div className="network-corner br" />
               <Suspense fallback={<div className="loading">Loading graph...</div>}>
               <ForceGraph2D
+                ref={graphRef}
                 graphData={graphData}
                 width={dimensions.width}
                 height={dimensions.height}
@@ -2224,9 +2720,9 @@ function NetworkPage({ characters = [], activeAccount }) {
                 onNodeHover={(node) => setHoverNode(node || null)}
                 onLinkHover={(link) => setHoverLink(link || null)}
                 onNodeClick={(node) => setSelectedPk(selectedPk === node.id ? null : node.id)}
-                d3AlphaDecay={0.04}
+                d3AlphaDecay={0.02}
                 d3VelocityDecay={0.3}
-                cooldownTime={3000}
+                cooldownTime={5000}
               />
               </Suspense>
 
@@ -2360,28 +2856,41 @@ function RelayStatus({ url }) {
 //  SETTINGS
 // ══════════════════════════════════════
 
-function AdminKeySection({ adminAccount }) {
-  const [showNsec, setShowNsec] = useState(false);
-  const [copied, setCopied] = useState("");
+const IconCopy = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>;
+const IconCheck = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>;
+const IconEye = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
+const IconEyeOff = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>;
 
-  function copyToClipboard(text, label) {
+function CopyBtn({ text, label }) {
+  const [copied, setCopied] = useState(false);
+  function handleCopy() {
     navigator.clipboard.writeText(text);
-    setCopied(label);
-    setTimeout(() => setCopied(""), 1500);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   }
+  return (
+    <button className="btn-icon" onClick={handleCopy} title={copied ? "Copied!" : `Copy ${label || ""}`}>
+      {copied ? <IconCheck /> : <IconCopy />}
+    </button>
+  );
+}
+
+function AdminKeySection({ adminAccount, isAdmin }) {
+  const [showNsec, setShowNsec] = useState(false);
 
   return (
     <div className="edit-section">
-      <h3>Admin Key</h3>
+      <h3>{isAdmin ? "Admin Key" : "User Key"}</h3>
       <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginBottom: 12 }}>
-        This keypair authenticates you as the admin. All API calls are signed with it.
+        {isAdmin
+          ? "This keypair authenticates you as the admin. You can manage the whitelist below."
+          : "This is your user key. An admin must whitelist your npub before you can use the API."
+        }
       </p>
       <div className="admin-key-row">
         <span>npub</span>
         <code>{adminAccount.npub}</code>
-        <button className="btn-small" onClick={() => copyToClipboard(adminAccount.npub, "npub")}>
-          {copied === "npub" ? "Copied" : "Copy"}
-        </button>
+        <CopyBtn text={adminAccount.npub} label="npub" />
       </div>
       <div className="admin-key-row">
         <span>nsec</span>
@@ -2390,16 +2899,14 @@ function AdminKeySection({ adminAccount }) {
         ) : (
           <code style={{ color: "var(--text-faint)" }}>{"*".repeat(20)}</code>
         )}
-        <div style={{ display: "flex", gap: 4 }}>
-          <button className="btn-small" onClick={() => setShowNsec(!showNsec)}>
-            {showNsec ? "Hide" : "Reveal"}
+        <div style={{ display: "flex", gap: 2 }}>
+          <button className="btn-icon" onClick={() => setShowNsec(!showNsec)} title={showNsec ? "Hide nsec" : "Reveal nsec"}>
+            {showNsec ? <IconEyeOff /> : <IconEye />}
           </button>
-          <button className="btn-small" onClick={() => copyToClipboard(adminAccount.nsec, "nsec")}>
-            {copied === "nsec" ? "Copied" : "Copy"}
-          </button>
+          <CopyBtn text={adminAccount.nsec} label="nsec" />
         </div>
       </div>
-      <AdminWhitelist adminAccount={adminAccount} />
+      {isAdmin && <AdminWhitelist adminAccount={adminAccount} />}
     </div>
   );
 }
@@ -2407,6 +2914,7 @@ function AdminKeySection({ adminAccount }) {
 function AdminWhitelist({ adminAccount }) {
   const [whitelist, setWhitelist] = useState([]);
   const [newPubkey, setNewPubkey] = useState("");
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
   const apiUrl = import.meta.env.VITE_API_URL || "";
@@ -2423,15 +2931,34 @@ function AdminWhitelist({ adminAccount }) {
   }, [adminAccount]);
 
   async function handleAdd() {
+    setError("");
     let pk = newPubkey.trim();
+    if (!pk) return;
+
     // Convert npub to hex if needed
     if (pk.startsWith("npub1")) {
       try {
         const { type, data } = nip19decode(pk);
         if (type === "npub") pk = data;
-      } catch { return; }
+        else { setError("Invalid key — expected an npub or 64-char hex pubkey."); return; }
+      } catch { setError("Invalid npub — could not decode."); return; }
     }
-    if (!pk || pk.length !== 64) return;
+
+    if (!/^[0-9a-f]{64}$/i.test(pk)) {
+      setError("Invalid pubkey — must be an npub or 64-character hex string.");
+      return;
+    }
+
+    if (pk === adminAccount.pk) {
+      setError("That's the admin key — it already has full access.");
+      return;
+    }
+
+    if (whitelist.includes(pk)) {
+      setError("This pubkey is already whitelisted.");
+      return;
+    }
+
     const url = `${apiUrl}/admin/whitelist`;
     const headers = await getAuthHeaders(url, "POST", adminAccount);
     const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ pubkey: pk }) });
@@ -2460,6 +2987,7 @@ function AdminWhitelist({ adminAccount }) {
       {whitelist.map((pk) => (
         <div key={pk} className="admin-key-row">
           <code style={{ fontSize: "0.62rem" }}>{npubEncode(pk)}</code>
+          <CopyBtn text={npubEncode(pk)} label="npub" />
           <button className="btn-small btn-reset" onClick={() => handleRemove(pk)}>Remove</button>
         </div>
       ))}
@@ -2468,16 +2996,17 @@ function AdminWhitelist({ adminAccount }) {
           type="text"
           placeholder="npub1... or hex pubkey"
           value={newPubkey}
-          onChange={(e) => setNewPubkey(e.target.value)}
+          onChange={(e) => { setNewPubkey(e.target.value); setError(""); }}
           style={{ flex: 1, padding: "6px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", fontSize: "0.78rem", fontFamily: "var(--font-mono)" }}
         />
         <button className="btn-small" onClick={handleAdd} disabled={!newPubkey.trim()}>Add</button>
       </div>
+      {error && <div style={{ color: "var(--neon)", fontSize: "0.75rem", marginTop: 6 }}>{error}</div>}
     </div>
   );
 }
 
-function SettingsPage({ characters, onReset, adminAccount }) {
+function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) {
   function handleExportKeys() {
     const lines = characters.map((c, i) => {
       const idx = i + 1;
@@ -2517,7 +3046,10 @@ function SettingsPage({ characters, onReset, adminAccount }) {
       <h2 className="page-title">Settings</h2>
 
       {adminAccount && (
-        <AdminKeySection adminAccount={adminAccount} />
+        <AdminKeySection
+          adminAccount={adminAccount}
+          isAdmin={!!serverAdminPubkey && serverAdminPubkey === adminAccount.pk}
+        />
       )}
 
       <div className="edit-section" style={{ marginTop: 20 }}>
@@ -2532,6 +3064,23 @@ function SettingsPage({ characters, onReset, adminAccount }) {
               <span>Status</span>
               <RelayStatus url={OWN_RELAY} />
             </div>
+            {serverAdminPubkey && serverAdminPubkey !== adminAccount?.pk && (
+              <div style={{ marginTop: 8 }}>
+                <div className="admin-key-row">
+                  <span>Admin</span>
+                  <code style={{ fontSize: "0.62rem" }}>{npubEncode(serverAdminPubkey)}</code>
+                  <CopyBtn text={npubEncode(serverAdminPubkey)} label="admin npub" />
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button className="btn-small" onClick={() => setHash("profile/" + npubEncode(serverAdminPubkey))}>
+                    View Profile
+                  </button>
+                  <button className="btn-small" onClick={() => setHash("messages/" + npubEncode(serverAdminPubkey))}>
+                    Message Admin
+                  </button>
+                </div>
+              </div>
+            )}
             <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 12 }}>
               This is the private relay for NPC No More characters. All posts are published here first.
               The &quot;Our Relay&quot; feed in the Posts tab shows only events from this relay.
@@ -2597,19 +3146,28 @@ export default function App() {
   const [characters, setCharacters] = useState([]);
   const [activeCharId, setActiveCharId] = useState(null);
   const [adminAccount, setAdminAccount] = useState(null);
+  const [serverAdminPubkey, setServerAdminPubkey] = useState(null);
   const [loading, setLoading] = useState(true);
   const [route, setRoute] = useState("home");
   const [routeKey, setRouteKey] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const activeChar = characters.find((c) => c.id === activeCharId) || null;
-  const activeAccount = activeChar ? accountFromSkHex(activeChar.skHex) : null;
+  const activeAccount = activeChar ? accountFromSkHex(activeChar.skHex) : adminAccount;
 
   useEffect(() => {
     // Load admin account
     const admin = loadAdminAccount();
     if (admin) {
       setAdminAccount(admin);
+    }
+
+    // Check if server already has an admin
+    const apiUrl = import.meta.env.VITE_API_URL || "";
+    if (apiUrl) {
+      fetch(`${apiUrl}/setup-status`).then(r => r.json()).then(data => {
+        if (data.adminPubkey) setServerAdminPubkey(data.adminPubkey);
+      }).catch(() => {});
     }
 
     const existing = loadCharacters();
@@ -2673,41 +3231,22 @@ export default function App() {
     if (!window.confirm("Delete ALL characters and data? This cannot be undone.")) return;
     setCharacters([]);
     setActiveCharId(null);
+    setAdminAccount(null);
     saveCharacters([]);
     saveActiveCharId(null);
+    clearLocal("npc_admin_account");
     setHash("");
   }
 
   if (loading) return null;
 
-  // Admin setup — first time visiting the site
+  // Key setup — first time visiting the site
   if (!adminAccount) {
-    return (
-      <div className="setup-wizard">
-        <div className="setup-card">
-          <h1>NPC No More</h1>
-          <p className="setup-tagline">First-time setup — create your admin key</p>
-          <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 20 }}>
-            This generates a Nostr keypair that authenticates you as the admin of this instance.
-            All API calls will be signed with this key. Store it safely.
-          </p>
-          <button className="btn-primary" style={{ width: "100%" }} onClick={() => {
-            const acc = createAdminAccount();
-            setAdminAccount(acc);
-          }}>
-            Generate Admin Key
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (characters.length === 0 && route !== "new-character") {
-    return <CreateCharacter onComplete={handleCreateCharacter} adminAccount={adminAccount} />;
+    return <UserSetup serverAdminPubkey={serverAdminPubkey} onComplete={(acc) => setAdminAccount(acc)} />;
   }
 
   if (route === "new-character") {
-    return <CreateCharacter onComplete={handleCreateCharacter} adminAccount={adminAccount} />;
+    return <CreateCharacter onComplete={handleCreateCharacter} adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} />;
   }
 
   // Figure out current profile pubkey for sidebar highlighting
@@ -2724,9 +3263,13 @@ export default function App() {
       return <NetworkPage characters={characters} activeAccount={activeAccount} />;
     }
     if (route === "settings") {
-      return <SettingsPage characters={characters} onReset={handleReset} adminAccount={adminAccount} />;
+      return <SettingsPage characters={characters} onReset={handleReset} adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} />;
     }
     if (route === "profile" && routeKey) {
+      // Admin/user viewing their own profile
+      if (adminAccount && routeKey === adminAccount.pk) {
+        return <OwnProfilePage adminAccount={adminAccount} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} />;
+      }
       const ownedChar = characters.find((c) => c.pk === routeKey) || null;
       if (ownedChar) {
         return (
@@ -2740,7 +3283,7 @@ export default function App() {
           />
         );
       }
-      return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} />;
+      return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} serverAdminPubkey={serverAdminPubkey} />;
     }
     if (route === "thread" && routeKey) {
       return <ThreadView eventId={routeKey} account={activeAccount} characters={characters} />;
@@ -2761,6 +3304,10 @@ export default function App() {
         />
       );
     }
+    // No characters yet — show own profile as home
+    if (adminAccount) {
+      return <OwnProfilePage adminAccount={adminAccount} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} />;
+    }
     return <div className="loading">Create a character to get started.</div>;
   }
 
@@ -2770,6 +3317,8 @@ export default function App() {
         characters={characters}
         activeCharId={activeCharId}
         currentPubkey={currentProfilePk}
+        adminAccount={adminAccount}
+        serverAdminPubkey={serverAdminPubkey}
       />
 
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
@@ -2778,6 +3327,8 @@ export default function App() {
           characters={characters}
           activeCharId={activeCharId}
           currentPubkey={currentProfilePk}
+          adminAccount={adminAccount}
+          serverAdminPubkey={serverAdminPubkey}
         />
       </div>
 

@@ -247,13 +247,22 @@ export async function fetchProfiles(relays, pubkeys) {
 export function loadAdminAccount() {
   const data = loadLocal("npc_admin_account");
   if (data?.skHex) {
-    return accountFromSkHex(data.skHex);
+    const acc = accountFromSkHex(data.skHex);
+    acc.profile_name = data.profile_name || "";
+    acc.profile_about = data.profile_about || "";
+    acc.profile_image = data.profile_image || "";
+    return acc;
   }
   return null;
 }
 
 export function saveAdminAccount(account) {
-  saveLocal("npc_admin_account", { skHex: account.skHex, pk: account.pk, npub: account.npub });
+  saveLocal("npc_admin_account", {
+    skHex: account.skHex, pk: account.pk, npub: account.npub,
+    profile_name: account.profile_name || "",
+    profile_about: account.profile_about || "",
+    profile_image: account.profile_image || "",
+  });
 }
 
 export function createAdminAccount() {

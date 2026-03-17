@@ -219,3 +219,37 @@ export async function generateAvatar(character, account) {
   // Return full URL through the API service
   return { url: `${API_URL}${data.url}`, id: data.id };
 }
+
+/**
+ * Upload an avatar image file to S3 via the API service.
+ * @param {File} file
+ * @param {object} account - for auth headers
+ * @returns {Promise<{ url: string, id: string }>}
+ */
+export async function uploadAvatar(file, account) {
+  if (!API_URL) throw new Error("API service not configured");
+
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64 = btoa(binary);
+
+  const url = `${API_URL}/upload/avatar`;
+  const headers = account ? await getAuthHeaders(url, "POST", account) : { "Content-Type": "application/json" };
+  if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ data: base64, contentType: file.type }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    throw new Error(err.error || `Upload failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  return { url: `${API_URL}${data.url}`, id: data.id };
+}

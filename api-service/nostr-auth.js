@@ -64,13 +64,6 @@ export function verifyNostrAuth(authHeaderValue) {
     const now = Math.floor(Date.now() / 1000);
     if (Math.abs(now - event.created_at) > MAX_AGE_SECONDS) return null;
 
-    // First valid signer becomes admin
-    if (!authState.admin) {
-      authState.admin = event.pubkey;
-      saveState();
-      console.log(`[auth] Admin pubkey set: ${authState.admin.slice(0, 16)}...`);
-    }
-
     // Must be admin or whitelisted
     if (!isAllowedPubkey(event.pubkey)) return null;
 
@@ -78,4 +71,16 @@ export function verifyNostrAuth(authHeaderValue) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Claim admin — only works when no admin is set yet.
+ * Returns true if claimed, false if admin already exists.
+ */
+export function claimAdmin(pubkey) {
+  if (authState.admin) return false;
+  authState.admin = pubkey;
+  saveState();
+  console.log(`[auth] Admin pubkey set: ${authState.admin.slice(0, 16)}...`);
+  return true;
 }
