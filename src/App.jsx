@@ -1265,6 +1265,8 @@ function PiChat({ characters, activeCharId }) {
   const [cmdIndex, setCmdIndex] = useState(0);
   const [sessionStats, setSessionStats] = useState(null);
   const [toast, setToast] = useState(null);
+  const [compacting, setCompacting] = useState(false);
+  const [lastUsage, setLastUsage] = useState(null);
   const inputRef = useRef(null);
   const paletteRef = useRef(null);
 
@@ -1389,11 +1391,10 @@ function PiChat({ characters, activeCharId }) {
     if (msg.type === "agent_end") {
       setStreaming(false);
       setMessages((prev) => prev.map((m) => ({ ...m, streaming: false })));
-      // Refresh stats after each turn
       if (wsRef.current) wsRef.current.send(JSON.stringify({ type: "get_session_stats" }));
     }
 
-    // Assistant message updates (text and tool calls)
+    // Assistant message events
     if (msg.type === "message_update" && msg.assistantMessageEvent) {
       const ev = msg.assistantMessageEvent;
 
@@ -1418,32 +1419,98 @@ function PiChat({ characters, activeCharId }) {
           return [...prev, { role: "assistant", content: "", thinking: currentThinkingRef.current, streaming: true }];
         });
       }
+
+      // Capture usage from done event
+      if (ev.type === "done" && ev.message?.usage) {
+        setLastUsage(ev.message.usage);
+      }
     }
 
-    // Tool execution
+    // Tool execution — rich display
     if (msg.type === "tool_execution_start") {
       setMessages((prev) => [...prev, {
         role: "tool",
         tool: msg.toolName || "unknown",
-        content: JSON.stringify(msg.args || {}, null, 2),
+        toolCallId: msg.toolCallId,
+        args: msg.args || {},
+        content: "",
         streaming: true,
+        isError: false,
       }]);
     }
 
-    if (msg.type === "tool_execution_end") {
-      const resultText = msg.result?.content?.map((c) => c.text || "").join("") || "";
+    if (msg.type === "tool_execution_update") {
+      // Partial output (e.g., bash streaming)
       setMessages((prev) => {
         const last = prev[prev.length - 1];
-        if (last && last.role === "tool" && last.streaming) {
-          return [...prev.slice(0, -1), { ...last, content: last.content + "\n\n" + resultText, streaming: false }];
+        if (last && last.role === "tool" && last.toolCallId === msg.toolCallId) {
+          return [...prev.slice(0, -1), { ...last, content: msg.partialResult?.output || last.content }];
         }
         return prev;
       });
     }
 
-    // Turn end — might continue with more turns
+    if (msg.type === "tool_execution_end") {
+      const resultText = msg.result?.content?.map((c) => c.text || "").join("") || JSON.stringify(msg.result || "");
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === "tool" && last.toolCallId === msg.toolCallId) {
+          return [...prev.slice(0, -1), { ...last, content: resultText, streaming: false, isError: !!msg.isError }];
+        }
+        return prev;
+      });
+    }
+
+    // Auto-compaction
+    if (msg.type === "auto_compaction_start") {
+      setCompacting(true);
+      setMessages((prev) => [...prev, { role: "system", content: `Context compacting (${msg.reason})...`, streaming: true }]);
+    }
+
+    if (msg.type === "auto_compaction_end") {
+      setCompacting(false);
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === "system" && last.streaming) {
+          const text = msg.aborted ? "Compaction aborted" : `Compacted: ${msg.result?.tokensBefore || "?"} tokens reduced`;
+          return [...prev.slice(0, -1), { ...last, content: text, streaming: false }];
+        }
+        return prev;
+      });
+      if (wsRef.current) wsRef.current.send(JSON.stringify({ type: "get_session_stats" }));
+    }
+
+    // Auto-retry
+    if (msg.type === "auto_retry_start") {
+      setMessages((prev) => [...prev, { role: "system", content: `Retrying (attempt ${msg.attempt}/${msg.maxAttempts}): ${msg.errorMessage}`, streaming: true }]);
+    }
+
+    if (msg.type === "auto_retry_end") {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === "system" && last.streaming) {
+          const text = msg.success ? "Retry succeeded" : `Retry failed: ${msg.finalError || "unknown"}`;
+          return [...prev.slice(0, -1), { ...last, content: text, streaming: false }];
+        }
+        return prev;
+      });
+    }
+
+    // Extension UI requests
+    if (msg.type === "extension_ui_request") {
+      if (msg.method === "notify") {
+        showToast(msg.message, msg.notifyType === "error" ? "warn" : "info");
+      }
+    }
+
+    // Extension errors
+    if (msg.type === "extension_error") {
+      showToast(`Extension error: ${msg.error}`, "warn");
+    }
+
+    // Turn end
     if (msg.type === "turn_end") {
-      // Don't stop streaming — agent may do another turn
+      // Agent may continue with more turns after tool use
     }
   }
 
@@ -1568,7 +1635,16 @@ function PiChat({ characters, activeCharId }) {
         {piState?.model?.reasoning && (
           <span className="pi-status-tag">reasoning</span>
         )}
-        <span className="pi-status-ctx">{sessionStats ? `${sessionStats.messageCount || 0} msgs` : ""}</span>
+        {compacting && <span className="pi-status-tag" style={{ borderColor: "var(--danger)" }}>compacting</span>}
+        <span className="pi-status-ctx">
+          {sessionStats && (
+            <>
+              {sessionStats.totalMessages || 0} msgs
+              {sessionStats.tokens?.total ? ` · ${(sessionStats.tokens.total / 1000).toFixed(1)}k tok` : ""}
+              {sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(4)}` : ""}
+            </>
+          )}
+        </span>
       </div>
 
       {!PI_URL && (
@@ -1581,16 +1657,43 @@ function PiChat({ characters, activeCharId }) {
         <div className="pi-chat-container">
           <div className="pi-chat-messages">
             {messages.length === 0 && (
-              <div className="loading">
-                {connected ? "Send a message to start chatting with the Pi coding agent." : "Connecting to Pi Agent..."}
+              <div className="pi-welcome">
+                {!connected && <div className="loading">Connecting to Pi Agent...</div>}
+                {connected && piState && (
+                  <>
+                    <div className="pi-welcome-title">Pi Agent Ready</div>
+                    <div className="pi-welcome-info">
+                      <div><strong>Model:</strong> {piState.model?.name || piState.model?.id || "—"}</div>
+                      <div><strong>Session:</strong> {activeChar?.name || "default"}</div>
+                      <div><strong>Tools:</strong> read, write, edit, bash</div>
+                      {piState.model?.contextWindow && (
+                        <div><strong>Context:</strong> {(piState.model.contextWindow / 1000).toFixed(0)}k tokens</div>
+                      )}
+                      {piState.model?.reasoning && <div><strong>Reasoning:</strong> enabled</div>}
+                    </div>
+                    <div className="pi-welcome-hint">Type a message or press / for commands</div>
+                  </>
+                )}
+                {connected && !piState && <div className="loading">Loading agent state...</div>}
               </div>
             )}
             {messages.map((msg, i) => (
-              <div key={i} className={`pi-chat-msg pi-chat-${msg.role}`}>
+              <div key={i} className={`pi-chat-msg pi-chat-${msg.role} ${msg.isError ? "pi-chat-error" : ""}`}>
                 <div className="pi-chat-msg-role">
                   {msg.role === "user" && (activeChar?.name || "You")}
                   {msg.role === "assistant" && "Pi Agent"}
-                  {msg.role === "tool" && `Tool: ${msg.tool}`}
+                  {msg.role === "tool" && (
+                    <span className="pi-tool-header">
+                      <span className="pi-tool-icon">{msg.tool === "bash" ? "$" : msg.tool === "read" ? "R" : msg.tool === "write" ? "W" : msg.tool === "edit" ? "E" : "T"}</span>
+                      {msg.tool}
+                      {msg.args && Object.keys(msg.args).length > 0 && (
+                        <span className="pi-tool-args">
+                          {msg.tool === "bash" ? msg.args.command : msg.args.path || JSON.stringify(msg.args).slice(0, 60)}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {msg.role === "system" && "System"}
                 </div>
                 {msg.thinking && (
                   <details className="pi-chat-thinking" open={msg.streaming}>
@@ -1600,7 +1703,7 @@ function PiChat({ characters, activeCharId }) {
                 )}
                 <div className="pi-chat-msg-content">
                   {msg.content}
-                  {msg.streaming && !msg.thinking && <span className="streaming-dot" />}
+                  {msg.streaming && <span className="streaming-dot" />}
                 </div>
               </div>
             ))}
@@ -1679,7 +1782,9 @@ function PiChat({ characters, activeCharId }) {
                 <input
                   ref={inputRef}
                   type="text"
-                  placeholder={connected ? "Message the Pi agent... (/ for commands)" : "Connecting..."}
+                  placeholder={connected
+                    ? `${piState?.model?.name || "Pi"} · ${piState?.messageCount || 0} msgs · / for commands`
+                    : "Connecting..."}
                   value={input}
                   onChange={(e) => {
                     setInput(e.target.value);

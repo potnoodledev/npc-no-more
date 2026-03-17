@@ -2187,6 +2187,60 @@ a:hover { color: var(--accent-bright); }
   border-top: 1px solid var(--border);
 }
 
+.pi-chat-system {
+  background: transparent;
+  border-left-color: var(--text-faint);
+  padding: 6px 14px;
+}
+.pi-chat-system .pi-chat-msg-content {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.pi-chat-error {
+  border-left-color: var(--danger) !important;
+}
+.pi-chat-error .pi-chat-msg-content {
+  color: var(--danger);
+}
+
+/* Tool header with icon and args */
+.pi-tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pi-tool-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius);
+  background: var(--accent-glow);
+  border: 1px solid var(--accent-dim);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.pi-tool-args {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-dim);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pi-chat-tool .pi-chat-msg-content {
   max-height: 200px;
   overflow-y: auto;
@@ -2217,6 +2271,52 @@ a:hover { color: var(--accent-bright); }
   border-color: var(--accent-dim);
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
+/* Pi Welcome */
+.pi-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.pi-welcome-title {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+
+.pi-welcome-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 20px;
+  margin-bottom: 16px;
+  min-width: 240px;
+}
+.pi-welcome-info strong {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pi-welcome-hint {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
 .pi-chat-compose input::placeholder {
   color: var(--text-faint);
 }
