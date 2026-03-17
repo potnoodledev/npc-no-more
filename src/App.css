@@ -2042,15 +2042,15 @@ a:hover { color: var(--accent-bright); }
 .pi-status-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 8px 14px;
-  margin-bottom: 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 0.72rem;
+  background: var(--bg-warm);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.68rem;
   font-family: var(--font-mono);
   color: var(--text-dim);
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .pi-status-dot {
@@ -2078,6 +2078,10 @@ a:hover { color: var(--accent-bright); }
   font-size: 0.62rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.pi-status-dim {
+  color: var(--text-faint);
 }
 
 .pi-status-ctx {

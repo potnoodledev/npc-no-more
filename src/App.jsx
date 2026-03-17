@@ -1622,30 +1622,14 @@ function PiChat({ characters, activeCharId }) {
     setCmdSubmenu(null);
   }
 
+  // Find model size from available models
+  const currentModelInfo = availableModels.find((m) =>
+    piState?.model && `${m.provider}::${m.id}` === `${piState.model.provider}::${piState.model.id}`
+  );
+
   return (
     <div>
       <h2 className="page-title">Pi Agent</h2>
-
-      <div className="pi-status-bar">
-        <span className={`pi-status-dot ${connected ? "connected" : ""}`} />
-        <span className="pi-status-model">{piState?.model?.name || piState?.model?.id || "—"}</span>
-        {piState?.thinkingLevel && piState.thinkingLevel !== "off" && (
-          <span className="pi-status-tag">thinking: {piState.thinkingLevel}</span>
-        )}
-        {piState?.model?.reasoning && (
-          <span className="pi-status-tag">reasoning</span>
-        )}
-        {compacting && <span className="pi-status-tag" style={{ borderColor: "var(--danger)" }}>compacting</span>}
-        <span className="pi-status-ctx">
-          {sessionStats && (
-            <>
-              {sessionStats.totalMessages || 0} msgs
-              {sessionStats.tokens?.total ? ` · ${(sessionStats.tokens.total / 1000).toFixed(1)}k tok` : ""}
-              {sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(4)}` : ""}
-            </>
-          )}
-        </span>
-      </div>
 
       {!PI_URL && (
         <div className="loading">
@@ -1655,6 +1639,29 @@ function PiChat({ characters, activeCharId }) {
 
       {PI_URL && (
         <div className="pi-chat-container">
+          <div className="pi-status-bar">
+            <span className={`pi-status-dot ${connected ? "connected" : ""}`} />
+            <span className="pi-status-model">{piState?.model?.name || piState?.model?.id || "—"}</span>
+            {piState?.model?.contextWindow && (
+              <span className="pi-status-dim">{(piState.model.contextWindow / 1000).toFixed(0)}k ctx</span>
+            )}
+            {piState?.thinkingLevel && piState.thinkingLevel !== "off" && (
+              <span className="pi-status-tag">thinking: {piState.thinkingLevel}</span>
+            )}
+            {piState?.model?.reasoning && (
+              <span className="pi-status-tag">reasoning</span>
+            )}
+            {compacting && <span className="pi-status-tag" style={{ borderColor: "var(--danger)" }}>compacting</span>}
+            <span className="pi-status-ctx">
+              {sessionStats && (
+                <>
+                  {sessionStats.totalMessages || 0} msgs
+                  {sessionStats.tokens?.total ? ` · ${(sessionStats.tokens.total / 1000).toFixed(1)}k tok` : ""}
+                  {sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(4)}` : ""}
+                </>
+              )}
+            </span>
+          </div>
           <div className="pi-chat-messages">
             {messages.length === 0 && (
               <div className="pi-welcome">

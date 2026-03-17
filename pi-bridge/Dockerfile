@@ -15,6 +15,7 @@ COPY pi-bridge/package.json /app/bridge/
 RUN cd /app/bridge && npm install
 
 COPY pi-bridge/server.js /app/bridge/
+COPY pi-bridge/nim-models.json /app/bridge/
 
 # Create workspace
 RUN mkdir -p /workspace

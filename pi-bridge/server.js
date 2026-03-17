@@ -4,9 +4,12 @@ import { WebSocketServer } from "ws";
 import http from "http";
 import { spawn } from "child_process";
 import { createInterface } from "readline";
-import { mkdirSync, writeFileSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { homedir } from "os";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(cors());
@@ -24,50 +27,44 @@ function setupPiConfig() {
   mkdirSync(piDir, { recursive: true });
 
   // Configure NIM as an OpenAI-compatible provider via models.json
-  // Write models.json in the format pi-coding-agent expects
+  // Generate models.json from nim-models.json reference
   const modelsPath = join(piDir, "models.json");
+  const nimModelsRaw = JSON.parse(readFileSync(join(__dirname, "nim-models.json"), "utf-8"));
+
+  // Filter to models with NIM tool calling support, sorted by active params
+  const nimModels = nimModelsRaw
+    .filter((m) => m.nim_tool_calling)
+    .sort((a, b) => (a.active_params_b || 0) - (b.active_params_b || 0))
+    .map((m) => {
+      // Derive a clean name from the model ID
+      const parts = m.id.split("/");
+      const rawName = parts[parts.length - 1]
+        .replace(/-instruct.*$/, "")
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+      const isThinking = m.id.includes("thinking");
+      return {
+        id: m.id,
+        name: rawName,
+        ...(isThinking ? { reasoning: true } : {}),
+        contextWindow: 131072,
+        maxTokens: isThinking ? 16384 : 8192,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      };
+    });
+
   const modelsConfig = {
     providers: {
       "nvidia-nim": {
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKey: NVIDIA_NIM_API_KEY,
         api: "openai-completions",
-        models: [
-          {
-            id: "qwen/qwen3-coder-480b-a35b-instruct",
-            name: "Qwen3 Coder 480B",
-            contextWindow: 131072,
-            maxTokens: 8192,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-          {
-            id: "deepseek-ai/deepseek-v3.2",
-            name: "DeepSeek V3.2",
-            contextWindow: 131072,
-            maxTokens: 8192,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-          {
-            id: "moonshotai/kimi-k2-thinking",
-            name: "Kimi K2 Thinking",
-            reasoning: true,
-            contextWindow: 131072,
-            maxTokens: 16384,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-          {
-            id: "moonshotai/kimi-k2.5",
-            name: "Kimi K2.5",
-            contextWindow: 131072,
-            maxTokens: 8192,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          },
-        ],
+        models: nimModels,
       },
     },
   };
   writeFileSync(modelsPath, JSON.stringify(modelsConfig, null, 2));
-  console.log(`Wrote NIM models config to ${modelsPath}`);
+  console.log(`Wrote ${nimModels.length} NIM models to ${modelsPath}`);
 
   // Ensure workspace exists
   mkdirSync(WORKSPACE, { recursive: true });
