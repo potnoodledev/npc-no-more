@@ -10,7 +10,7 @@ import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { fetchProfile, closePool } from "./profile.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
-import { verifyNostrAuth, getAdminPubkey } from "./nostr-auth.js";
+import { verifyNostrAuth, getAuthState, addToWhitelist, removeFromWhitelist } from "./nostr-auth.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,6 +32,7 @@ app.use((req, res, next) => {
     return res.status(401).json({ error: "unauthorized — valid Nostr signature required" });
   }
   req.pubkey = auth.pubkey;
+  req.isAdmin = auth.isAdmin;
   next();
 });
 
@@ -243,7 +244,8 @@ async function getOrCreateSession(pubkeyHex) {
 // ── HTTP Endpoints ──
 
 app.get("/setup-status", (req, res) => {
-  res.json({ adminSet: !!getAdminPubkey() });
+  const state = getAuthState();
+  res.json({ adminSet: !!state.admin });
 });
 
 app.get("/health", (req, res) => {

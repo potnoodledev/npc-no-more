@@ -1,30 +1,55 @@
 /**
- * NIP-98 HTTP Auth verification with admin pubkey enforcement.
+ * NIP-98 HTTP Auth with admin + whitelist.
  *
- * If ADMIN_PUBKEY is set, only that pubkey is accepted.
- * If ADMIN_PUBKEY is empty, the first valid request's pubkey becomes admin (self-setup).
+ * First valid signer becomes admin. Admin can add more pubkeys to the whitelist.
+ * All whitelisted pubkeys can make authenticated requests.
  */
 
 import { verifyEvent } from "nostr-tools/pure";
 import { writeFileSync, readFileSync, existsSync } from "fs";
 
 const MAX_AGE_SECONDS = 120;
+const AUTH_FILE = process.env.AUTH_FILE || "/tmp/auth.json";
 
-let adminPubkey = process.env.ADMIN_PUBKEY || "";
-const ADMIN_FILE = process.env.ADMIN_FILE || "/tmp/admin-pubkey.txt";
+// State: admin pubkey + whitelist
+let authState = { admin: "", whitelist: [] };
 
-// Load persisted admin pubkey
-if (!adminPubkey && existsSync(ADMIN_FILE)) {
-  try { adminPubkey = readFileSync(ADMIN_FILE, "utf-8").trim(); } catch {}
+// Load persisted state
+if (existsSync(AUTH_FILE)) {
+  try { authState = JSON.parse(readFileSync(AUTH_FILE, "utf-8")); } catch {}
+}
+if (process.env.ADMIN_PUBKEY && !authState.admin) {
+  authState.admin = process.env.ADMIN_PUBKEY;
 }
 
-export function getAdminPubkey() {
-  return adminPubkey;
+function saveState() {
+  try { writeFileSync(AUTH_FILE, JSON.stringify(authState, null, 2)); } catch {}
+}
+
+export function getAuthState() {
+  return { admin: authState.admin, whitelist: authState.whitelist };
+}
+
+export function isAllowedPubkey(pubkey) {
+  if (!authState.admin) return true; // No admin yet = open
+  return pubkey === authState.admin || authState.whitelist.includes(pubkey);
+}
+
+export function addToWhitelist(pubkey) {
+  if (!authState.whitelist.includes(pubkey)) {
+    authState.whitelist.push(pubkey);
+    saveState();
+  }
+}
+
+export function removeFromWhitelist(pubkey) {
+  authState.whitelist = authState.whitelist.filter((p) => p !== pubkey);
+  saveState();
 }
 
 /**
  * Verify a NIP-98 Nostr auth header.
- * Returns { pubkey, isAdmin } or null if invalid.
+ * Returns { pubkey, isAdmin } or null if invalid/unauthorized.
  */
 export function verifyNostrAuth(authHeaderValue) {
   if (!authHeaderValue || !authHeaderValue.startsWith("Nostr ")) return null;
@@ -39,18 +64,17 @@ export function verifyNostrAuth(authHeaderValue) {
     const now = Math.floor(Date.now() / 1000);
     if (Math.abs(now - event.created_at) > MAX_AGE_SECONDS) return null;
 
-    // Admin check: if no admin set yet, first valid signer becomes admin
-    if (!adminPubkey) {
-      adminPubkey = event.pubkey;
-      try { writeFileSync(ADMIN_FILE, adminPubkey); } catch {}
-      console.log(`[auth] Admin pubkey set: ${adminPubkey.slice(0, 16)}...`);
+    // First valid signer becomes admin
+    if (!authState.admin) {
+      authState.admin = event.pubkey;
+      saveState();
+      console.log(`[auth] Admin pubkey set: ${authState.admin.slice(0, 16)}...`);
     }
 
-    if (event.pubkey !== adminPubkey) {
-      return null; // Only admin pubkey is allowed
-    }
+    // Must be admin or whitelisted
+    if (!isAllowedPubkey(event.pubkey)) return null;
 
-    return { pubkey: event.pubkey, isAdmin: true };
+    return { pubkey: event.pubkey, isAdmin: event.pubkey === authState.admin };
   } catch {
     return null;
   }

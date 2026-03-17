@@ -10,7 +10,7 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
-import { verifyNostrAuth, getAdminPubkey } from "./nostr-auth.js";
+import { verifyNostrAuth, getAuthState, addToWhitelist, removeFromWhitelist } from "./nostr-auth.js";
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
@@ -45,6 +45,7 @@ function protectEndpoint(req, res, next) {
     return res.status(401).json({ error: "unauthorized — valid Nostr signature required" });
   }
   req.pubkey = auth.pubkey;
+  req.isAdmin = auth.isAdmin;
   if (!checkRateLimit(req.ip)) {
     return res.status(429).json({ error: "rate limit exceeded, try again later" });
   }
@@ -107,7 +108,30 @@ const NIM_MODELS = [
 
 // ── Health ──
 app.get("/setup-status", (req, res) => {
-  res.json({ adminSet: !!getAdminPubkey() });
+  const state = getAuthState();
+  res.json({ adminSet: !!state.admin });
+});
+
+// Admin-only: whitelist management (requires auth via protectEndpoint pattern)
+app.get("/admin/auth", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  res.json(getAuthState());
+});
+
+app.post("/admin/whitelist", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  const { pubkey } = req.body;
+  if (!pubkey || typeof pubkey !== "string" || pubkey.length !== 64) {
+    return res.status(400).json({ error: "invalid pubkey (64 hex chars)" });
+  }
+  addToWhitelist(pubkey);
+  res.json({ ok: true, whitelist: getAuthState().whitelist });
+});
+
+app.delete("/admin/whitelist/:pubkey", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  removeFromWhitelist(req.params.pubkey);
+  res.json({ ok: true, whitelist: getAuthState().whitelist });
 });
 
 app.get("/health", (req, res) => {

@@ -2360,7 +2360,73 @@ function RelayStatus({ url }) {
 //  SETTINGS
 // ══════════════════════════════════════
 
-function SettingsPage({ characters, onReset }) {
+function AdminWhitelist({ adminAccount }) {
+  const [whitelist, setWhitelist] = useState([]);
+  const [newPubkey, setNewPubkey] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const apiUrl = import.meta.env.VITE_API_URL || "";
+
+  useEffect(() => {
+    if (!apiUrl || !adminAccount) return;
+    const url = `${apiUrl}/admin/auth`;
+    getAuthHeaders(url, "GET", adminAccount).then((headers) => {
+      fetch(url, { headers }).then((r) => r.json()).then((data) => {
+        setWhitelist(data.whitelist || []);
+        setLoading(false);
+      }).catch(() => setLoading(false));
+    });
+  }, [adminAccount]);
+
+  async function handleAdd() {
+    const pk = newPubkey.trim();
+    if (!pk || pk.length !== 64) return;
+    const url = `${apiUrl}/admin/whitelist`;
+    const headers = await getAuthHeaders(url, "POST", adminAccount);
+    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ pubkey: pk }) });
+    const data = await res.json();
+    if (data.whitelist) setWhitelist(data.whitelist);
+    setNewPubkey("");
+  }
+
+  async function handleRemove(pk) {
+    const url = `${apiUrl}/admin/whitelist/${pk}`;
+    const headers = await getAuthHeaders(url, "DELETE", adminAccount);
+    const res = await fetch(url, { method: "DELETE", headers });
+    const data = await res.json();
+    if (data.whitelist) setWhitelist(data.whitelist);
+  }
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
+        Whitelisted Pubkeys
+      </div>
+      {loading && <div style={{ color: "var(--text-faint)", fontSize: "0.78rem" }}>Loading...</div>}
+      {!loading && whitelist.length === 0 && (
+        <div style={{ color: "var(--text-faint)", fontSize: "0.78rem", marginBottom: 8 }}>No additional pubkeys whitelisted. Only the admin can access the API.</div>
+      )}
+      {whitelist.map((pk) => (
+        <div key={pk} className="admin-key-row">
+          <code style={{ fontSize: "0.62rem" }}>{pk.slice(0, 20)}...{pk.slice(-8)}</code>
+          <button className="btn-small btn-reset" onClick={() => handleRemove(pk)}>Remove</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <input
+          type="text"
+          placeholder="Hex pubkey (64 chars)"
+          value={newPubkey}
+          onChange={(e) => setNewPubkey(e.target.value)}
+          style={{ flex: 1, padding: "6px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", fontSize: "0.78rem", fontFamily: "var(--font-mono)" }}
+        />
+        <button className="btn-small" onClick={handleAdd} disabled={!newPubkey.trim() || newPubkey.trim().length !== 64}>Add</button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage({ characters, onReset, adminAccount }) {
   function handleExportKeys() {
     const lines = characters.map((c, i) => {
       const idx = i + 1;
@@ -2399,7 +2465,20 @@ function SettingsPage({ characters, onReset }) {
     <div>
       <h2 className="page-title">Settings</h2>
 
-      <div className="edit-section">
+      {adminAccount && (
+        <div className="edit-section">
+          <h3>Admin Key</h3>
+          <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginBottom: 12 }}>
+            This keypair authenticates you as the admin. All API calls are signed with it. Keep the nsec secret.
+          </p>
+          <div className="admin-key-row"><span>npub</span><code>{adminAccount.npub}</code></div>
+          <div className="admin-key-row"><span>pubkey (hex)</span><code>{adminAccount.pk}</code></div>
+          <div className="admin-key-row"><span>nsec</span><code className="nsec-display">{adminAccount.nsec}</code></div>
+          <AdminWhitelist adminAccount={adminAccount} />
+        </div>
+      )}
+
+      <div className="edit-section" style={{ marginTop: 20 }}>
         <h3>Relay</h3>
         {OWN_RELAY ? (
           <div>
@@ -2603,7 +2682,7 @@ export default function App() {
       return <NetworkPage characters={characters} activeAccount={activeAccount} />;
     }
     if (route === "settings") {
-      return <SettingsPage characters={characters} onReset={handleReset} />;
+      return <SettingsPage characters={characters} onReset={handleReset} adminAccount={adminAccount} />;
     }
     if (route === "profile" && routeKey) {
       const ownedChar = characters.find((c) => c.pk === routeKey) || null;
