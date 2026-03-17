@@ -2360,6 +2360,50 @@ function RelayStatus({ url }) {
 //  SETTINGS
 // ══════════════════════════════════════
 
+function AdminKeySection({ adminAccount }) {
+  const [showNsec, setShowNsec] = useState(false);
+  const [copied, setCopied] = useState("");
+
+  function copyToClipboard(text, label) {
+    navigator.clipboard.writeText(text);
+    setCopied(label);
+    setTimeout(() => setCopied(""), 1500);
+  }
+
+  return (
+    <div className="edit-section">
+      <h3>Admin Key</h3>
+      <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginBottom: 12 }}>
+        This keypair authenticates you as the admin. All API calls are signed with it.
+      </p>
+      <div className="admin-key-row">
+        <span>npub</span>
+        <code>{adminAccount.npub}</code>
+        <button className="btn-small" onClick={() => copyToClipboard(adminAccount.npub, "npub")}>
+          {copied === "npub" ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <div className="admin-key-row">
+        <span>nsec</span>
+        {showNsec ? (
+          <code className="nsec-display">{adminAccount.nsec}</code>
+        ) : (
+          <code style={{ color: "var(--text-faint)" }}>{"*".repeat(20)}</code>
+        )}
+        <div style={{ display: "flex", gap: 4 }}>
+          <button className="btn-small" onClick={() => setShowNsec(!showNsec)}>
+            {showNsec ? "Hide" : "Reveal"}
+          </button>
+          <button className="btn-small" onClick={() => copyToClipboard(adminAccount.nsec, "nsec")}>
+            {copied === "nsec" ? "Copied" : "Copy"}
+          </button>
+        </div>
+      </div>
+      <AdminWhitelist adminAccount={adminAccount} />
+    </div>
+  );
+}
+
 function AdminWhitelist({ adminAccount }) {
   const [whitelist, setWhitelist] = useState([]);
   const [newPubkey, setNewPubkey] = useState("");
@@ -2379,7 +2423,14 @@ function AdminWhitelist({ adminAccount }) {
   }, [adminAccount]);
 
   async function handleAdd() {
-    const pk = newPubkey.trim();
+    let pk = newPubkey.trim();
+    // Convert npub to hex if needed
+    if (pk.startsWith("npub1")) {
+      try {
+        const { type, data } = nip19decode(pk);
+        if (type === "npub") pk = data;
+      } catch { return; }
+    }
     if (!pk || pk.length !== 64) return;
     const url = `${apiUrl}/admin/whitelist`;
     const headers = await getAuthHeaders(url, "POST", adminAccount);
@@ -2408,19 +2459,19 @@ function AdminWhitelist({ adminAccount }) {
       )}
       {whitelist.map((pk) => (
         <div key={pk} className="admin-key-row">
-          <code style={{ fontSize: "0.62rem" }}>{pk.slice(0, 20)}...{pk.slice(-8)}</code>
+          <code style={{ fontSize: "0.62rem" }}>{npubEncode(pk)}</code>
           <button className="btn-small btn-reset" onClick={() => handleRemove(pk)}>Remove</button>
         </div>
       ))}
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <input
           type="text"
-          placeholder="Hex pubkey (64 chars)"
+          placeholder="npub1... or hex pubkey"
           value={newPubkey}
           onChange={(e) => setNewPubkey(e.target.value)}
           style={{ flex: 1, padding: "6px 10px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", fontSize: "0.78rem", fontFamily: "var(--font-mono)" }}
         />
-        <button className="btn-small" onClick={handleAdd} disabled={!newPubkey.trim() || newPubkey.trim().length !== 64}>Add</button>
+        <button className="btn-small" onClick={handleAdd} disabled={!newPubkey.trim()}>Add</button>
       </div>
     </div>
   );
@@ -2466,16 +2517,7 @@ function SettingsPage({ characters, onReset, adminAccount }) {
       <h2 className="page-title">Settings</h2>
 
       {adminAccount && (
-        <div className="edit-section">
-          <h3>Admin Key</h3>
-          <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginBottom: 12 }}>
-            This keypair authenticates you as the admin. All API calls are signed with it. Keep the nsec secret.
-          </p>
-          <div className="admin-key-row"><span>npub</span><code>{adminAccount.npub}</code></div>
-          <div className="admin-key-row"><span>pubkey (hex)</span><code>{adminAccount.pk}</code></div>
-          <div className="admin-key-row"><span>nsec</span><code className="nsec-display">{adminAccount.nsec}</code></div>
-          <AdminWhitelist adminAccount={adminAccount} />
-        </div>
+        <AdminKeySection adminAccount={adminAccount} />
       )}
 
       <div className="edit-section" style={{ marginTop: 20 }}>
