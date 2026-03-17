@@ -25,5 +25,19 @@ services:
       - S3_REGION=${S3_REGION}
     restart: unless-stopped
 
+  pi-bridge:
+    build:
+      context: .
+      dockerfile: pi-bridge/Dockerfile
+    container_name: npc-pi-bridge
+    ports:
+      - "3457:3457"
+    volumes:
+      - pi-workspace:/workspace
+    environment:
+      - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY}
+    restart: unless-stopped
+
 volumes:
   relay-data:
+  pi-workspace:

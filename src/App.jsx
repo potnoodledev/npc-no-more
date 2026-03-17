@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
+const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
 import { isNimAvailable, generateRandomPersona, generateAvatar, getRandomErrorMessage } from "./nim";
 import {
   createAccount,
@@ -14,6 +15,8 @@ import {
   decryptDM,
   fetchProfile,
   fetchProfiles,
+  fetchFollows,
+  publishFollows,
   shortPubkey,
   formatTime,
   loadCharacters,
@@ -39,6 +42,8 @@ function parseHash() {
   if (!hash) return { route: "home" };
   const parts = hash.split("/");
   if (parts[0] === "characters" && parts[1] === "new") return { route: "new-character" };
+  if (parts[0] === "network") return { route: "network" };
+  if (parts[0] === "pi") return { route: "pi" };
   if (parts[0] === "settings") return { route: "settings" };
   if (parts[0] === "profile" && parts[1]) return { route: "profile", key: parts[1] };
   if (parts[0] === "thread" && parts[1]) return { route: "thread", key: parts[1] };
@@ -66,7 +71,7 @@ function setHash(path) {
 //  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
-function Sidebar({ characters, activeCharId, onSwitch, currentPubkey }) {
+function Sidebar({ characters, activeCharId, currentPubkey }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -79,11 +84,9 @@ function Sidebar({ characters, activeCharId, onSwitch, currentPubkey }) {
           <button
             key={c.id}
             className={`sidebar-char ${c.pk === currentPubkey ? "active-char" : ""}`}
-            onClick={() => {
-              onSwitch(c.id);
-              setHash("profile/" + c.npub);
-            }}
+            onClick={() => setHash("profile/" + c.npub)}
           >
+            {c.id === activeCharId && <span className="sidebar-acting-dot" />}
             <span className="sidebar-char-avatar">
               {c.profile_image ? (
                 <img src={c.profile_image} alt="" />
@@ -101,6 +104,14 @@ function Sidebar({ characters, activeCharId, onSwitch, currentPubkey }) {
       </div>
 
       <div className="sidebar-footer">
+        <button className="sidebar-item" onClick={() => setHash("pi")}>
+          <span className="sidebar-icon">&#9000;</span>
+          <span>Pi Agent</span>
+        </button>
+        <button className="sidebar-item" onClick={() => setHash("network")}>
+          <span className="sidebar-icon">&#9673;</span>
+          <span>Network</span>
+        </button>
         <button className="sidebar-item" onClick={() => setHash("settings")}>
           <span className="sidebar-icon">&#9881;</span>
           <span>Settings</span>
@@ -354,6 +365,64 @@ function ImageModal({ src, onClose }) {
 }
 
 // ══════════════════════════════════════
+//  CHARACTER SWITCHER (reusable "posting as" pill)
+// ══════════════════════════════════════
+
+function CharacterSwitcher({ characters, selectedCharId, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const selected = characters.find((c) => c.id === selectedCharId) || characters[0];
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  if (!selected || characters.length < 2) {
+    // Only one character — show as static pill, no dropdown
+    return selected ? (
+      <div className="char-switcher-pill">
+        <span className="char-switcher-avatar">
+          {selected.profile_image ? <img src={selected.profile_image} alt="" /> : selected.name.charAt(0).toUpperCase()}
+        </span>
+        <span className="char-switcher-name">{selected.name}</span>
+      </div>
+    ) : null;
+  }
+
+  return (
+    <div className="char-switcher" ref={ref}>
+      <button className="char-switcher-pill" onClick={() => setOpen(!open)}>
+        <span className="char-switcher-avatar">
+          {selected.profile_image ? <img src={selected.profile_image} alt="" /> : selected.name.charAt(0).toUpperCase()}
+        </span>
+        <span className="char-switcher-name">{selected.name}</span>
+        <span className="char-switcher-arrow">{open ? "\u25B4" : "\u25BE"}</span>
+      </button>
+      {open && (
+        <div className="char-switcher-dropdown">
+          {characters.map((c) => (
+            <button
+              key={c.id}
+              className={`char-switcher-option ${c.id === selectedCharId ? "selected" : ""}`}
+              onClick={() => { onSelect(c.id); setOpen(false); }}
+            >
+              <span className="char-switcher-avatar">
+                {c.profile_image ? <img src={c.profile_image} alt="" /> : c.name.charAt(0).toUpperCase()}
+              </span>
+              <span>{c.name}</span>
+              {c.id === selectedCharId && <span className="char-switcher-check">{"\u2713"}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
 //  OWNED CHARACTER PAGE (tabs: Posts / Profile)
 // ══════════════════════════════════════
 
@@ -361,6 +430,9 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
   const [tab, setTab] = useState("posts"); // "posts" | "profile"
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
+  const [composeAsCharId, setComposeAsCharId] = useState(character.id);
+  const composeChar = characters.find((c) => c.id === composeAsCharId) || character;
+  const composeAccount = composeChar ? accountFromSkHex(composeChar.skHex) : account;
 
   // Character's own posts
   const [myNotes, setMyNotes] = useState([]);
@@ -516,10 +588,10 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
   }
 
   async function handlePost() {
-    if (!postContent.trim() || !account) return;
+    if (!postContent.trim() || !composeAccount) return;
     setPosting(true);
     try {
-      const signed = await publishNote(postContent, account);
+      const signed = await publishNote(postContent, composeAccount);
       setMyNotes((prev) => [signed, ...prev]);
       addFeedNote(signed);
       setPostContent("");
@@ -633,7 +705,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
           <div className="feed-compose">
             <div className="compose-box">
               <textarea
-                placeholder={`What's on ${character.name}'s mind?`}
+                placeholder={`What's on ${composeChar.name}'s mind?`}
                 value={postContent}
                 onChange={(e) => setPostContent(e.target.value)}
                 rows={3}
@@ -645,9 +717,9 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                 }}
               />
               <div className="compose-footer">
-                <span className="hint">Ctrl+Enter to post</span>
+                <CharacterSwitcher characters={characters} selectedCharId={composeAsCharId} onSelect={setComposeAsCharId} />
                 <button className="btn-primary" disabled={posting || !postContent.trim()} onClick={handlePost}>
-                  {posting ? "Posting..." : `Post as ${character.name}`}
+                  {posting ? "Posting..." : "Post"}
                 </button>
               </div>
             </div>
@@ -935,6 +1007,12 @@ function ThreadView({ eventId, account, characters = [] }) {
   const subRef = useRef(null);
   const profileCache = useRef({});
 
+  // Character switcher for replies
+  const activeChar = characters.find((c) => accountFromSkHex(c.skHex).pk === account?.pk);
+  const [replyAsCharId, setReplyAsCharId] = useState(activeChar?.id || characters[0]?.id || null);
+  const replyChar = characters.find((c) => c.id === replyAsCharId);
+  const replyAccount = replyChar ? accountFromSkHex(replyChar.skHex) : account;
+
   useEffect(() => {
     setLoading(true);
     setRootEvent(null);
@@ -986,7 +1064,7 @@ function ThreadView({ eventId, account, characters = [] }) {
   }
 
   async function handleReply() {
-    if (!replyContent.trim() || !account || !rootEvent) return;
+    if (!replyContent.trim() || !replyAccount || !rootEvent) return;
     setPosting(true);
     try {
       const lastReply = replies.length > 0 ? replies[replies.length - 1] : rootEvent;
@@ -997,7 +1075,7 @@ function ThreadView({ eventId, account, characters = [] }) {
       }
       const signed = await publishEvent({
         kind: 1, created_at: Math.floor(Date.now() / 1000), tags, content: replyContent,
-      }, account);
+      }, replyAccount);
       setReplies((prev) => [...prev, signed].sort((a, b) => a.created_at - b.created_at));
       setReplyContent("");
     } catch (e) { alert("Failed to reply: " + e.message); }
@@ -1050,12 +1128,12 @@ function ThreadView({ eventId, account, characters = [] }) {
         </div>
       )}
       {!loading && replies.length === 0 && rootEvent && <p className="thread-no-replies">No replies yet. Be the first!</p>}
-      {account && rootEvent && (
+      {account && rootEvent && characters.length > 0 && (
         <div className="thread-reply-compose">
           <textarea placeholder="Write a reply..." value={replyContent} onChange={(e) => setReplyContent(e.target.value)} rows={3}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleReply(); } }} />
           <div className="compose-footer">
-            <span className="hint">Ctrl+Enter to reply</span>
+            <CharacterSwitcher characters={characters} selectedCharId={replyAsCharId} onSelect={setReplyAsCharId} />
             <button className="btn-primary" disabled={posting || !replyContent.trim()} onClick={handleReply}>
               {posting ? "Replying..." : "Reply"}
             </button>
@@ -1070,7 +1148,7 @@ function ThreadView({ eventId, account, characters = [] }) {
 //  MESSAGE VIEW
 // ══════════════════════════════════════
 
-function MessageView({ recipientPubkey, account }) {
+function MessageView({ recipientPubkey, account, characters = [] }) {
   const [recipientName, setRecipientName] = useState("");
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -1078,6 +1156,12 @@ function MessageView({ recipientPubkey, account }) {
   const [loading, setLoading] = useState(false);
   const subRef = useRef(null);
   const messagesEndRef = useRef(null);
+
+  // Character switcher for DMs
+  const activeChar = characters.find((c) => accountFromSkHex(c.skHex).pk === account?.pk);
+  const [dmAsCharId, setDmAsCharId] = useState(activeChar?.id || characters[0]?.id || null);
+  const dmChar = characters.find((c) => c.id === dmAsCharId);
+  const dmAccount = dmChar ? accountFromSkHex(dmChar.skHex) : account;
 
   useEffect(() => {
     if (!recipientPubkey) return;
@@ -1088,35 +1172,36 @@ function MessageView({ recipientPubkey, account }) {
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
 
+  // Re-subscribe when character changes
   useEffect(() => {
-    if (!account) return;
+    if (!dmAccount) return;
     setLoading(true);
     setMessages([]);
     const processEvent = async (event) => {
-      const { plaintext } = await decryptDM(event, account);
+      const { plaintext } = await decryptDM(event, dmAccount);
       setMessages((prev) => {
         if (prev.find((m) => m.id === event.id)) return prev;
         return [...prev, { ...event, _decrypted: plaintext }].sort((a, b) => a.created_at - b.created_at);
       });
     };
-    subRef.current = subscribeDMs(DEFAULT_RELAYS, account.pk, processEvent, () => setLoading(false));
+    subRef.current = subscribeDMs(DEFAULT_RELAYS, dmAccount.pk, processEvent, () => setLoading(false));
     return () => { if (subRef.current) subRef.current.close(); };
-  }, [account]);
+  }, [dmAccount?.pk]);
 
   async function handleSend() {
-    if (!input.trim() || !account) return;
+    if (!input.trim() || !dmAccount) return;
     setSending(true);
-    try { await sendDM(input, recipientPubkey, account); setInput(""); }
+    try { await sendDM(input, recipientPubkey, dmAccount); setInput(""); }
     catch (e) { alert("Failed to send: " + e.message); }
     setSending(false);
   }
 
   const filtered = messages.filter((m) => {
-    const otherPk = m.pubkey === account?.pk ? m.tags.find((t) => t[0] === "p")?.[1] : m.pubkey;
+    const otherPk = m.pubkey === dmAccount?.pk ? m.tags.find((t) => t[0] === "p")?.[1] : m.pubkey;
     return otherPk === recipientPubkey;
   });
 
-  if (!account) {
+  if (!dmAccount && characters.length === 0) {
     return (
       <div className="loading">
         <p>Create a character first to send messages.</p>
@@ -1140,7 +1225,7 @@ function MessageView({ recipientPubkey, account }) {
         {loading && filtered.length === 0 && <div className="loading">Connecting...</div>}
         {!loading && filtered.length === 0 && <div className="loading">Say hello to {recipientName}!</div>}
         {filtered.map((msg) => (
-          <div key={msg.id} className={`chat-bubble ${msg.pubkey === account?.pk ? "sent" : "received"}`}>
+          <div key={msg.id} className={`chat-bubble ${msg.pubkey === dmAccount?.pk ? "sent" : "received"}`}>
             <div className="chat-text">{msg._decrypted}</div>
             <div className="chat-time">{formatTime(msg.created_at)}</div>
           </div>
@@ -1148,6 +1233,9 @@ function MessageView({ recipientPubkey, account }) {
         <div ref={messagesEndRef} />
       </div>
       <div className="conversation-compose">
+        {characters.length > 1 && (
+          <CharacterSwitcher characters={characters} selectedCharId={dmAsCharId} onSelect={setDmAsCharId} />
+        )}
         <input type="text" placeholder={`Message ${recipientName}...`} value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }} />
@@ -1155,6 +1243,910 @@ function MessageView({ recipientPubkey, account }) {
           {sending ? "..." : "\u27A4"}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  PI AGENT CHAT
+// ══════════════════════════════════════
+
+const PI_URL = import.meta.env.VITE_PI_URL || "";
+
+function PiChat({ characters, activeCharId }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [piState, setPiState] = useState(null);
+  const [availableModels, setAvailableModels] = useState([]);
+  const [commands, setCommands] = useState([]);
+  const [showCommands, setShowCommands] = useState(false);
+  const [cmdIndex, setCmdIndex] = useState(0);
+  const [sessionStats, setSessionStats] = useState(null);
+  const [toast, setToast] = useState(null);
+  const inputRef = useRef(null);
+  const paletteRef = useRef(null);
+
+  function showToast(message, type = "info", duration = 3000) {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), duration);
+  }
+  const wsRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const currentTextRef = useRef("");
+  const currentThinkingRef = useRef("");
+
+  const activeChar = characters.find((c) => c.id === activeCharId);
+  const sessionId = activeChar ? activeChar.pk.slice(0, 16) : "default";
+
+  // Connect WebSocket
+  useEffect(() => {
+    if (!PI_URL) return;
+    const params = new URLSearchParams({ session: sessionId });
+    if (activeChar) {
+      params.set("name", activeChar.name);
+      if (activeChar.personality) params.set("personality", activeChar.personality);
+      if (activeChar.world) params.set("world", activeChar.world);
+      if (activeChar.voice) params.set("voice", activeChar.voice);
+    }
+    const url = `${PI_URL}/ws?${params}`;
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setConnected(true);
+      console.log("[pi] Connected to", url);
+      // Request state, models, and commands
+      ws.send(JSON.stringify({ type: "get_available_models" }));
+      ws.send(JSON.stringify({ type: "get_commands" }));
+      ws.send(JSON.stringify({ type: "get_session_stats" }));
+    };
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        handlePiEvent(msg);
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      setConnected(false);
+      console.log("[pi] Disconnected");
+    };
+
+    ws.onerror = () => setConnected(false);
+
+    return () => { ws.close(); };
+  }, [sessionId]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  function handlePiEvent(msg) {
+    // Response to get_state
+    if (msg.type === "response" && msg.command === "get_state" && msg.success) {
+      setPiState(msg.data);
+      return;
+    }
+
+    // Response to get_available_models
+    if (msg.type === "response" && msg.command === "get_available_models" && msg.success) {
+      setAvailableModels(msg.data?.models || []);
+      return;
+    }
+
+    // Response to model/thinking changes — refresh state
+    if (msg.type === "response" && (msg.command === "set_model" || msg.command === "cycle_model" || msg.command === "cycle_thinking_level") && msg.success) {
+      if (wsRef.current) wsRef.current.send(JSON.stringify({ type: "get_state" }));
+      return;
+    }
+
+    // Response to get_commands
+    if (msg.type === "response" && msg.command === "get_commands" && msg.success) {
+      setCommands(msg.data?.commands || []);
+      return;
+    }
+
+    // Response to get_session_stats
+    if (msg.type === "response" && msg.command === "get_session_stats" && msg.success) {
+      setSessionStats(msg.data);
+      return;
+    }
+
+    // Response to new_session
+    if (msg.type === "response" && msg.command === "new_session" && msg.success) {
+      setMessages([]);
+      setSessionStats(null);
+      if (wsRef.current) {
+        wsRef.current.send(JSON.stringify({ type: "get_state" }));
+        wsRef.current.send(JSON.stringify({ type: "get_session_stats" }));
+      }
+      return;
+    }
+
+    // Response to compact
+    if (msg.type === "response" && msg.command === "compact" && msg.success) {
+      if (wsRef.current) wsRef.current.send(JSON.stringify({ type: "get_session_stats" }));
+      return;
+    }
+
+    // Response to set_thinking_level
+    if (msg.type === "response" && msg.command === "set_thinking_level" && msg.success) {
+      // Refresh state to get updated thinking level
+      if (wsRef.current) wsRef.current.send(JSON.stringify({ type: "get_state" }));
+      return;
+    }
+
+    // Agent lifecycle
+    if (msg.type === "agent_start") {
+      setStreaming(true);
+      currentTextRef.current = "";
+      currentThinkingRef.current = "";
+    }
+
+    if (msg.type === "agent_end") {
+      setStreaming(false);
+      setMessages((prev) => prev.map((m) => ({ ...m, streaming: false })));
+      // Refresh stats after each turn
+      if (wsRef.current) wsRef.current.send(JSON.stringify({ type: "get_session_stats" }));
+    }
+
+    // Assistant message updates (text and tool calls)
+    if (msg.type === "message_update" && msg.assistantMessageEvent) {
+      const ev = msg.assistantMessageEvent;
+
+      if (ev.type === "text_delta") {
+        currentTextRef.current += ev.delta;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === "assistant" && last.streaming) {
+            return [...prev.slice(0, -1), { ...last, content: currentTextRef.current }];
+          }
+          return [...prev, { role: "assistant", content: currentTextRef.current, thinking: currentThinkingRef.current, streaming: true }];
+        });
+      }
+
+      if (ev.type === "thinking_delta") {
+        currentThinkingRef.current += ev.delta;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === "assistant" && last.streaming) {
+            return [...prev.slice(0, -1), { ...last, thinking: currentThinkingRef.current }];
+          }
+          return [...prev, { role: "assistant", content: "", thinking: currentThinkingRef.current, streaming: true }];
+        });
+      }
+    }
+
+    // Tool execution
+    if (msg.type === "tool_execution_start") {
+      setMessages((prev) => [...prev, {
+        role: "tool",
+        tool: msg.toolName || "unknown",
+        content: JSON.stringify(msg.args || {}, null, 2),
+        streaming: true,
+      }]);
+    }
+
+    if (msg.type === "tool_execution_end") {
+      const resultText = msg.result?.content?.map((c) => c.text || "").join("") || "";
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === "tool" && last.streaming) {
+          return [...prev.slice(0, -1), { ...last, content: last.content + "\n\n" + resultText, streaming: false }];
+        }
+        return prev;
+      });
+    }
+
+    // Turn end — might continue with more turns
+    if (msg.type === "turn_end") {
+      // Don't stop streaming — agent may do another turn
+    }
+  }
+
+  function handleSend() {
+    if (!input.trim() || !wsRef.current || !connected) return;
+    const text = input.trim();
+
+    // Check if input matches an RPC command (e.g., "/new", "/compact")
+    if (text.startsWith("/")) {
+      const cmdName = text.slice(1).split(" ")[0].toLowerCase();
+      const cmd = allCommands.find((c) => c.name.toLowerCase() === cmdName);
+      if (cmd && (cmd.kind === "rpc" || cmd.kind === "submenu")) {
+        executeCommand(cmd);
+        setInput("");
+        return;
+      }
+    }
+
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    wsRef.current.send(JSON.stringify({ type: "prompt", message: text }));
+    setInput("");
+  }
+
+  function handleAbort() {
+    if (wsRef.current && connected) {
+      wsRef.current.send(JSON.stringify({ type: "abort" }));
+    }
+  }
+
+  function handleSetModel(provider, modelId) {
+    if (wsRef.current && connected) {
+      wsRef.current.send(JSON.stringify({ type: "set_model", provider, modelId }));
+    }
+  }
+
+  function sendCommand(type, extra = {}) {
+    if (wsRef.current && connected) {
+      wsRef.current.send(JSON.stringify({ type, ...extra }));
+    }
+    setShowCommands(false);
+  }
+
+  // Command system: RPC commands execute directly, prompt commands go through input
+  const [cmdSubmenu, setCmdSubmenu] = useState(null); // null or "model" or "thinking"
+
+  const currentModelKey = piState?.model ? `${piState.model.provider}::${piState.model.id}` : "";
+  const thinkingLevels = ["off", "minimal", "low", "medium", "high"];
+
+  const allCommands = useMemo(() => {
+    const rpc = [
+      { name: "model", kind: "submenu", description: `Switch model (${piState?.model?.name || "—"})`, submenu: "model" },
+      { name: "thinking", kind: "submenu", description: `Set thinking (${piState?.thinkingLevel || "off"})`, submenu: "thinking" },
+      { name: "new", kind: "rpc", description: "Start a new session", rpcType: "new_session" },
+      { name: "compact", kind: "rpc", description: "Compress context", rpcType: "compact" },
+      { name: "auto-compact", kind: "rpc", description: `Toggle auto-compaction (${piState?.autoCompactionEnabled ? "on" : "off"})`, rpcType: "set_auto_compaction", rpcExtra: { enabled: !piState?.autoCompactionEnabled } },
+      { name: "abort", kind: "rpc", description: "Stop current generation", rpcType: "abort" },
+      { name: "export", kind: "rpc", description: "Export as HTML", rpcType: "export_html" },
+      { name: "stats", kind: "rpc", description: "Session stats", rpcType: "get_session_stats" },
+    ];
+    const custom = commands.map((c) => ({
+      name: c.name,
+      kind: "prompt",
+      description: c.description || `[${c.source}]`,
+    }));
+    return [...rpc, ...custom];
+  }, [piState, commands]);
+
+  function executeCommand(cmd) {
+    if (cmd.kind === "submenu") {
+      setShowCommands(true); // Keep palette open
+      setCmdSubmenu(cmd.submenu);
+      setCmdIndex(0);
+      return;
+    }
+    if (cmd.kind === "rpc") {
+      if (wsRef.current && connected) {
+        wsRef.current.send(JSON.stringify({ type: cmd.rpcType, ...(cmd.rpcExtra || {}) }));
+      }
+      showToast(`/${cmd.name} executed`);
+      setInput("");
+      setShowCommands(false);
+      setCmdSubmenu(null);
+      return;
+    }
+    if (cmd.kind === "prompt") {
+      setInput("/" + cmd.name + " ");
+      setShowCommands(false);
+      setCmdSubmenu(null);
+      inputRef.current?.focus();
+      return;
+    }
+  }
+
+  function selectModel(provider, modelId, name) {
+    sendCommand("set_model", { provider, modelId });
+    setInput("");
+    setCmdSubmenu(null);
+  }
+
+  function selectThinking(level) {
+    if (level !== "off" && piState?.model && !piState.model.reasoning) {
+      showToast(`Thinking is not supported by ${piState.model.name || piState.model.id}. Select a reasoning model like Kimi K2 Thinking.`, "warn");
+      setCmdSubmenu(null);
+      setShowCommands(false);
+      return;
+    }
+    sendCommand("set_thinking_level", { level });
+    setInput("");
+    setCmdSubmenu(null);
+  }
+
+  return (
+    <div>
+      <h2 className="page-title">Pi Agent</h2>
+
+      <div className="pi-status-bar">
+        <span className={`pi-status-dot ${connected ? "connected" : ""}`} />
+        <span className="pi-status-model">{piState?.model?.name || piState?.model?.id || "—"}</span>
+        {piState?.thinkingLevel && piState.thinkingLevel !== "off" && (
+          <span className="pi-status-tag">thinking: {piState.thinkingLevel}</span>
+        )}
+        {piState?.model?.reasoning && (
+          <span className="pi-status-tag">reasoning</span>
+        )}
+        <span className="pi-status-ctx">{sessionStats ? `${sessionStats.messageCount || 0} msgs` : ""}</span>
+      </div>
+
+      {!PI_URL && (
+        <div className="loading">
+          Pi Agent not configured. Set <code>VITE_PI_URL</code> in your .env file.
+        </div>
+      )}
+
+      {PI_URL && (
+        <div className="pi-chat-container">
+          <div className="pi-chat-messages">
+            {messages.length === 0 && (
+              <div className="loading">
+                {connected ? "Send a message to start chatting with the Pi coding agent." : "Connecting to Pi Agent..."}
+              </div>
+            )}
+            {messages.map((msg, i) => (
+              <div key={i} className={`pi-chat-msg pi-chat-${msg.role}`}>
+                <div className="pi-chat-msg-role">
+                  {msg.role === "user" && (activeChar?.name || "You")}
+                  {msg.role === "assistant" && "Pi Agent"}
+                  {msg.role === "tool" && `Tool: ${msg.tool}`}
+                </div>
+                {msg.thinking && (
+                  <details className="pi-chat-thinking" open={msg.streaming}>
+                    <summary>Thinking{msg.streaming && <span className="streaming-dot" />}</summary>
+                    <div className="pi-chat-thinking-content">{msg.thinking}</div>
+                  </details>
+                )}
+                <div className="pi-chat-msg-content">
+                  {msg.content}
+                  {msg.streaming && !msg.thinking && <span className="streaming-dot" />}
+                </div>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+
+          <div className="pi-chat-compose">
+            {(() => {
+              const query = input.startsWith("/") ? input.slice(1).trim().toLowerCase() : "";
+
+              // Build the list to show based on current state
+              let paletteItems = [];
+              let paletteTitle = "Commands";
+
+              if (showCommands && cmdSubmenu === "model") {
+                paletteTitle = "Select Model";
+                paletteItems = availableModels.map((m) => ({
+                  label: m.name || m.id,
+                  sublabel: m.provider,
+                  active: `${m.provider}::${m.id}` === currentModelKey,
+                  action: () => selectModel(m.provider, m.id, m.name),
+                }));
+              } else if (showCommands && cmdSubmenu === "thinking") {
+                paletteTitle = "Thinking Level";
+                paletteItems = thinkingLevels.map((l) => ({
+                  label: l,
+                  active: l === (piState?.thinkingLevel || "off"),
+                  action: () => selectThinking(l),
+                }));
+              } else if (showCommands) {
+                paletteItems = allCommands
+                  .filter((c) => !query || c.name.toLowerCase().startsWith(query))
+                  .map((c) => ({
+                    label: "/" + c.name,
+                    sublabel: c.description,
+                    hasSubmenu: c.kind === "submenu",
+                    action: () => executeCommand(c),
+                  }));
+              }
+
+              return (
+                <>
+                <div className="pi-cmd-btn-wrap">
+                  <button
+                    className="pi-cmd-btn"
+                    onClick={() => {
+                      if (showCommands) { setShowCommands(false); setCmdSubmenu(null); }
+                      else { setShowCommands(true); setCmdSubmenu(null); setCmdIndex(0); }
+                      inputRef.current?.focus();
+                    }}
+                    title="Commands"
+                  >/</button>
+                  {showCommands && paletteItems.length > 0 && (
+                    <div className="pi-cmd-palette" ref={paletteRef}>
+                      <div className="pi-cmd-palette-title">
+                        {cmdSubmenu && (
+                          <button className="pi-cmd-back" onClick={() => { setCmdSubmenu(null); setCmdIndex(0); }}>&larr;</button>
+                        )}
+                        {paletteTitle}
+                      </div>
+                      {paletteItems.map((item, i) => (
+                        <button
+                          key={item.label}
+                          className={`pi-cmd-item ${i === cmdIndex ? "pi-cmd-active" : ""} ${item.active ? "pi-cmd-current" : ""}`}
+                          onClick={item.action}
+                          onMouseEnter={() => setCmdIndex(i)}
+                        >
+                          <span className="pi-cmd-name">{item.label}{item.active ? " \u2713" : ""}</span>
+                          {item.sublabel && <span className="pi-cmd-desc">{item.sublabel}</span>}
+                          {item.hasSubmenu && <span className="pi-cmd-arrow">&rarr;</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  placeholder={connected ? "Message the Pi agent... (/ for commands)" : "Connecting..."}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    if (e.target.value.startsWith("/")) {
+                      setShowCommands(true);
+                      setCmdSubmenu(null);
+                      setCmdIndex(0);
+                    } else if (!e.target.value) {
+                      setShowCommands(false);
+                      setCmdSubmenu(null);
+                    } else {
+                      setShowCommands(false);
+                      setCmdSubmenu(null);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (showCommands && paletteItems.length > 0) {
+                      if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setCmdIndex((prev) => {
+                          const next = (prev - 1 + paletteItems.length) % paletteItems.length;
+                          requestAnimationFrame(() => {
+                            paletteRef.current?.querySelectorAll(".pi-cmd-item")[next]?.scrollIntoView({ block: "nearest" });
+                          });
+                          return next;
+                        });
+                        return;
+                      }
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setCmdIndex((prev) => {
+                          const next = (prev + 1) % paletteItems.length;
+                          requestAnimationFrame(() => {
+                            paletteRef.current?.querySelectorAll(".pi-cmd-item")[next]?.scrollIntoView({ block: "nearest" });
+                          });
+                          return next;
+                        });
+                        return;
+                      }
+                      if (e.key === "Tab" || (e.key === " " && input.startsWith("/"))) {
+                        // Tab/Space: always autocomplete the name into the input
+                        e.preventDefault();
+                        const item = paletteItems[cmdIndex];
+                        if (item) {
+                          const label = item.label?.startsWith("/") ? item.label : "/" + (item.label || "");
+                          setInput(label + " ");
+                          setShowCommands(false);
+                          setCmdSubmenu(null);
+                        }
+                        return;
+                      }
+                      if (e.key === "Enter") {
+                        // Enter: execute the command
+                        e.preventDefault();
+                        const item = paletteItems[cmdIndex];
+                        if (item) item.action();
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        if (cmdSubmenu) { setCmdSubmenu(null); setCmdIndex(0); }
+                        else { setShowCommands(false); }
+                        return;
+                      }
+                    }
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  disabled={!connected}
+                />
+                </>
+              );
+            })()}
+            {streaming ? (
+              <button className="btn-send" onClick={handleAbort} style={{ background: "var(--danger)" }}>
+                &#9632;
+              </button>
+            ) : (
+              <button className="btn-send" onClick={handleSend} disabled={!connected || !input.trim()}>
+                &#10148;
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className={`pi-toast ${toast.type === "warn" ? "pi-toast-warn" : ""}`}>{toast.message}</div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  NETWORK PAGE (Directory sidebar + Graph)
+// ══════════════════════════════════════
+
+function NetworkPage({ characters = [], activeAccount }) {
+  const [profiles, setProfiles] = useState({});
+  const [follows, setFollows] = useState({}); // pk -> [followed pks]
+  const [loading, setLoading] = useState(true);
+  const [selectedPk, setSelectedPk] = useState(null);
+  const [selectedPosts, setSelectedPosts] = useState([]);
+  const [postsLoading, setPostsLoading] = useState(false);
+  const [hoverNode, setHoverNode] = useState(null);
+  const [hoverLink, setHoverLink] = useState(null);
+  const [search, setSearch] = useState("");
+  const [followingInProgress, setFollowingInProgress] = useState(false);
+  const containerRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ width: 600, height: 500 });
+  const imageCache = useRef({});
+
+  // Measure graph container
+  useEffect(() => {
+    function measure() {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        setDimensions({ width: rect.width, height: Math.max(450, window.innerHeight - 200) });
+      }
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  // Fetch profiles (kind:0) + follows (kind:3) together — both cheap
+  useEffect(() => {
+    const pool = getPool();
+    const profileMap = {};
+    const followMap = {};
+    let eoseCount = 0;
+    const checkDone = () => {
+      eoseCount++;
+      if (eoseCount >= 2) {
+        setProfiles({ ...profileMap });
+        setFollows({ ...followMap });
+        setLoading(false);
+      }
+    };
+
+    const sub0 = pool.subscribeMany(DEFAULT_RELAYS, { kinds: [0] }, {
+      onevent: (ev) => {
+        try {
+          const meta = JSON.parse(ev.content);
+          if (!profileMap[ev.pubkey] || profileMap[ev.pubkey]._ts < ev.created_at) {
+            profileMap[ev.pubkey] = {
+              name: meta.display_name || meta.name || shortPubkey(ev.pubkey),
+              picture: meta.picture || null,
+              about: (meta.about || "").slice(0, 120),
+              nip05: meta.nip05 || "",
+              _ts: ev.created_at,
+            };
+          }
+        } catch {}
+      },
+      oneose: () => { sub0.close(); checkDone(); },
+    });
+
+    const sub3 = pool.subscribeMany(DEFAULT_RELAYS, { kinds: [3] }, {
+      onevent: (ev) => {
+        if (!followMap[ev.pubkey] || followMap[ev.pubkey]._ts < ev.created_at) {
+          followMap[ev.pubkey] = {
+            follows: ev.tags.filter((t) => t[0] === "p").map((t) => t[1]),
+            _ts: ev.created_at,
+          };
+        }
+      },
+      oneose: () => { sub3.close(); checkDone(); },
+    });
+
+    return () => { sub0.close(); sub3.close(); };
+  }, []);
+
+  // On-demand: fetch posts when a user is selected
+  useEffect(() => {
+    if (!selectedPk) { setSelectedPosts([]); return; }
+    setPostsLoading(true);
+    setSelectedPosts([]);
+    const sub = getPool().subscribeMany(DEFAULT_RELAYS, { kinds: [1], authors: [selectedPk], limit: 10 }, {
+      onevent: (ev) => {
+        setSelectedPosts((prev) => {
+          if (prev.find((n) => n.id === ev.id)) return prev;
+          return [ev, ...prev].sort((a, b) => b.created_at - a.created_at);
+        });
+      },
+      oneose: () => { sub.close(); setPostsLoading(false); },
+    });
+    return () => { sub.close(); };
+  }, [selectedPk]);
+
+  // Build graph from profiles + follows
+  const edges = useMemo(() => {
+    const edgeList = [];
+    for (const [pk, data] of Object.entries(follows)) {
+      for (const target of (data.follows || [])) {
+        if (profiles[target]) { // only show edges to known users
+          edgeList.push({ source: pk, target });
+        }
+      }
+    }
+    return edgeList;
+  }, [follows, profiles]);
+
+  const graphData = useMemo(() => {
+    const nodes = Object.entries(profiles).map(([pk, p]) => {
+      const followCount = (follows[pk]?.follows || []).filter((f) => profiles[f]).length;
+      return { id: pk, name: p.name, picture: p.picture, about: p.about, followCount };
+    });
+    const links = edges.map((e) => ({ source: e.source, target: e.target }));
+    return { nodes, links };
+  }, [profiles, edges, follows]);
+
+  // Preload images
+  useEffect(() => {
+    for (const node of graphData.nodes) {
+      if (node.picture && !imageCache.current[node.id]) {
+        const img = new Image();
+        img.src = node.picture;
+        img.onload = () => { imageCache.current[node.id] = img; };
+      }
+    }
+  }, [graphData.nodes]);
+
+  // Follow/unfollow handler
+  async function handleFollow(targetPk) {
+    if (!activeAccount || followingInProgress) return;
+    setFollowingInProgress(true);
+    try {
+      const myPk = activeAccount.pk;
+      const currentFollows = follows[myPk]?.follows || [];
+      const isFollowing = currentFollows.includes(targetPk);
+      const newFollows = isFollowing
+        ? currentFollows.filter((pk) => pk !== targetPk)
+        : [...currentFollows, targetPk];
+      await publishFollows(newFollows, activeAccount);
+      setFollows((prev) => ({ ...prev, [myPk]: { follows: newFollows, _ts: Date.now() / 1000 } }));
+    } catch (e) {
+      alert("Failed: " + e.message);
+    }
+    setFollowingInProgress(false);
+  }
+
+  // Directory list
+  const profileList = useMemo(() => {
+    return Object.entries(profiles)
+      .map(([pk, p]) => ({ pk, ...p, npub: npubEncode(pk) }))
+      .filter((p) => {
+        if (!search) return true;
+        const q = search.toLowerCase();
+        return p.name.toLowerCase().includes(q) || p.about.toLowerCase().includes(q);
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [profiles, search]);
+
+  const selectedProfile = selectedPk ? profiles[selectedPk] : null;
+  const myFollows = activeAccount ? (follows[activeAccount.pk]?.follows || []) : [];
+
+  // Canvas renderers
+  const paintNode = useCallback((node, ctx, globalScale) => {
+    const isSelected = selectedPk === node.id;
+    const isHovered = hoverNode?.id === node.id;
+    const size = 8 + (node.followCount || 0);
+    const img = imageCache.current[node.id];
+
+    if (img && img.complete) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(node.x - size, node.y - size, size * 2, size * 2);
+      ctx.clip();
+      ctx.drawImage(img, node.x - size, node.y - size, size * 2, size * 2);
+      ctx.restore();
+      ctx.strokeStyle = isSelected ? "#baff00" : isHovered ? "#baff00" : "#333";
+      ctx.lineWidth = isSelected ? 2.5 : isHovered ? 2 : 1;
+      ctx.strokeRect(node.x - size, node.y - size, size * 2, size * 2);
+    } else {
+      ctx.fillStyle = isSelected ? "#1a2600" : isHovered ? "#1a1a00" : "#222";
+      ctx.fillRect(node.x - size, node.y - size, size * 2, size * 2);
+      ctx.strokeStyle = isSelected ? "#baff00" : isHovered ? "#baff00" : "#444";
+      ctx.lineWidth = isSelected ? 2.5 : 1;
+      ctx.strokeRect(node.x - size, node.y - size, size * 2, size * 2);
+      ctx.fillStyle = "#baff00";
+      ctx.font = `${Math.max(10, size)}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(node.name.charAt(0).toUpperCase(), node.x, node.y);
+    }
+
+    if (globalScale > 1.2 || isHovered || isSelected) {
+      ctx.font = `${isSelected ? "bold " : ""}4px sans-serif`;
+      ctx.fillStyle = isSelected ? "#baff00" : "#d9d6d6";
+      ctx.textAlign = "center";
+      ctx.fillText(node.name, node.x, node.y + size + 6);
+    }
+  }, [hoverNode, selectedPk]);
+
+  const paintLink = useCallback((link, ctx) => {
+    const srcId = link.source?.id || link.source;
+    const tgtId = link.target?.id || link.target;
+    const isHighlighted = selectedPk === srcId || selectedPk === tgtId ||
+      hoverNode?.id === srcId || hoverNode?.id === tgtId;
+    ctx.strokeStyle = isHighlighted ? "rgba(186,255,0,0.5)" : "rgba(50,50,50,0.4)";
+    ctx.lineWidth = isHighlighted ? 1.5 : 0.5;
+    ctx.beginPath();
+    ctx.moveTo(link.source.x, link.source.y);
+    ctx.lineTo(link.target.x, link.target.y);
+    ctx.stroke();
+  }, [hoverNode, selectedPk]);
+
+  return (
+    <div>
+      <h2 className="page-title">Network</h2>
+
+      <div className="network-stats">
+        <div className="network-stat">
+          <span className="network-stat-value">{Object.keys(profiles).length}</span>
+          <span className="network-stat-label">Users</span>
+        </div>
+        <div className="network-stat">
+          <span className="network-stat-value">{edges.length}</span>
+          <span className="network-stat-label">Follows</span>
+        </div>
+      </div>
+
+      {loading && <div className="loading">Loading network...</div>}
+
+      {!loading && (
+        <div className="network-layout">
+          {/* Directory sidebar */}
+          <div className="network-directory">
+            <div className="directory-search">
+              <input type="text" placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <div className="directory-scroll">
+              {profileList.map((p) => (
+                <div
+                  key={p.pk}
+                  className={`directory-card clickable ${selectedPk === p.pk ? "selected" : ""}`}
+                  onClick={() => setSelectedPk(selectedPk === p.pk ? null : p.pk)}
+                >
+                  <div className="directory-card-avatar">
+                    {p.picture ? <img src={p.picture} alt="" /> : <span>{p.name.charAt(0).toUpperCase()}</span>}
+                  </div>
+                  <div className="directory-card-info">
+                    <div className="directory-card-name">{p.name}</div>
+                    {follows[p.pk] && (
+                      <div className="directory-card-nip05">{follows[p.pk].follows.filter((f) => profiles[f]).length} following</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Graph + detail panel */}
+          <div className="network-main">
+            <div className="network-container" ref={containerRef}>
+              <div className="network-ping" />
+              <div className="network-ping" />
+              <div className="network-corner tl" />
+              <div className="network-corner tr" />
+              <div className="network-corner bl" />
+              <div className="network-corner br" />
+              <Suspense fallback={<div className="loading">Loading graph...</div>}>
+              <ForceGraph2D
+                graphData={graphData}
+                width={dimensions.width}
+                height={dimensions.height}
+                backgroundColor="rgba(0,0,0,0)"
+                nodeRelSize={6}
+                nodeCanvasObject={paintNode}
+                nodePointerAreaPaint={(node, color, ctx) => {
+                  const s = 8 + (node.followCount || 0);
+                  ctx.fillStyle = color;
+                  ctx.fillRect(node.x - s, node.y - s, s * 2, s * 2);
+                }}
+                linkCanvasObject={paintLink}
+                linkDirectionalArrowLength={3}
+                linkDirectionalArrowRelPos={0.8}
+                onNodeHover={(node) => setHoverNode(node || null)}
+                onLinkHover={(link) => setHoverLink(link || null)}
+                onNodeClick={(node) => setSelectedPk(selectedPk === node.id ? null : node.id)}
+                d3AlphaDecay={0.04}
+                d3VelocityDecay={0.3}
+                cooldownTime={3000}
+              />
+              </Suspense>
+
+              {/* Hover tooltip */}
+              {hoverNode && hoverNode.id !== selectedPk && (
+                <div className="network-tooltip">
+                  <div className="network-tooltip-header">
+                    {hoverNode.picture && <img src={hoverNode.picture} alt="" />}
+                    <strong>{hoverNode.name}</strong>
+                  </div>
+                  {hoverNode.about && <p>{hoverNode.about}</p>}
+                  <span className="network-tooltip-meta">{hoverNode.followCount || 0} following</span>
+                </div>
+              )}
+
+              {hoverLink && !hoverNode && (
+                <div className="network-tooltip">
+                  <strong>
+                    {profiles[hoverLink.source?.id || hoverLink.source]?.name || "?"}
+                    {" follows "}
+                    {profiles[hoverLink.target?.id || hoverLink.target]?.name || "?"}
+                  </strong>
+                </div>
+              )}
+            </div>
+
+            {/* Selected user detail panel */}
+            {selectedProfile && (
+              <div className="network-detail">
+                <div className="network-detail-header">
+                  <div className="directory-card-avatar" style={{ width: 48, height: 48, fontSize: "1.4rem" }}>
+                    {selectedProfile.picture ? <img src={selectedProfile.picture} alt="" /> : <span>{selectedProfile.name.charAt(0).toUpperCase()}</span>}
+                  </div>
+                  <div>
+                    <div className="directory-card-name" style={{ fontSize: "1.05rem" }}>{selectedProfile.name}</div>
+                    {selectedProfile.about && <div className="directory-card-about">{selectedProfile.about}</div>}
+                  </div>
+                </div>
+
+                <div className="network-detail-actions">
+                  <button className="btn-small" onClick={() => setHash("profile/" + npubEncode(selectedPk))}>View Profile</button>
+                  <button className="btn-small" onClick={() => setHash("messages/" + npubEncode(selectedPk))}>Message</button>
+                  {activeAccount && activeAccount.pk !== selectedPk && (
+                    <button
+                      className={`btn-small ${myFollows.includes(selectedPk) ? "btn-reset" : ""}`}
+                      onClick={() => handleFollow(selectedPk)}
+                      disabled={followingInProgress}
+                    >
+                      {followingInProgress ? "..." : myFollows.includes(selectedPk) ? "Unfollow" : "Follow"}
+                    </button>
+                  )}
+                </div>
+
+                {follows[selectedPk] && follows[selectedPk].follows.filter((f) => profiles[f]).length > 0 && (
+                  <div className="network-detail-follows">
+                    <span className="network-detail-label">Following</span>
+                    <div className="network-detail-follow-list">
+                      {follows[selectedPk].follows.filter((f) => profiles[f]).map((f) => (
+                        <button key={f} className="network-detail-follow-chip" onClick={() => setSelectedPk(f)}>
+                          {profiles[f].name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="network-detail-posts">
+                  <span className="network-detail-label">Recent Posts</span>
+                  {postsLoading && <div className="loading" style={{ padding: 12 }}>Loading...</div>}
+                  {!postsLoading && selectedPosts.length === 0 && <div style={{ color: "var(--text-faint)", fontSize: "0.78rem", padding: "8px 0" }}>No posts.</div>}
+                  {selectedPosts.slice(0, 5).map((ev) => (
+                    <div key={ev.id} className="network-detail-post clickable" onClick={() => setHash("thread/" + ev.id)}>
+                      <div style={{ fontSize: "0.82rem", lineHeight: 1.4 }}>{ev.content.slice(0, 120)}{ev.content.length > 120 ? "..." : ""}</div>
+                      <div className="note-time">{formatTime(ev.created_at)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1413,6 +2405,12 @@ export default function App() {
   }
 
   function renderMain() {
+    if (route === "pi") {
+      return <PiChat characters={characters} activeCharId={activeCharId} />;
+    }
+    if (route === "network") {
+      return <NetworkPage characters={characters} activeAccount={activeAccount} />;
+    }
     if (route === "settings") {
       return <SettingsPage characters={characters} onReset={handleReset} />;
     }
@@ -1436,7 +2434,7 @@ export default function App() {
       return <ThreadView eventId={routeKey} account={activeAccount} characters={characters} />;
     }
     if (route === "messages" && routeKey) {
-      return <MessageView recipientPubkey={routeKey} account={activeAccount} />;
+      return <MessageView recipientPubkey={routeKey} account={activeAccount} characters={characters} />;
     }
     // Home route: show active character's page
     if (activeChar) {
@@ -1459,7 +2457,6 @@ export default function App() {
       <Sidebar
         characters={characters}
         activeCharId={activeCharId}
-        onSwitch={switchCharacter}
         currentPubkey={currentProfilePk}
       />
 
@@ -1468,7 +2465,6 @@ export default function App() {
         <Sidebar
           characters={characters}
           activeCharId={activeCharId}
-          onSwitch={switchCharacter}
           currentPubkey={currentProfilePk}
         />
       </div>

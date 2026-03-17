@@ -146,6 +146,24 @@ export async function decryptDM(event, account) {
   }
 }
 
+// ── Follows (kind:3 contact list) ──
+
+export async function fetchFollows(relays, pubkey) {
+  const event = await getPool().get(relays, { kinds: [3], authors: [pubkey] });
+  if (!event) return [];
+  return event.tags.filter((t) => t[0] === "p").map((t) => t[1]);
+}
+
+export async function publishFollows(followPubkeys, account, relays = DEFAULT_RELAYS) {
+  const tags = followPubkeys.map((pk) => ["p", pk]);
+  return publishEvent({
+    kind: 3,
+    created_at: Math.floor(Date.now() / 1000),
+    tags,
+    content: "",
+  }, account, relays);
+}
+
 // ── Subscriptions ──
 
 export function subscribeFeed(relays, onEvent, onEose, limit = 50) {

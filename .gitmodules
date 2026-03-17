@@ -1,3 +1,9 @@
 [submodule "nim-skill-test"]
 	path = nim-skill-test
 	url = git@github.com:polats/nim-skill-test.git
+[submodule "pi-mono"]
+	path = references/pi-mono
+	url = https://github.com/badlogic/pi-mono.git
+[submodule "openclaw"]
+	path = references/openclaw
+	url = https://github.com/openclaw/openclaw.git
