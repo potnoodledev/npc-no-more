@@ -1081,9 +1081,10 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                   )}
                   {profile?.nip05 && <p className="char-hero-world">{profile.nip05}</p>}
                   {profile?.lud16 && <p className="char-hero-world">{profile.lud16}</p>}
-                  <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
+                  <div className="char-hero-actions" style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
                     <button className="btn-primary" onClick={startEditing}>Edit Profile</button>
                   </div>
+                  <FollowSection targetPk={character.pk} allIdentities={allIdentities} />
                 </div>
               </div>
 
@@ -1495,9 +1496,10 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
               )}
               {profile?.nip05 && <p className="char-hero-world">{profile.nip05}</p>}
               {profile?.lud16 && <p className="char-hero-world">{profile.lud16}</p>}
-              <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
+              <div className="char-hero-actions" style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
                 <button className="btn-primary" onClick={startEditing}>Edit Profile</button>
               </div>
+              <FollowSection targetPk={account.pk} allIdentities={allIdentities} />
             </div>
           </div>
           {saved && <p className="success" style={{ marginTop: 12 }}>Profile saved to Nostr!</p>}
@@ -1574,7 +1576,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
 //  EXTERNAL PROFILE VIEW (not owned)
 // ══════════════════════════════════════
 
-function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey }) {
+function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey, allIdentities }) {
   const [profile, setProfile] = useState(null);
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1632,12 +1634,13 @@ function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey }) {
           <NpubBadge npub={npub} />
           {about && <p className="char-hero-personality">{about}</p>}
           {activeAccount && (
-            <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
+            <div className="char-hero-actions" style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
               <button className="btn-primary" style={{ padding: "8px 20px", fontSize: "0.9rem" }} onClick={() => setHash("messages/" + npub)}>
-                Message {name}
+                Message
               </button>
             </div>
           )}
+          <FollowSection targetPk={pubkey} allIdentities={allIdentities} />
         </div>
       </div>
 
@@ -3284,6 +3287,134 @@ function KeysSection({ npub, nsec }) {
   );
 }
 
+function FollowSection({ targetPk, allIdentities }) {
+  const [followsMap, setFollowsMap] = useState({});
+  const [busy, setBusy] = useState(null);
+  const [following, setFollowing] = useState([]);
+  const [followers, setFollowers] = useState([]);
+  const [followProfiles, setFollowProfiles] = useState({});
+  const others = (allIdentities || []).filter((c) => c.pk !== targetPk);
+
+  // Fetch which of our identities follow this target
+  useEffect(() => {
+    if (others.length === 0) return;
+    Promise.all(others.map(async (c) => {
+      const f = await fetchFollows(ALL_RELAYS, c.pk);
+      return [c.pk, f || []];
+    })).then((results) => {
+      const map = {};
+      for (const [pk, f] of results) map[pk] = f;
+      setFollowsMap(map);
+    });
+  }, [targetPk, others.map((c) => c.pk).join(",")]);
+
+  // Fetch who this profile follows
+  useEffect(() => {
+    fetchFollows(ALL_RELAYS, targetPk).then((f) => setFollowing(f || []));
+  }, [targetPk]);
+
+  // Fetch followers (profiles that follow this target) — check kind:3 events mentioning targetPk
+  useEffect(() => {
+    const sub = getPool().subscribeMany(ALL_RELAYS, { kinds: [3], "#p": [targetPk], limit: 100 }, {
+      onevent: (ev) => {
+        setFollowers((prev) => prev.includes(ev.pubkey) ? prev : [...prev, ev.pubkey]);
+      },
+      oneose: () => {},
+    });
+    return () => sub.close();
+  }, [targetPk]);
+
+  // Fetch profiles for following/followers
+  useEffect(() => {
+    const allPks = [...new Set([...following, ...followers])].filter((pk) => !followProfiles[pk]);
+    if (allPks.length === 0) return;
+    fetchProfiles(ALL_RELAYS, allPks).then((fetched) => {
+      setFollowProfiles((prev) => ({ ...prev, ...fetched }));
+    });
+  }, [following, followers]);
+
+  async function toggleFollow(identity) {
+    setBusy(identity.pk);
+    try {
+      const acc = accountFromSkHex(identity.skHex);
+      const current = followsMap[identity.pk] || [];
+      const isFollowing = current.includes(targetPk);
+      const updated = isFollowing ? current.filter((pk) => pk !== targetPk) : [...current, targetPk];
+      await publishFollows(updated, acc);
+      setFollowsMap((prev) => ({ ...prev, [identity.pk]: updated }));
+    } catch (e) {
+      alert("Failed: " + e.message);
+    }
+    setBusy(null);
+  }
+
+  function ProfileChip({ pk }) {
+    const p = followProfiles[pk];
+    const ownIdentity = (allIdentities || []).find((c) => c.pk === pk);
+    const name = ownIdentity?.name || p?.display_name || p?.name || shortPubkey(pk);
+    const picture = ownIdentity?.profile_image || p?.picture;
+    return (
+      <button className="network-detail-follow-chip" onClick={() => setHash("profile/" + npubEncode(pk))} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 8px" }}>
+        {picture ? <img src={picture} alt="" style={{ width: 16, height: 16, borderRadius: 2, objectFit: "cover" }} /> : null}
+        <span>{name}</span>
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      {others.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
+            Follow with your identities
+          </div>
+          {others.map((c) => {
+            const isFollowing = (followsMap[c.pk] || []).includes(targetPk);
+            return (
+              <div key={c.id} className="admin-key-row" style={{ marginBottom: 4 }}>
+                <span className="sidebar-char-avatar" style={{ width: 24, height: 24, fontSize: "0.6rem", flexShrink: 0 }}>
+                  {c.profile_image ? <img src={c.profile_image} alt="" /> : (c.name || "?").charAt(0).toUpperCase()}
+                </span>
+                <span style={{ flex: 1, fontSize: "0.82rem" }}>{c.name}</span>
+                <button
+                  className={`btn-small ${isFollowing ? "btn-reset" : ""}`}
+                  onClick={() => toggleFollow(c)}
+                  disabled={busy === c.pk}
+                  style={{ padding: "4px 12px", fontSize: "0.72rem" }}
+                >
+                  {busy === c.pk ? "..." : isFollowing ? "Unfollow" : "Follow"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
+            Following ({following.length})
+          </div>
+          {following.length === 0 && <p style={{ color: "var(--text-faint)", fontSize: "0.78rem" }}>Not following anyone</p>}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {following.map((pk) => <ProfileChip key={pk} pk={pk} />)}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
+            Followers ({followers.length})
+          </div>
+          {followers.length === 0 && <p style={{ color: "var(--text-faint)", fontSize: "0.78rem" }}>No followers yet</p>}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {followers.map((pk) => <ProfileChip key={pk} pk={pk} />)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminKeySection({ adminAccount, isAdmin }) {
   const [showNsec, setShowNsec] = useState(false);
 
@@ -3765,7 +3896,7 @@ export default function App() {
           />
         );
       }
-      return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} serverAdminPubkey={serverAdminPubkey} />;
+      return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} serverAdminPubkey={serverAdminPubkey} allIdentities={allIdentities} />;
     }
     if (route === "thread" && routeKey) {
       return <ThreadView eventId={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} />;
