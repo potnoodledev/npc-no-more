@@ -10,7 +10,7 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
-import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist } from "./nostr-auth.js";
+import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist, resetAuth } from "./nostr-auth.js";
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
@@ -129,6 +129,15 @@ async function addToRelayWhitelist(pubkey, label = "") {
 app.get("/setup-status", (req, res) => {
   const state = getAuthState();
   res.json({ adminSet: !!state.admin, adminPubkey: state.admin || null });
+});
+
+// Reset auth state (protected by relay admin secret)
+app.post("/reset-auth", (req, res) => {
+  if (req.headers.authorization !== `Bearer ${RELAY_ADMIN_SECRET}`) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  resetAuth();
+  res.json({ ok: true });
 });
 
 // Claim admin — only works when no admin exists yet

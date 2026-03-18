@@ -84,3 +84,9 @@ export function claimAdmin(pubkey) {
   console.log(`[auth] Admin pubkey set: ${authState.admin.slice(0, 16)}...`);
   return true;
 }
+
+export function resetAuth() {
+  authState = { admin: "", whitelist: [] };
+  saveState();
+  console.log("[auth] Auth state reset");
+}
