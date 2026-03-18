@@ -33,11 +33,13 @@ jobs:
 
       - run: npm ci
 
-      - name: Build with relay URL
+      - name: Build with service URLs
         env:
           VITE_RELAY_URL: ${{ vars.RELAY_URL }}
+          VITE_API_URL: ${{ vars.API_URL }}
+          VITE_PI_URL: ${{ vars.PI_URL }}
         run: |
-          echo "Building with relay: $VITE_RELAY_URL"
+          echo "Building with relay: $VITE_RELAY_URL api: $VITE_API_URL pi: $VITE_PI_URL"
           npm run build
 
       - uses: actions/configure-pages@v4
