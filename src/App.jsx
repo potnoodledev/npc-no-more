@@ -3712,7 +3712,16 @@ export default function App() {
 
   // Key setup — first time visiting the site
   if (!adminAccount) {
-    return <UserSetup serverAdminPubkey={serverAdminPubkey} onComplete={(acc) => setAdminAccount(acc)} />;
+    return <UserSetup serverAdminPubkey={serverAdminPubkey} onComplete={(acc) => {
+      setAdminAccount(acc);
+      // Re-fetch admin state so sidebar shows correct ADMIN/USER badge
+      const apiUrl = import.meta.env.VITE_API_URL || "";
+      if (apiUrl) {
+        fetch(`${apiUrl}/setup-status`).then(r => r.json()).then(data => {
+          if (data.adminPubkey) setServerAdminPubkey(data.adminPubkey);
+        }).catch(() => {});
+      }
+    }} />;
   }
 
   if (route === "new-character") {
