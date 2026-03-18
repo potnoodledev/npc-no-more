@@ -10,7 +10,8 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
-import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist, resetAuth, createInviteKey, getInviteKeys, deleteInviteKey, redeemInviteKey } from "./nostr-auth.js";
+import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist, resetAuth, createInvite, getInvites, deleteInvite, claimInvite } from "./nostr-auth.js";
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
@@ -169,35 +170,41 @@ app.post("/admin/whitelist", protectEndpoint, async (req, res) => {
 
 // Register a character pubkey on the relay (any authenticated user)
 // Register a pubkey on the relay whitelist (public — allows any new identity to post)
-// ── Invite Keys ──
+// ── Invites (pre-generated keypairs) ──
 
-app.post("/admin/invite-keys", protectEndpoint, (req, res) => {
+app.post("/admin/invites", protectEndpoint, async (req, res) => {
   if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
-  const { maxUses } = req.body || {};
-  const invite = createInviteKey(maxUses || 1);
+  const sk = generateSecretKey();
+  const skHex = Buffer.from(sk).toString("hex");
+  const pk = getPublicKey(sk);
+  const invite = createInvite(skHex, pk);
+  await addToRelayWhitelist(pk, "invite");
   res.json(invite);
 });
 
-app.get("/admin/invite-keys", protectEndpoint, (req, res) => {
+app.get("/admin/invites", protectEndpoint, (req, res) => {
   if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
-  res.json({ inviteKeys: getInviteKeys() });
+  res.json({ invites: getInvites() });
 });
 
-app.delete("/admin/invite-keys/:key", protectEndpoint, (req, res) => {
+app.delete("/admin/invites/:pk", protectEndpoint, (req, res) => {
   if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
-  deleteInviteKey(req.params.key);
-  res.json({ ok: true, inviteKeys: getInviteKeys() });
+  deleteInvite(req.params.pk);
+  res.json({ ok: true, invites: getInvites() });
 });
 
-// Public: redeem an invite key (auto-whitelists the pubkey)
-app.post("/redeem-invite", async (req, res) => {
-  const { key, pubkey } = req.body;
-  if (!key || !pubkey || pubkey.length !== 64) {
-    return res.status(400).json({ error: "key and pubkey required" });
-  }
-  const result = redeemInviteKey(key, pubkey);
-  if (!result.ok) return res.status(400).json({ error: result.error });
-  await addToRelayWhitelist(pubkey, "invited");
+// Public: get invite keypair by pubkey (only unclaimed)
+app.get("/invite/:pk", (req, res) => {
+  const invites = getInvites();
+  const invite = invites.find((k) => k.pk === req.params.pk && !k.claimed);
+  if (!invite) return res.status(404).json({ error: "invite not found or already claimed" });
+  res.json({ skHex: invite.skHex, pk: invite.pk });
+});
+
+// Public: mark invite as claimed
+app.post("/invite/:pk/claim", (req, res) => {
+  const ok = claimInvite(req.params.pk);
+  if (!ok) return res.status(404).json({ error: "invite not found" });
   res.json({ ok: true });
 });
 

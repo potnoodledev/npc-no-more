@@ -161,9 +161,9 @@ function MobileHeader({ activeChar, sidebarOpen, setSidebarOpen }) {
 //  USER / ADMIN SETUP
 // ══════════════════════════════════════
 
-function UserSetup({ serverAdminPubkey, onComplete, inviteKey }) {
-  // Create keypair in memory only — persisted on save
-  const [account] = useState(() => createAccount());
+function UserSetup({ serverAdminPubkey, onComplete, invitePk }) {
+  const [account, setAccount] = useState(null);
+  const [inviteLoading, setInviteLoading] = useState(!!invitePk);
   const [name, setName] = useState("");
   const [about, setAbout] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
@@ -177,9 +177,29 @@ function UserSetup({ serverAdminPubkey, onComplete, inviteKey }) {
   const [avatarModal, setAvatarModal] = useState(null);
 
   const hasAdmin = !!serverAdminPubkey;
-  const hasInvite = !!inviteKey;
+  const hasInvite = !!invitePk && !!account;
   const canUseNim = isNimAvailable();
   const aiDisabled = hasAdmin && !hasInvite;
+
+  // Fetch invite keypair or create a fresh one
+  useEffect(() => {
+    if (invitePk) {
+      const apiUrl = import.meta.env.VITE_API_URL || "";
+      fetch(`${apiUrl}/invite/${invitePk}`).then((r) => {
+        if (r.ok) return r.json();
+        throw new Error("Invite not found or already claimed");
+      }).then((data) => {
+        setAccount(accountFromSkHex(data.skHex));
+        setInviteLoading(false);
+      }).catch((e) => {
+        setError(e.message);
+        setAccount(createAccount()); // Fallback to fresh keypair
+        setInviteLoading(false);
+      });
+    } else {
+      setAccount(createAccount());
+    }
+  }, []);
 
   async function handleRollDice() {
     setRolling(true);
@@ -254,7 +274,7 @@ function UserSetup({ serverAdminPubkey, onComplete, inviteKey }) {
           }
         }
       }
-      // Register pubkey on relay + redeem invite if present
+      // Register pubkey on relay + claim invite if present
       if (hasAdmin) {
         const apiUrl = import.meta.env.VITE_API_URL || "";
         if (apiUrl) {
@@ -263,16 +283,8 @@ function UserSetup({ serverAdminPubkey, onComplete, inviteKey }) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ pubkey: account.pk, label: hasInvite ? "invited" : "user" }),
           }).catch(() => {});
-          if (hasInvite) {
-            const redeemRes = await fetch(`${apiUrl}/redeem-invite`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ key: inviteKey, pubkey: account.pk }),
-            });
-            if (!redeemRes.ok) {
-              const data = await redeemRes.json().catch(() => ({}));
-              console.warn("[invite] Redemption failed:", data.error);
-            }
+          if (invitePk) {
+            await fetch(`${apiUrl}/invite/${invitePk}/claim`, { method: "POST" }).catch(() => {});
           }
         }
       }
@@ -292,6 +304,8 @@ function UserSetup({ serverAdminPubkey, onComplete, inviteKey }) {
     }
     setSaving(false);
   }
+
+  if (inviteLoading || !account) return <div className="loading">Loading invite...</div>;
 
   return (
     <div className="setup-wizard">
@@ -1157,13 +1171,8 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                     </div>
                   )}
                   {editFields.picture && !generatingAvatar && (
-                    <div className="avatar-gen-preview">
+                    <div className="avatar-gen-preview" onClick={(e) => { e.preventDefault(); setModalImage(editFields.picture); }} style={{ cursor: "pointer" }}>
                       <img src={editFields.picture} alt="preview" onError={(e) => { e.target.style.display = "none"; }} />
-                      <div>
-                        <span className="avatar-gen-model">Picture preview</span>
-                        <br />
-                        <button type="button" className="btn-link" onClick={() => setModalImage(editFields.picture)}>View full size</button>
-                      </div>
                     </div>
                   )}
                 </label>
@@ -1555,13 +1564,8 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
                 </div>
               )}
               {editFields.picture && !generatingAvatar && (
-                <div className="avatar-gen-preview">
+                <div className="avatar-gen-preview" onClick={(e) => { e.preventDefault(); setModalImage(editFields.picture); }} style={{ cursor: "pointer" }}>
                   <img src={editFields.picture} alt="preview" onError={(e) => { e.target.style.display = "none"; }} />
-                  <div>
-                    <span className="avatar-gen-model">Picture preview</span>
-                    <br />
-                    <button type="button" className="btn-link" onClick={() => setModalImage(editFields.picture)}>View full size</button>
-                  </div>
                 </div>
               )}
             </label>
@@ -3474,8 +3478,7 @@ function AdminKeySection({ adminAccount, isAdmin }) {
 }
 
 function InviteKeyManager({ adminAccount }) {
-  const [keys, setKeys] = useState([]);
-  const [maxUses, setMaxUses] = useState(1);
+  const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState("");
 
@@ -3484,62 +3487,56 @@ function InviteKeyManager({ adminAccount }) {
 
   useEffect(() => {
     if (!apiUrl || !adminAccount) return;
-    const url = `${apiUrl}/admin/invite-keys`;
+    const url = `${apiUrl}/admin/invites`;
     getAuthHeaders(url, "GET", adminAccount).then((headers) => {
       fetch(url, { headers }).then((r) => r.json()).then((data) => {
-        setKeys(data.inviteKeys || []);
+        setInvites(data.invites || []);
         setLoading(false);
       }).catch(() => setLoading(false));
     });
   }, [adminAccount]);
 
   async function handleCreate() {
-    const url = `${apiUrl}/admin/invite-keys`;
+    const url = `${apiUrl}/admin/invites`;
     const headers = await getAuthHeaders(url, "POST", adminAccount);
-    headers["Content-Type"] = "application/json";
-    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ maxUses }) });
+    const res = await fetch(url, { method: "POST", headers });
     const invite = await res.json();
-    setKeys((prev) => [...prev, invite]);
+    setInvites((prev) => [...prev, invite]);
   }
 
-  async function handleDelete(key) {
-    const url = `${apiUrl}/admin/invite-keys/${key}`;
+  async function handleDelete(pk) {
+    const url = `${apiUrl}/admin/invites/${pk}`;
     const headers = await getAuthHeaders(url, "DELETE", adminAccount);
     await fetch(url, { method: "DELETE", headers });
-    setKeys((prev) => prev.filter((k) => k.key !== key));
+    setInvites((prev) => prev.filter((k) => k.pk !== pk));
   }
 
-  function copyLink(key) {
-    navigator.clipboard.writeText(`${siteUrl}#/invite/${key}`);
-    setCopied(key);
+  function copyLink(pk) {
+    navigator.clipboard.writeText(`${siteUrl}#/invite/${pk}`);
+    setCopied(pk);
     setTimeout(() => setCopied(""), 1500);
   }
 
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
-        Invite Keys
+        Invites
       </div>
       {loading && <div style={{ color: "var(--text-faint)", fontSize: "0.78rem" }}>Loading...</div>}
-      {!loading && keys.length === 0 && (
-        <div style={{ color: "var(--text-faint)", fontSize: "0.78rem", marginBottom: 8 }}>No invite keys. Create one to invite users with AI access.</div>
+      {!loading && invites.length === 0 && (
+        <div style={{ color: "var(--text-faint)", fontSize: "0.78rem", marginBottom: 8 }}>No invites. Create one to invite users with AI access.</div>
       )}
-      {keys.map((k) => (
-        <div key={k.key} className="admin-key-row" style={{ marginBottom: 4 }}>
-          <code style={{ fontSize: "0.62rem", flex: 1 }}>{k.key}</code>
-          <span style={{ fontSize: "0.68rem", color: "var(--text-faint)" }}>{k.uses}/{k.maxUses}</span>
-          <button className="btn-icon" onClick={() => copyLink(k.key)} title="Copy invite link">
-            {copied === k.key ? <IconCheck /> : <IconCopy />}
+      {invites.map((k) => (
+        <div key={k.pk} className="admin-key-row" style={{ marginBottom: 4 }}>
+          <code style={{ fontSize: "0.58rem", flex: 1 }}>{npubEncode(k.pk)}</code>
+          <span style={{ fontSize: "0.68rem", color: k.claimed ? "var(--accent)" : "var(--text-faint)" }}>{k.claimed ? "claimed" : "pending"}</span>
+          <button className="btn-icon" onClick={() => copyLink(k.pk)} title="Copy invite link">
+            {copied === k.pk ? <IconCheck /> : <IconCopy />}
           </button>
-          <button className="btn-small btn-reset" onClick={() => handleDelete(k.key)} style={{ padding: "2px 8px", fontSize: "0.65rem" }}>Delete</button>
+          {!k.claimed && <button className="btn-small btn-reset" onClick={() => handleDelete(k.pk)} style={{ padding: "2px 8px", fontSize: "0.65rem" }}>Delete</button>}
         </div>
       ))}
-      <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
-        <label style={{ fontSize: "0.72rem", color: "var(--text-dim)" }}>
-          Max uses: <input type="number" min="1" max="100" value={maxUses} onChange={(e) => setMaxUses(parseInt(e.target.value) || 1)} style={{ width: 50, padding: "4px 6px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", fontSize: "0.72rem", textAlign: "center" }} />
-        </label>
-        <button className="btn-small" onClick={handleCreate}>Create Invite Key</button>
-      </div>
+      <button className="btn-small" onClick={handleCreate} style={{ marginTop: 8 }}>Create Invite</button>
     </div>
   );
 }
@@ -3935,11 +3932,11 @@ export default function App() {
   if (loading) return null;
 
   // Key setup — first time visiting the site
-  const pendingInviteKey = route === "invite" ? routeKey : null;
+  const pendingInvitePk = route === "invite" ? routeKey : null;
   if (!adminAccount) {
-    return <UserSetup serverAdminPubkey={serverAdminPubkey} inviteKey={pendingInviteKey} onComplete={(acc) => {
+    return <UserSetup serverAdminPubkey={serverAdminPubkey} invitePk={pendingInvitePk} onComplete={(acc) => {
       setAdminAccount(acc);
-      if (pendingInviteKey) setHash(""); // Clear invite URL after setup
+      if (pendingInvitePk) setHash(""); // Clear invite URL after setup
       // Re-fetch admin state so sidebar shows correct ADMIN/USER badge
       const apiUrl = import.meta.env.VITE_API_URL || "";
       if (apiUrl) {

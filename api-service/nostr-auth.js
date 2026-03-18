@@ -88,42 +88,41 @@ export function claimAdmin(pubkey) {
   return true;
 }
 
-// ── Invite Keys ──
+// ── Invite Keys (pre-generated keypairs) ──
 
-export function createInviteKey(maxUses = 1) {
-  const key = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-  const invite = { key, maxUses, uses: 0, createdAt: Math.floor(Date.now() / 1000) };
+export function createInvite(skHex, pk) {
+  const invite = { skHex, pk, claimed: false, createdAt: Math.floor(Date.now() / 1000) };
   authState.inviteKeys.push(invite);
+  // Pre-whitelist the pubkey
+  if (!authState.whitelist.includes(pk)) {
+    authState.whitelist.push(pk);
+  }
   saveState();
-  console.log(`[auth] Invite key created: ${key} (max ${maxUses} uses)`);
+  console.log(`[auth] Invite created: ${pk.slice(0, 16)}... (pre-whitelisted)`);
   return invite;
 }
 
-export function getInviteKeys() {
+export function getInvites() {
   return authState.inviteKeys || [];
 }
 
-export function deleteInviteKey(key) {
-  authState.inviteKeys = (authState.inviteKeys || []).filter((k) => k.key !== key);
+export function deleteInvite(pk) {
+  const invite = (authState.inviteKeys || []).find((k) => k.pk === pk);
+  // Remove from whitelist if unclaimed
+  if (invite && !invite.claimed) {
+    authState.whitelist = authState.whitelist.filter((p) => p !== pk);
+  }
+  authState.inviteKeys = (authState.inviteKeys || []).filter((k) => k.pk !== pk);
   saveState();
 }
 
-export function redeemInviteKey(key, pubkey) {
-  const invite = (authState.inviteKeys || []).find((k) => k.key === key);
-  if (!invite) return { ok: false, error: "invalid invite key" };
-  if (invite.uses >= invite.maxUses) return { ok: false, error: "invite key has been used up" };
-  // Don't double-count same pubkey
-  if (!invite.redeemedBy) invite.redeemedBy = [];
-  if (invite.redeemedBy.includes(pubkey)) return { ok: true, alreadyRedeemed: true };
-  invite.uses++;
-  invite.redeemedBy.push(pubkey);
-  // Auto-whitelist the pubkey
-  if (!authState.whitelist.includes(pubkey)) {
-    authState.whitelist.push(pubkey);
-  }
+export function claimInvite(pk) {
+  const invite = (authState.inviteKeys || []).find((k) => k.pk === pk);
+  if (!invite) return false;
+  invite.claimed = true;
   saveState();
-  console.log(`[auth] Invite key redeemed by ${pubkey.slice(0, 16)}... (${invite.uses}/${invite.maxUses})`);
-  return { ok: true };
+  console.log(`[auth] Invite claimed: ${pk.slice(0, 16)}...`);
+  return true;
 }
 
 export function resetAuth() {
