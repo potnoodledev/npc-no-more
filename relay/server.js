@@ -92,8 +92,8 @@ function getAllowedPubkeys() {
 
 function isAllowed(pubkey) {
   const allowed = getAllowedPubkeys();
-  // If no pubkeys configured at all, reject all writes (secure default)
-  if (allowed.size === 0) return false;
+  // If no pubkeys configured, allow all writes (open relay)
+  if (allowed.size === 0) return true;
   return allowed.has(pubkey);
 }
 
