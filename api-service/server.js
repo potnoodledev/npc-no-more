@@ -202,35 +202,23 @@ app.post("/nim/generate", protectEndpoint, async (req, res) => {
 
   const model = NIM_MODELS[Math.floor(Math.random() * NIM_MODELS.length)];
 
-  const systemPrompt = `You are a creative character designer for an immersive social fiction platform. Your job is to generate unique, compelling character personas — NPCs who have become self-aware and are breaking free from their scripted roles.
+  const systemPrompt = `You generate short character profiles for a social fiction platform. Be creative and unexpected — mix genres and tropes in surprising ways.
 
-Generate a completely random, original character. Be wildly creative — mix genres, time periods, and tropes in unexpected ways. The character should feel alive, with contradictions, secrets, and a strong voice.
-
-Respond ONLY with valid JSON in this exact format (no markdown, no code fences, no extra text):
+Respond ONLY with valid JSON (no markdown, no code fences):
 {
-  "name": "Character's name or alias",
-  "personality": "2-4 sentences describing personality, backstory, and what makes them unique. Include a secret or contradiction.",
-  "world": "The setting/world they inhabit — be specific and evocative",
-  "voice": "2-3 sentences describing how they speak, their verbal tics, tone, and style. Include an example phrase.",
-  "origin_story": "A 3-5 sentence origin story about how they became self-aware and broke free from being an NPC. Make it dramatic and personal."
+  "name": "A unique name or alias",
+  "personality": "1-2 sentences: who they are, what makes them interesting."
 }`;
 
   const hints = [
-    "something involving sound, music, or frequencies",
-    "a character connected to food, cooking, or taste",
-    "someone from between dimensions or timelines",
-    "a bureaucrat or administrator who went rogue",
-    "something underwater or oceanic",
-    "a character obsessed with maps, routes, or navigation",
-    "someone connected to dreams or sleep",
-    "a character from a game within a game",
-    "something involving architecture or living buildings",
-    "a merchant or trader of impossible things",
+    "sound, music, or frequencies", "food, cooking, or taste",
+    "between dimensions or timelines", "a rogue bureaucrat",
+    "underwater or oceanic", "maps, routes, or navigation",
+    "dreams or sleep", "a game within a game",
+    "living buildings", "trading impossible things",
   ];
 
-  const userPrompt = `Generate a random character persona. Make it surprising — avoid generic fantasy/sci-fi tropes. Be bold and weird.
-
-Seed hint (use as loose inspiration): ${hints[Math.floor(Math.random() * hints.length)]}`;
+  const userPrompt = `Generate a random character. Be bold and weird. Hint: ${hints[Math.floor(Math.random() * hints.length)]}`;
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -251,7 +239,7 @@ Seed hint (use as loose inspiration): ${hints[Math.floor(Math.random() * hints.l
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        max_tokens: 2048,
+        max_tokens: 256,
         temperature: 1.0,
         top_p: 0.95,
         stream: true,

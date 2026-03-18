@@ -28,7 +28,7 @@ function parsePartialPersona(text) {
   }
 
   const result = {};
-  const fields = ["name", "personality", "world", "voice", "origin_story"];
+  const fields = ["name", "personality"];
 
   for (const field of fields) {
     const pattern = new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(?:"|$)`);
@@ -57,7 +57,7 @@ export async function generateRandomPersona(onUpdate, account) {
 
   if (onUpdate) {
     onUpdate({
-      name: "", personality: "", world: "", voice: "", originStory: "",
+      name: "", personality: "",
       model, streaming: true, phase: "connecting",
     });
   }
@@ -101,7 +101,7 @@ export async function generateRandomPersona(onUpdate, account) {
           model = msg.model;
           if (onUpdate) {
             onUpdate({
-              name: "", personality: "", world: "", voice: "", originStory: "",
+              name: "", personality: "",
               model, streaming: true, phase: "connecting",
             });
           }
@@ -121,14 +121,11 @@ export async function generateRandomPersona(onUpdate, account) {
               onUpdate({
                 name: partial.name || "",
                 personality: partial.personality || "",
-                world: partial.world || "",
-                voice: partial.voice || "",
-                originStory: partial.origin_story || "",
                 model, streaming: true, phase: "generating",
               });
             } else {
               onUpdate({
-                name: "", personality: "", world: "", voice: "", originStory: "",
+                name: "", personality: "",
                 model, streaming: true, phase: "thinking",
               });
             }
@@ -164,9 +161,6 @@ export async function generateRandomPersona(onUpdate, account) {
   return {
     name: persona.name || "Unknown",
     personality: persona.personality || "",
-    world: persona.world || "",
-    voice: persona.voice || "",
-    originStory: persona.origin_story || "",
     model: { id: model.id, name: model.name, params: model.params },
   };
 }
