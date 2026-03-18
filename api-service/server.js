@@ -106,6 +106,25 @@ const NIM_MODELS = [
   { id: "stepfun-ai/step-3.5-flash", name: "Step 3.5 Flash", params: null },
 ];
 
+// ── Relay whitelist helper ──
+const RELAY_URL = process.env.RELAY_URL || "";
+const RELAY_ADMIN_SECRET = process.env.RELAY_ADMIN_SECRET || "";
+
+async function addToRelayWhitelist(pubkey, label = "") {
+  if (!RELAY_URL || !RELAY_ADMIN_SECRET) return;
+  const httpUrl = RELAY_URL.replace("ws://", "http://").replace("wss://", "https://");
+  try {
+    await fetch(`${httpUrl}/admin/pubkeys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${RELAY_ADMIN_SECRET}` },
+      body: JSON.stringify({ pubkey, label }),
+    });
+    console.log(`[relay] whitelisted ${pubkey.slice(0, 16)}... (${label})`);
+  } catch (e) {
+    console.error(`[relay] failed to whitelist: ${e.message}`);
+  }
+}
+
 // ── Health ──
 app.get("/setup-status", (req, res) => {
   const state = getAuthState();
@@ -113,11 +132,12 @@ app.get("/setup-status", (req, res) => {
 });
 
 // Claim admin — only works when no admin exists yet
-app.post("/claim-admin", (req, res) => {
+app.post("/claim-admin", async (req, res) => {
   const auth = verifyNostrAuth(req.headers.authorization);
   if (!auth) return res.status(401).json({ error: "valid Nostr signature required" });
   const claimed = claimAdmin(auth.pubkey);
   if (!claimed) return res.status(409).json({ error: "admin already set" });
+  await addToRelayWhitelist(auth.pubkey, "admin");
   res.json({ ok: true, adminPubkey: auth.pubkey });
 });
 
@@ -127,14 +147,25 @@ app.get("/admin/auth", protectEndpoint, (req, res) => {
   res.json(getAuthState());
 });
 
-app.post("/admin/whitelist", protectEndpoint, (req, res) => {
+app.post("/admin/whitelist", protectEndpoint, async (req, res) => {
   if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
   const { pubkey } = req.body;
   if (!pubkey || typeof pubkey !== "string" || pubkey.length !== 64) {
     return res.status(400).json({ error: "invalid pubkey (64 hex chars)" });
   }
   addToWhitelist(pubkey);
+  await addToRelayWhitelist(pubkey, "user");
   res.json({ ok: true, whitelist: getAuthState().whitelist });
+});
+
+// Register a character pubkey on the relay (any authenticated user)
+app.post("/register-pubkey", protectEndpoint, async (req, res) => {
+  const { pubkey, label } = req.body;
+  if (!pubkey || typeof pubkey !== "string" || pubkey.length !== 64) {
+    return res.status(400).json({ error: "invalid pubkey (64 hex chars)" });
+  }
+  await addToRelayWhitelist(pubkey, label || "character");
+  res.json({ ok: true });
 });
 
 app.delete("/admin/whitelist/:pubkey", protectEndpoint, (req, res) => {

@@ -463,6 +463,14 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
         about: charAbout,
         ...(avatarUrl ? { picture: avatarUrl } : {}),
       }, acc);
+      // Register character pubkey on relay
+      const apiUrl = import.meta.env.VITE_API_URL || "";
+      if (apiUrl && adminAccount) {
+        const regUrl = `${apiUrl}/register-pubkey`;
+        const headers = await getAuthHeaders(regUrl, "POST", adminAccount);
+        headers["Content-Type"] = "application/json";
+        fetch(regUrl, { method: "POST", headers, body: JSON.stringify({ pubkey: acc.pk, label: charName }) }).catch(() => {});
+      }
       onComplete(char);
     } catch (e) {
       setError("Failed: " + e.message);
@@ -2027,7 +2035,7 @@ function MessageView({ recipientPubkey, account, allIdentities = [], activeCharI
     <div className="conversation-view">
       <div className="conversation-header">
         <button className="btn-back" onClick={() => setHash("")}>&#8592;</button>
-        <div className="conversation-contact">
+        <div className="conversation-contact clickable" onClick={() => setHash("profile/" + npubEncode(recipientPubkey))} style={{ cursor: "pointer" }}>
           <div className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: "0.8rem" }}>
             {(recipientName || "?").charAt(0).toUpperCase()}
           </div>
@@ -2037,12 +2045,20 @@ function MessageView({ recipientPubkey, account, allIdentities = [], activeCharI
       <div className="conversation-messages">
         {loading && filtered.length === 0 && <div className="loading">Connecting...</div>}
         {!loading && filtered.length === 0 && <div className="loading">Say hello to {recipientName}!</div>}
-        {filtered.map((msg) => (
-          <div key={msg.id} className={`chat-bubble ${msg.pubkey === dmAccount?.pk ? "sent" : "received"}`}>
-            <div className="chat-text">{msg._decrypted}</div>
-            <div className="chat-time">{formatTime(msg.created_at)}</div>
-          </div>
-        ))}
+        {filtered.map((msg) => {
+          const isSent = msg.pubkey === dmAccount?.pk;
+          return (
+            <div key={msg.id} className={`chat-bubble ${isSent ? "sent" : "received"}`}>
+              {!isSent && (
+                <div className="chat-sender clickable" onClick={() => setHash("profile/" + npubEncode(msg.pubkey))} style={{ fontSize: "0.68rem", color: "var(--accent)", fontWeight: 600, marginBottom: 2, cursor: "pointer" }}>
+                  {recipientName}
+                </div>
+              )}
+              <div className="chat-text">{msg._decrypted}</div>
+              <div className="chat-time">{formatTime(msg.created_at)}</div>
+            </div>
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
       <div className="conversation-compose">
