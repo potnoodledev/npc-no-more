@@ -4,7 +4,7 @@ import { WebSocketServer } from "ws";
 import http from "http";
 import { spawn } from "child_process";
 import { createInterface } from "readline";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, cpSync, createReadStream } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
@@ -32,14 +32,21 @@ async function verifyViaApi(authHeaderValue) {
     const res = await fetch(`${API_URL}/admin/auth`, {
       headers: { authorization: authHeaderValue },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const base64 = authHeaderValue.slice(6);
+      const event = JSON.parse(atob(base64));
+      console.log(`[auth] Delegation failed: ${res.status} ${body} (pubkey=${event.pubkey?.slice(0, 16)}...)`);
+      return null;
+    }
     const data = await res.json();
     // api-service returns { admin, whitelist } — if we got 200, the pubkey is authorized
     // Extract pubkey from the auth event
     const base64 = authHeaderValue.slice(6);
     const event = JSON.parse(atob(base64));
     return { pubkey: event.pubkey, isAdmin: event.pubkey === data.admin };
-  } catch {
+  } catch (err) {
+    console.log(`[auth] Delegation error: ${err.message}`);
     return null;
   }
 }
@@ -123,6 +130,8 @@ function getCharDir(pubkeyHex) {
   return join(WORKSPACE, "characters", pubkeyHex);
 }
 
+const SKILL_TEMPLATES_DIR = join(__dirname, "skill-templates");
+
 function ensureCharWorkspace(pubkeyHex) {
   const charDir = getCharDir(pubkeyHex);
   mkdirSync(join(charDir, ".pi", "skills"), { recursive: true });
@@ -143,6 +152,55 @@ This is your personal workspace. The pi agent can read and write files here.
   }
 
   return charDir;
+}
+
+function installSkillFromTemplate(charDir, skillName) {
+  const templateDir = join(SKILL_TEMPLATES_DIR, skillName);
+  if (!existsSync(templateDir)) return false;
+  const destDir = join(charDir, ".pi", "skills", skillName);
+  mkdirSync(destDir, { recursive: true });
+  cpSync(templateDir, destDir, { recursive: true });
+  return true;
+}
+
+function getInstalledSkills(charDir) {
+  const skillsDir = join(charDir, ".pi", "skills");
+  if (!existsSync(skillsDir)) return [];
+  return readdirSync(skillsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+    .map((d) => {
+      const skillDir = join(skillsDir, d.name);
+      const skillMd = join(skillDir, "SKILL.md");
+      const configPath = join(skillDir, "config.json");
+      let description = "";
+      let config = null;
+      if (existsSync(skillMd)) {
+        const content = readFileSync(skillMd, "utf-8");
+        // Extract first non-heading, non-empty line as description
+        const lines = content.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+        description = lines[0] || "";
+      }
+      if (existsSync(configPath)) {
+        try { config = JSON.parse(readFileSync(configPath, "utf-8")); } catch {}
+      }
+      return { name: d.name, description, config };
+    });
+}
+
+function getAvailableTemplates() {
+  if (!existsSync(SKILL_TEMPLATES_DIR)) return [];
+  return readdirSync(SKILL_TEMPLATES_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+    .map((d) => {
+      const skillMd = join(SKILL_TEMPLATES_DIR, d.name, "SKILL.md");
+      let description = "";
+      if (existsSync(skillMd)) {
+        const content = readFileSync(skillMd, "utf-8");
+        const lines = content.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+        description = lines[0] || "";
+      }
+      return { name: d.name, description };
+    });
 }
 
 function cacheProfile(pubkeyHex, profile) {
@@ -230,6 +288,16 @@ class PiRpcProcess {
 
 const sessions = new Map();
 
+function restartSession(pubkeyHex) {
+  const sessionId = pubkeyHex.slice(0, 16);
+  if (sessions.has(sessionId)) {
+    const existing = sessions.get(sessionId);
+    existing.kill();
+    sessions.delete(sessionId);
+    console.log(`[session] Killed session ${sessionId} for skill change — will restart on next WS connect`);
+  }
+}
+
 async function getOrCreateSession(pubkeyHex) {
   const sessionId = pubkeyHex.slice(0, 16);
 
@@ -251,8 +319,8 @@ async function getOrCreateSession(pubkeyHex) {
     if (profile) console.log(`[session] Using cached profile for ${pubkeyHex.slice(0, 12)}...`);
   }
 
-  // Build system prompt from NIP-01 profile
-  const systemPrompt = buildSystemPrompt(profile, pubkeyHex);
+  // Build system prompt from NIP-01 profile + installed skills
+  const systemPrompt = buildSystemPrompt(profile, pubkeyHex, charDir);
 
   const rpc = new PiRpcProcess(sessionId);
   rpc.start(charDir, systemPrompt);
@@ -289,9 +357,7 @@ app.get("/characters/:pubkey/workspace", (req, res) => {
   const claudePath = join(charDir, ".pi", "CLAUDE.md");
   const profileCache = getCachedProfile(req.params.pubkey);
 
-  const skills = existsSync(skillsDir)
-    ? readdirSync(skillsDir).filter((f) => !f.startsWith("."))
-    : [];
+  const skills = getInstalledSkills(charDir);
   const prompts = existsSync(promptsDir)
     ? readdirSync(promptsDir).filter((f) => f.endsWith(".md"))
     : [];
@@ -303,6 +369,124 @@ app.get("/characters/:pubkey/workspace", (req, res) => {
     hasClaudeMd: existsSync(claudePath),
     profile: profileCache,
   });
+});
+
+// Skill templates — available for installation
+app.get("/skill-templates", (req, res) => {
+  res.json({ templates: getAvailableTemplates() });
+});
+
+// Install a skill from template or custom content
+app.post("/characters/:pubkey/skills", (req, res) => {
+  const charDir = ensureCharWorkspace(req.params.pubkey);
+  const { name, template, skillMd, config, files } = req.body;
+
+  if (!name || !/^[a-z0-9-]+$/.test(name)) {
+    return res.status(400).json({ error: "Skill name must be lowercase alphanumeric with dashes" });
+  }
+
+  const skillDir = join(charDir, ".pi", "skills", name);
+
+  if (template) {
+    // Install from template
+    if (!installSkillFromTemplate(charDir, template)) {
+      return res.status(404).json({ error: `Template "${template}" not found` });
+    }
+  } else {
+    // Install from provided content
+    mkdirSync(skillDir, { recursive: true });
+    if (skillMd) {
+      writeFileSync(join(skillDir, "SKILL.md"), skillMd);
+    }
+  }
+
+  // Write config if provided
+  if (config) {
+    writeFileSync(join(skillDir, "config.json"), JSON.stringify(config, null, 2));
+  }
+
+  // Write additional files (e.g., scripts)
+  if (files && typeof files === "object") {
+    for (const [filePath, content] of Object.entries(files)) {
+      const fullPath = join(skillDir, filePath);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, content);
+    }
+  }
+
+  // Kill existing session so it restarts with updated skills in system prompt
+  restartSession(req.params.pubkey);
+
+  res.json({ ok: true, skill: name });
+});
+
+// Read a specific skill
+app.get("/characters/:pubkey/skills/:skillName", (req, res) => {
+  const charDir = getCharDir(req.params.pubkey);
+  const skillDir = join(charDir, ".pi", "skills", req.params.skillName);
+
+  if (!existsSync(skillDir)) {
+    return res.status(404).json({ error: "Skill not found" });
+  }
+
+  const skillMd = join(skillDir, "SKILL.md");
+  const configPath = join(skillDir, "config.json");
+  const result = { name: req.params.skillName, skillMd: "", config: null, files: [] };
+
+  if (existsSync(skillMd)) result.skillMd = readFileSync(skillMd, "utf-8");
+  if (existsSync(configPath)) {
+    try { result.config = JSON.parse(readFileSync(configPath, "utf-8")); } catch {}
+  }
+
+  // List files in skill directory
+  function listFiles(dir, prefix = "") {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) listFiles(join(dir, entry.name), rel);
+      else result.files.push(rel);
+    }
+  }
+  listFiles(skillDir);
+
+  res.json(result);
+});
+
+// Delete a skill
+app.delete("/characters/:pubkey/skills/:skillName", (req, res) => {
+  const charDir = getCharDir(req.params.pubkey);
+  const skillDir = join(charDir, ".pi", "skills", req.params.skillName);
+
+  console.log(`[skill] DELETE ${req.params.skillName} for ${req.params.pubkey.slice(0, 16)}... (path: ${skillDir}, exists: ${existsSync(skillDir)})`);
+
+  if (!existsSync(skillDir)) {
+    return res.status(404).json({ error: "Skill not found" });
+  }
+
+  rmSync(skillDir, { recursive: true, force: true });
+  console.log(`[skill] Removed ${skillDir}, exists after: ${existsSync(skillDir)}`);
+
+  // Kill existing session so it restarts with updated skills in system prompt
+  restartSession(req.params.pubkey);
+
+  res.json({ ok: true, removed: req.params.skillName });
+});
+
+// Serve audio files from character workspaces
+app.get("/characters/:pubkey/audio/*", (req, res) => {
+  const charDir = getCharDir(req.params.pubkey);
+  const filePath = join(charDir, "audio", req.params[0]);
+  // Prevent path traversal
+  if (!filePath.startsWith(join(charDir, "audio"))) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  if (!existsSync(filePath)) {
+    return res.status(404).json({ error: "not found" });
+  }
+  const ext = filePath.split(".").pop().toLowerCase();
+  const mimeTypes = { wav: "audio/wav", mp3: "audio/mpeg", ogg: "audio/ogg", flac: "audio/flac" };
+  res.setHeader("Content-Type", mimeTypes[ext] || "application/octet-stream");
+  createReadStream(filePath).pipe(res);
 });
 
 // ── WebSocket Server ──

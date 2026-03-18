@@ -76,6 +76,123 @@ function setHash(path) {
 }
 
 // ══════════════════════════════════════
+//  RICH NOTE CONTENT (mentions, strudel links)
+// ══════════════════════════════════════
+
+const STRUDEL_URL_RE = /https?:\/\/(?:strudel\.cc|localhost:\d+)\/#\S+/g;
+const NOSTR_MENTION_RE = /nostr:npub1[a-z0-9]{58}/g;
+const RICH_CONTENT_RE = /(?:https?:\/\/(?:strudel\.cc|localhost:\d+)\/#\S+|nostr:npub1[a-z0-9]{58})/g;
+
+function renderNoteContent(content) {
+  if (!content || typeof content !== "string") return content;
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+  RICH_CONTENT_RE.lastIndex = 0;
+  while ((match = RICH_CONTENT_RE.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(content.slice(lastIndex, match.index));
+    }
+    const token = match[0];
+    if (token.startsWith("nostr:npub1")) {
+      parts.push({ type: "mention", npub: token.slice(6) });
+    } else {
+      parts.push({ type: "strudel", url: token });
+    }
+    lastIndex = match.index + token.length;
+  }
+  if (parts.length === 0) return content;
+  if (lastIndex < content.length) {
+    parts.push(content.slice(lastIndex));
+  }
+  return parts.map((part, i) => {
+    if (typeof part === "string") return <span key={i}>{part}</span>;
+    if (part.type === "mention") return <NostrMention key={i} npub={part.npub} />;
+    return <StrudelCard key={i} url={part.url} />;
+  });
+}
+
+function NostrMention({ npub }) {
+  const [name, setName] = useState(null);
+  useEffect(() => {
+    try {
+      const { type, data } = nip19decode(npub);
+      if (type === "npub") {
+        fetchProfile(ALL_RELAYS, data).then((p) => {
+          if (p) setName(p.display_name || p.name || null);
+        });
+      }
+    } catch {}
+  }, [npub]);
+  return (
+    <span
+      className="nostr-mention clickable"
+      onClick={(e) => { e.stopPropagation(); setHash("profile/" + npub); }}
+    >@{name || npub.slice(0, 12) + "..."}</span>
+  );
+}
+
+// Convert @Name mentions to nostr:npub1... + p tags for publishing (NIP-27)
+function processMentions(text, knownProfiles) {
+  // knownProfiles: array of { pk, npub, name } objects
+  if (!text || !knownProfiles || knownProfiles.length === 0) return { content: text, pTags: [] };
+  const pTags = [];
+  // Sort by name length descending so "DJ Nexus Prime" matches before "DJ Nexus"
+  const sorted = [...knownProfiles].sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0));
+  let content = text;
+  for (const p of sorted) {
+    if (!p.name) continue;
+    const re = new RegExp("@" + p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    if (re.test(content)) {
+      const npub = p.npub || npubEncode(p.pk);
+      content = content.replace(re, "nostr:" + npub);
+      if (!pTags.some((t) => t[1] === p.pk)) {
+        pTags.push(["p", p.pk]);
+      }
+    }
+  }
+  return { content, pTags };
+}
+
+// Build a list of { pk, npub, name } from own identities + relay profiles
+function buildKnownProfiles(identities, relayProfiles) {
+  const known = [];
+  for (const c of (identities || [])) {
+    if (c.name && c.pk) known.push({ pk: c.pk, npub: c.npub || npubEncode(c.pk), name: c.name });
+  }
+  for (const [pk, p] of Object.entries(relayProfiles || {})) {
+    const name = p?.display_name || p?.name;
+    if (name && !known.some((k) => k.pk === pk)) {
+      known.push({ pk, npub: npubEncode(pk), name });
+    }
+  }
+  return known;
+}
+
+function StrudelCard({ url }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="strudel-card">
+      <div className="strudel-card-header">
+        <span className="strudel-card-icon">&#9835;</span>
+        <span className="strudel-card-label">Strudel Pattern</span>
+        <a href={url} target="_blank" rel="noopener noreferrer" className="strudel-card-open" onClick={(e) => e.stopPropagation()}>
+          Open in Strudel
+        </a>
+        <button className="strudel-card-toggle" onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
+          {expanded ? "Hide" : "Play"}
+        </button>
+      </div>
+      {expanded && (
+        <div className="strudel-embed">
+          <iframe src={url} title="Strudel pattern" sandbox="allow-scripts allow-same-origin" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
 //  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
@@ -883,7 +1000,9 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
     if (!postContent.trim() || !composeAccount) return;
     setPosting(true);
     try {
-      const signed = await publishNote(postContent, composeAccount);
+      const known = buildKnownProfiles(allIdentities || characters, feedProfiles);
+      const { content, pTags } = processMentions(postContent, known);
+      const signed = await publishNote(content, composeAccount, undefined, pTags);
       setMyNotes((prev) => [signed, ...prev]);
       addFeedNote(signed);
       setPostContent("");
@@ -1026,7 +1145,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
             <div className="notes-list">
               {myNotes.map((ev) => (
                 <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
-                  <div className="note-content">{ev.content}</div>
+                  <div className="note-content">{renderNoteContent(ev.content)}</div>
                   <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
                 </div>
               ))}
@@ -1068,7 +1187,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                       <span className="note-time">{formatTime(ev.created_at)}</span>
                     </div>
                   </div>
-                  <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{ev.content}</div>
+                  <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{renderNoteContent(ev.content)}</div>
                   {feedReplyMap[ev.id] && (
                     <div className="note-thread-link clickable" onClick={() => setHash("thread/" + ev.id)}>
                       {feedReplyMap[ev.id].length} {feedReplyMap[ev.id].length === 1 ? "reply" : "replies"}
@@ -1326,7 +1445,9 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
     if (!postContent.trim() || !composeAccount) return;
     setPosting(true);
     try {
-      const signed = await publishNote(postContent, composeAccount);
+      const known = buildKnownProfiles(allIdentities, feedProfiles);
+      const { content, pTags } = processMentions(postContent, known);
+      const signed = await publishNote(content, composeAccount, undefined, pTags);
       setMyNotes((prev) => [signed, ...prev]);
       addFeedNote(signed);
       setPostContent("");
@@ -1452,7 +1573,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
             <div className="notes-list">
               {myNotes.map((ev) => (
                 <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
-                  <div className="note-content">{ev.content}</div>
+                  <div className="note-content">{renderNoteContent(ev.content)}</div>
                   <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
                 </div>
               ))}
@@ -1490,7 +1611,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
                       <span className="note-time">{formatTime(ev.created_at)}</span>
                     </div>
                   </div>
-                  <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{ev.content}</div>
+                  <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{renderNoteContent(ev.content)}</div>
                 </div>
               ))}
             </div>
@@ -1676,7 +1797,7 @@ function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey, allIden
         <div className="notes-list">
           {notes.map((ev) => (
             <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
-              <div className="note-content">{ev.content}</div>
+              <div className="note-content">{renderNoteContent(ev.content)}</div>
               <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
             </div>
           ))}
@@ -1928,14 +2049,20 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
     if (!replyContent.trim() || !replyAccount || !rootEvent) return;
     setPosting(true);
     try {
+      const known = buildKnownProfiles(allIdentities, profiles);
+      const { content, pTags } = processMentions(replyContent, known);
       const lastReply = replies.length > 0 ? replies[replies.length - 1] : rootEvent;
       const tags = [["e", rootEvent.id, DEFAULT_RELAYS[0] || "", "root"], ["p", rootEvent.pubkey]];
       if (lastReply.id !== rootEvent.id) {
         tags.push(["e", lastReply.id, DEFAULT_RELAYS[0] || "", "reply"]);
         if (lastReply.pubkey !== rootEvent.pubkey) tags.push(["p", lastReply.pubkey]);
       }
+      // Add p tags from @mentions (dedup against existing)
+      for (const pt of pTags) {
+        if (!tags.some((t) => t[0] === "p" && t[1] === pt[1])) tags.push(pt);
+      }
       const signed = await publishEvent({
-        kind: 1, created_at: Math.floor(Date.now() / 1000), tags, content: replyContent,
+        kind: 1, created_at: Math.floor(Date.now() / 1000), tags, content,
       }, replyAccount);
       setReplies((prev) => [...prev, signed].sort((a, b) => a.created_at - b.created_at));
       setReplyContent("");
@@ -1962,7 +2089,7 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
               <span className="note-time">{formatTime(rootEvent.created_at)}</span>
             </div>
           </div>
-          <div className="note-content thread-root-content">{rootEvent.content}</div>
+          <div className="note-content thread-root-content">{renderNoteContent(rootEvent.content)}</div>
         </div>
       )}
       {replies.length > 0 && (
@@ -1983,7 +2110,7 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
                   <span className="note-time">{formatTime(reply.created_at)}</span>
                 </div>
               </div>
-              <div className="note-content">{reply.content}</div>
+              <div className="note-content">{renderNoteContent(reply.content)}</div>
             </div>
           ))}
         </div>
@@ -2137,6 +2264,11 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
   const [toast, setToast] = useState(null);
   const [compacting, setCompacting] = useState(false);
   const [lastUsage, setLastUsage] = useState(null);
+  const [installedSkills, setInstalledSkills] = useState([]);
+  const [skillTemplates, setSkillTemplates] = useState([]);
+  const [showSkills, setShowSkills] = useState(false);
+  const [skillLoading, setSkillLoading] = useState(null);
+  const [wsReconnect, setWsReconnect] = useState(0);
   const inputRef = useRef(null);
   const paletteRef = useRef(null);
 
@@ -2162,6 +2294,79 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
 
   const activeIdentity = (allIdentities || []).find((c) => c.id === activeCharId) || allIdentities?.[0];
   const sessionId = activeIdentity ? activeIdentity.pk.slice(0, 16) : "default";
+
+  // Fetch installed skills and available templates
+  function fetchSkills() {
+    if (!PI_URL || !adminAccount || !activeIdentity) return;
+    const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
+    const pubkey = activeIdentity.pk;
+    getAuthHeaders(`${httpUrl}/characters/${pubkey}/workspace`, "GET", adminAccount).then((headers) => {
+      fetch(`${httpUrl}/characters/${pubkey}/workspace`, { headers }).then((r) => r.json()).then((data) => {
+        if (data.skills) setInstalledSkills(data.skills);
+      }).catch(() => {});
+    });
+    getAuthHeaders(`${httpUrl}/skill-templates`, "GET", adminAccount).then((headers) => {
+      fetch(`${httpUrl}/skill-templates`, { headers }).then((r) => r.json()).then((data) => {
+        if (data.templates) setSkillTemplates(data.templates);
+      }).catch(() => {});
+    });
+  }
+
+  useEffect(() => { fetchSkills(); }, [activeCharId]);
+
+  async function installSkill(templateName) {
+    if (!PI_URL || !adminAccount || !activeIdentity) return;
+    setSkillLoading(templateName);
+    const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
+    const pubkey = activeIdentity.pk;
+    const url = `${httpUrl}/characters/${pubkey}/skills`;
+    try {
+      const headers = await getAuthHeaders(url, "POST", adminAccount);
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ name: templateName, template: templateName }),
+      });
+      if (res.ok) {
+        // Reconnect WS so the agent gets an updated system prompt with new skills
+        setMessages([]);
+        setPiState(null);
+        setConnected(false);
+        setShowSkills(false);
+        setWsReconnect((n) => n + 1);
+        // Fetch updated skills after a short delay to let reconnect settle
+        setTimeout(fetchSkills, 2000);
+      }
+    } catch {}
+    setSkillLoading(null);
+  }
+
+  async function removeSkill(skillName) {
+    if (!PI_URL || !adminAccount || !activeIdentity) return;
+    setSkillLoading(skillName);
+    const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
+    const pubkey = activeIdentity.pk;
+    const url = `${httpUrl}/characters/${pubkey}/skills/${skillName}`;
+    try {
+      const headers = await getAuthHeaders(url, "DELETE", adminAccount);
+      console.log("[skill] DELETE", url);
+      const res = await fetch(url, { method: "DELETE", headers });
+      console.log("[skill] DELETE response:", res.status);
+      if (res.ok) {
+        // Reconnect WS so the agent gets an updated system prompt without the skill
+        setMessages([]);
+        setPiState(null);
+        setConnected(false);
+        setShowSkills(false);
+        setWsReconnect((n) => n + 1);
+        // Fetch updated skills after a short delay to let reconnect settle
+        setTimeout(fetchSkills, 2000);
+      }
+    } catch (err) {
+      console.log("[skill] DELETE error:", err);
+    }
+    setSkillLoading(null);
+  }
 
   // Connect WebSocket
   useEffect(() => {
@@ -2200,7 +2405,7 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
     ws.onerror = () => setConnected(false);
 
     return () => { ws.close(); };
-  }, [sessionId]);
+  }, [sessionId, wsReconnect]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -2550,6 +2755,7 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
                         <div><strong>Context:</strong> {(piState.model.contextWindow / 1000).toFixed(0)}k tokens</div>
                       )}
                       {piState.model?.reasoning && <div><strong>Reasoning:</strong> enabled</div>}
+                      <div><strong>Skills:</strong> {installedSkills.length > 0 ? installedSkills.map(s => s.name).join(", ") : "none"} <span style={{ opacity: 0.5 }}>(manage via + in status bar)</span></div>
                     </div>
                     <div className="pi-welcome-hint">Type a message or press / for commands</div>
                   </>
@@ -2584,6 +2790,33 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
                 <div className="pi-chat-msg-content">
                   {msg.content}
                   {msg.streaming && <span className="streaming-dot" />}
+                  {/* Inline audio player for .wav/.mp3 files mentioned in tool output */}
+                  {msg.role === "tool" && !msg.streaming && msg.content && (() => {
+                    const audioMatch = msg.content.match(/(?:Written|Created|Saved|Mixed)[^\n]*?(audio\/[^\s"']+\.(?:wav|mp3|ogg))/i);
+                    if (!audioMatch) return null;
+                    const audioFile = audioMatch[1];
+                    const pubkey = activeIdentity?.pk;
+                    if (!pubkey) return null;
+                    const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
+                    const audioUrl = `${httpUrl}/characters/${pubkey}/${audioFile}`;
+                    return (
+                      <div className="pi-audio-player">
+                        <audio controls preload="none" src={audioUrl} />
+                      </div>
+                    );
+                  })()}
+                  {/* Strudel link detection in tool output */}
+                  {msg.role === "tool" && !msg.streaming && msg.content && (() => {
+                    const strudelMatch = msg.content.match(/https?:\/\/(?:strudel\.cc|localhost:\d+)\/#\S+/);
+                    if (!strudelMatch) return null;
+                    const url = strudelMatch[0];
+                    return (
+                      <div className="pi-strudel-link">
+                        <span className="strudel-card-icon">&#9835;</span>
+                        <a href={url} target="_blank" rel="noopener noreferrer">Play in Strudel</a>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             ))}
@@ -2608,6 +2841,49 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
               <span className="pi-status-tag">reasoning</span>
             )}
             {compacting && <span className="pi-status-tag" style={{ borderColor: "var(--danger)" }}>compacting</span>}
+            {installedSkills.map((s) => (
+              <span key={s.name} className="pi-skill-badge" title={s.description}>{s.name}</span>
+            ))}
+            <span className="pi-status-skills-wrap">
+              <button className="pi-skill-manage-btn" onClick={() => setShowSkills(!showSkills)}>
+                {showSkills ? "−" : "+"}
+              </button>
+              {showSkills && (
+                <div className="pi-skill-panel pi-skill-panel-popover">
+                  <div className="pi-skill-panel-title">Installed</div>
+                  {installedSkills.length === 0 && <div style={{ opacity: 0.5, fontSize: "0.85rem" }}>No skills installed</div>}
+                  {installedSkills.map((s) => (
+                    <div key={s.name} className="pi-skill-item">
+                      <span className="pi-skill-badge">{s.name}</span>
+                      <span className="pi-skill-desc">{s.description}</span>
+                      <button
+                        className="pi-skill-remove-btn"
+                        onClick={() => removeSkill(s.name)}
+                        disabled={skillLoading === s.name}
+                      >{skillLoading === s.name ? "..." : "×"}</button>
+                    </div>
+                  ))}
+                  {skillTemplates.filter((t) => !installedSkills.find((s) => s.name === t.name)).length > 0 && (
+                    <>
+                      <div className="pi-skill-panel-title" style={{ marginTop: "0.5rem" }}>Available</div>
+                      {skillTemplates
+                        .filter((t) => !installedSkills.find((s) => s.name === t.name))
+                        .map((t) => (
+                          <div key={t.name} className="pi-skill-item">
+                            <span className="pi-skill-badge pi-skill-available">{t.name}</span>
+                            <span className="pi-skill-desc">{t.description}</span>
+                            <button
+                              className="pi-skill-install-btn"
+                              onClick={() => installSkill(t.name)}
+                              disabled={skillLoading === t.name}
+                            >{skillLoading === t.name ? "..." : "Install"}</button>
+                          </div>
+                        ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </span>
             <span className="pi-status-ctx">
               {sessionStats && (
                 <>
@@ -3683,7 +3959,7 @@ function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) 
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `npc-no-more-keys-${new Date().toISOString().slice(0, 10)}.env`;
+    a.download = `npc-no-more-keys-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.env`;
     a.click();
     URL.revokeObjectURL(url);
     setExported(true);

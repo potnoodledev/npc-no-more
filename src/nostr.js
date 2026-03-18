@@ -124,11 +124,11 @@ export async function publishEvent(event, account, relays = DEFAULT_RELAYS) {
   return signed;
 }
 
-export async function publishNote(content, account, relays = DEFAULT_RELAYS) {
+export async function publishNote(content, account, relays = DEFAULT_RELAYS, extraTags = []) {
   return publishEvent({
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
-    tags: [],
+    tags: [...extraTags],
     content,
   }, account, relays);
 }

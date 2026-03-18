@@ -13,6 +13,7 @@ COPY package.json package-lock.json* /app/bridge/
 RUN cd /app/bridge && npm install
 
 COPY server.js profile.js prompt-builder.js nostr-auth.js nim-models.json /app/bridge/
+COPY skill-templates/ /app/bridge/skill-templates/
 
 # Create workspace
 RUN mkdir -p /workspace

@@ -1,5 +1,5 @@
 [submodule "nim-skill-test"]
-	path = nim-skill-test
+	path = references/nim-skill-test
 	url = git@github.com:polats/nim-skill-test.git
 [submodule "pi-mono"]
 	path = references/pi-mono
@@ -7,3 +7,9 @@
 [submodule "openclaw"]
 	path = references/openclaw
 	url = https://github.com/openclaw/openclaw.git
+[submodule "references/radio"]
+	path = references/radio
+	url = https://github.com/polats/radio
+[submodule "references/strudel"]
+	path = references/strudel
+	url = https://codeberg.org/uzu/strudel.git

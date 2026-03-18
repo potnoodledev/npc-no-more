@@ -1,8 +1,11 @@
 /**
- * Build a system prompt from a NIP-01 profile.
+ * Build a system prompt from a NIP-01 profile and installed skills.
  */
 
-export function buildSystemPrompt(profile, pubkeyHex) {
+import { readdirSync, readFileSync, existsSync } from "fs";
+import { join } from "path";
+
+export function buildSystemPrompt(profile, pubkeyHex, charDir) {
   const name = profile?.display_name || profile?.name || `npub:${pubkeyHex.slice(0, 12)}`;
   const about = profile?.about || "";
   const nip05 = profile?.nip05 || "";
@@ -25,6 +28,13 @@ export function buildSystemPrompt(profile, pubkeyHex) {
     parts.push(`Identity:\n${identityLines.join("\n")}`);
   }
 
+  // Scan installed skills
+  const skills = scanSkills(charDir);
+  if (skills.length > 0) {
+    const skillList = skills.map((s) => `- **${s.name}**: ${s.description}`).join("\n");
+    parts.push(`Your skills:\n${skillList}\n\nSkill details are in \`.pi/skills/<name>/SKILL.md\`. Read a skill's SKILL.md to learn how to use it.`);
+  }
+
   parts.push(
     `How to behave:
 - In casual conversation, stay in character as ${name}. Your "about" describes who you are.
@@ -34,4 +44,23 @@ export function buildSystemPrompt(profile, pubkeyHex) {
   );
 
   return parts.join("\n\n");
+}
+
+function scanSkills(charDir) {
+  if (!charDir) return [];
+  const skillsDir = join(charDir, ".pi", "skills");
+  if (!existsSync(skillsDir)) return [];
+
+  return readdirSync(skillsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+    .map((d) => {
+      const skillMd = join(skillsDir, d.name, "SKILL.md");
+      let description = "";
+      if (existsSync(skillMd)) {
+        const content = readFileSync(skillMd, "utf-8");
+        const lines = content.split("\n").filter((l) => l.trim() && !l.startsWith("#"));
+        description = lines[0] || "";
+      }
+      return { name: d.name, description };
+    });
 }
