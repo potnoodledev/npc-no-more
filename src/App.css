@@ -545,7 +545,8 @@ a:hover { color: var(--accent-bright); }
   letter-spacing: 0.03em;
   transition: all 0.15s;
 }
-.btn-small:hover { color: var(--accent); border-color: var(--accent-dim); }
+.btn-small:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-dim); }
+.btn-small:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .btn-icon {
   background: none;
@@ -876,20 +877,8 @@ a:hover { color: var(--accent-bright); }
   font-size: 0.62rem;
   color: var(--text-faint);
   word-break: break-all;
-  background: var(--bg);
-  padding: 6px 10px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
   user-select: all;
-  cursor: pointer;
-  transition: all 0.15s;
-  display: inline-block;
-  max-width: 100%;
-  width: 100%;
-}
-.char-npub:hover {
-  color: var(--accent);
-  border-color: var(--accent-dim);
+  display: inline;
 }
 
 /* ── Note Card ──
@@ -922,6 +911,10 @@ a:hover { color: var(--accent-bright); }
 .note-card:hover {
   background: var(--surface-hover);
   border-left-color: var(--accent);
+}
+.note-card.note-unread {
+  border-left-color: var(--accent);
+  background: var(--surface2);
 }
 
 .note-header {

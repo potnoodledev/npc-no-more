@@ -78,8 +78,8 @@ function setHash(path) {
 //  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
-function Sidebar({ characters, activeCharId, currentPubkey, adminAccount, serverAdminPubkey }) {
-  const isAdmin = !!serverAdminPubkey && serverAdminPubkey === adminAccount?.pk;
+function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, onSelectIdentity, unreadPks }) {
+  const isAdmin = !!serverAdminPubkey && serverAdminPubkey === adminPk;
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -88,39 +88,24 @@ function Sidebar({ characters, activeCharId, currentPubkey, adminAccount, server
 
       <div className="sidebar-section-label">Identities</div>
       <div className="sidebar-characters">
-        {adminAccount && (
-          <button
-            className={`sidebar-char ${adminAccount.pk === currentPubkey ? "active-char" : ""}`}
-            onClick={() => setHash("profile/" + adminAccount.npub)}
-          >
-            <span className="sidebar-char-avatar">
-              {adminAccount.profile_image ? (
-                <img src={adminAccount.profile_image} alt="" />
-              ) : (
-                (adminAccount.profile_name || "U").charAt(0).toUpperCase()
-              )}
-            </span>
-            <span className="sidebar-char-name">
-              {adminAccount.profile_name || adminAccount.npub.slice(0, 12)}
-              <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 6 }}>{isAdmin ? "ADMIN" : "USER"}</span>
-            </span>
-          </button>
-        )}
-        {characters.map((c) => (
+        {allIdentities.map((c) => (
           <button
             key={c.id}
-            className={`sidebar-char ${c.pk === currentPubkey ? "active-char" : ""}`}
-            onClick={() => setHash("profile/" + c.npub)}
+            className={`sidebar-char ${c.id === activeCharId ? "active-char" : ""}`}
+            onClick={() => { onSelectIdentity(c.id); setHash("profile/" + c.npub); }}
           >
-            {c.id === activeCharId && <span className="sidebar-acting-dot" />}
+            {unreadPks?.has(c.pk) && <span className="sidebar-acting-dot" />}
             <span className="sidebar-char-avatar">
               {c.profile_image ? (
                 <img src={c.profile_image} alt="" />
               ) : (
-                c.name.charAt(0).toUpperCase()
+                (c.name || "U").charAt(0).toUpperCase()
               )}
             </span>
-            <span className="sidebar-char-name">{c.name}</span>
+            <span className="sidebar-char-name">
+              {c.name}
+              {c.isAdminIdentity && <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 6 }}>{isAdmin ? "ADMIN" : "USER"}</span>}
+            </span>
           </button>
         ))}
         <button className="sidebar-item sidebar-add" onClick={() => setHash("characters/new")}>
@@ -673,13 +658,13 @@ function CharacterSwitcher({ characters, selectedCharId, onSelect }) {
 //  OWNED CHARACTER PAGE (tabs: Posts / Profile)
 // ══════════════════════════════════════
 
-function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDeleteChar, adminAccount }) {
+function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, onDmRead }) {
   const [tab, setTab] = useState("posts"); // "posts" | "profile"
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
-  const [composeAsCharId, setComposeAsCharId] = useState(character.id);
-  const composeChar = characters.find((c) => c.id === composeAsCharId) || character;
-  const composeAccount = composeChar ? accountFromSkHex(composeChar.skHex) : account;
+  const [composeAsCharId, setComposeAsCharId] = useState(activeCharId || character.id);
+  const composeIdentity = (allIdentities || characters).find((c) => c.id === composeAsCharId) || character;
+  const composeAccount = composeIdentity ? accountFromSkHex(composeIdentity.skHex) : account;
 
   // Character's own posts
   const [myNotes, setMyNotes] = useState([]);
@@ -770,7 +755,13 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
     setFeedLoading(true);
     setFeedNotes([]);
     if (feedSubRef.current) feedSubRef.current.close();
-    if (feedMode === "relay") {
+    if (feedMode === "admin" && serverAdminPubkey) {
+      feedSubRef.current = getPool().subscribeMany(
+        ALL_RELAYS,
+        { kinds: [1], authors: [serverAdminPubkey], limit: 50 },
+        { onevent: (event) => addFeedNote(event), oneose: () => setFeedLoading(false) }
+      );
+    } else if (feedMode === "relay") {
       feedSubRef.current = subscribeFeed(
         DEFAULT_RELAYS,
         (event) => addFeedNote(event),
@@ -786,7 +777,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
       );
     }
     return () => { if (feedSubRef.current) feedSubRef.current.close(); };
-  }, [feedMode, addFeedNote]);
+  }, [feedMode, addFeedNote, serverAdminPubkey]);
 
   // Fetch profiles for feed authors
   useEffect(() => {
@@ -942,6 +933,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
       {/* Tabs */}
       <div className="feed-tabs">
         <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>Posts</button>
+        <button className={tab === "dms" ? "active" : ""} onClick={() => setTab("dms")}>Messages</button>
         <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Profile</button>
       </div>
 
@@ -952,7 +944,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
           <div className="feed-compose">
             <div className="compose-box">
               <textarea
-                placeholder={`What's on ${composeChar.name}'s mind?`}
+                placeholder={`What's on ${composeIdentity.name}'s mind?`}
                 value={postContent}
                 onChange={(e) => setPostContent(e.target.value)}
                 rows={3}
@@ -964,7 +956,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                 }}
               />
               <div className="compose-footer">
-                <CharacterSwitcher characters={characters} selectedCharId={composeAsCharId} onSelect={setComposeAsCharId} />
+                <CharacterSwitcher characters={allIdentities || characters} selectedCharId={composeAsCharId} onSelect={setComposeAsCharId} />
                 <button className="btn-primary" disabled={posting || !postContent.trim()} onClick={handlePost}>
                   {posting ? "Posting..." : "Post"}
                 </button>
@@ -993,12 +985,13 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
               <h3>Feed</h3>
               <div className="feed-toggle">
                 <button className={`feed-toggle-btn ${feedMode === "relay" ? "active" : ""}`} onClick={() => setFeedMode("relay")}>Our Relay</button>
+                {serverAdminPubkey && <button className={`feed-toggle-btn ${feedMode === "admin" ? "active" : ""}`} onClick={() => setFeedMode("admin")}>Admin</button>}
                 <button className={`feed-toggle-btn ${feedMode === "global" ? "active" : ""}`} onClick={() => setFeedMode("global")}>Global Nostr</button>
               </div>
             </div>
 
             {feedLoading && feedNotes.length === 0 && <div className="loading">Loading...</div>}
-            {!feedLoading && feedNotes.length === 0 && <div className="loading">No posts yet.</div>}
+            {!feedLoading && feedNotes.length === 0 && <div className="loading">{feedMode === "admin" ? "No posts from the admin yet." : "No posts yet."}</div>}
 
             <div className="notes-list">
               {feedRootNotes.map((ev) => (
@@ -1012,7 +1005,12 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                       )}
                     </div>
                     <div className="note-meta">
-                      <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>{getFeedAuthorName(ev)}</span>
+                      <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
+                        {getFeedAuthorName(ev)}
+                        {serverAdminPubkey && ev.pubkey === serverAdminPubkey && <span style={{ fontSize: "0.55rem", color: "var(--accent)", marginLeft: 6 }}>ADMIN</span>}
+                        {ev.pubkey === adminAccount?.pk && <span style={{ fontSize: "0.55rem", color: "var(--accent)", marginLeft: 6 }}>YOU</span>}
+                        {(characters || []).some((c) => c.pk === ev.pubkey) && <span style={{ fontSize: "0.55rem", color: "var(--accent)", marginLeft: 6 }}>YOU</span>}
+                      </span>
                       <span className="note-time">{formatTime(ev.created_at)}</span>
                     </div>
                   </div>
@@ -1027,6 +1025,11 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
             </div>
           </div>
         </div>
+      )}
+
+      {/* DMs tab */}
+      {tab === "dms" && (
+        <DmInbox account={account} allIdentities={allIdentities || []} onRead={onDmRead} />
       )}
 
       {/* Profile tab */}
@@ -1050,6 +1053,7 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                     )}
                   </div>
                   <h2 className="char-hero-name">{profile?.display_name || profile?.name || character.name} <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>YOU</span></h2>
+                  <NpubBadge npub={character.npub} />
                   {profile?.about && <p className="char-hero-personality">{profile.about}</p>}
                   {profile?.website && (
                     <p className="char-hero-world">
@@ -1058,19 +1062,13 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
                   )}
                   {profile?.nip05 && <p className="char-hero-world">{profile.nip05}</p>}
                   {profile?.lud16 && <p className="char-hero-world">{profile.lud16}</p>}
-                  <code className="char-npub" onClick={() => navigator.clipboard.writeText(character.npub)}>{character.npub}</code>
                   <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
                     <button className="btn-primary" onClick={startEditing}>Edit Profile</button>
                   </div>
                 </div>
               </div>
 
-              <div className="admin-keys-section" style={{ margin: "24px 0" }}>
-                <h3>Keys</h3>
-                <div className="admin-key-row"><span>npub</span><code>{character.npub}</code></div>
-                <div className="admin-key-row"><span>pubkey (hex)</span><code>{character.pk}</code></div>
-                <div className="admin-key-row"><span>nsec</span><code className="nsec-display">{character.nsec}</code></div>
-              </div>
+              <KeysSection npub={character.npub} nsec={character.nsec} />
 
               <button
                 className="btn-small btn-reset"
@@ -1162,8 +1160,23 @@ function OwnedCharacterPage({ character, account, characters, onUpdateChar, onDe
 //  OWN PROFILE PAGE (admin/user account)
 // ══════════════════════════════════════
 
-function OwnProfilePage({ adminAccount, onUpdateProfile }) {
+function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, activeCharId, onUpdateProfile, onDmRead }) {
   const account = adminAccount;
+  const [tab, setTab] = useState("posts");
+  const [postContent, setPostContent] = useState("");
+  const [posting, setPosting] = useState(false);
+  const [composeAsId, setComposeAsId] = useState(activeCharId || "__admin__");
+  const composeIdentity = (allIdentities || []).find((c) => c.id === composeAsId) || { skHex: account.skHex, name: account.profile_name || "You" };
+  const composeAccount = accountFromSkHex(composeIdentity.skHex);
+  const [myNotes, setMyNotes] = useState([]);
+  const [myLoading, setMyLoading] = useState(true);
+  const mySubRef = useRef(null);
+  const [feedMode, setFeedMode] = useState("relay");
+  const [feedNotes, setFeedNotes] = useState([]);
+  const [feedLoading, setFeedLoading] = useState(true);
+  const [feedProfiles, setFeedProfiles] = useState({});
+  const feedSubRef = useRef(null);
+  const feedProfileCache = useRef({});
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -1189,6 +1202,89 @@ function OwnProfilePage({ adminAccount, onUpdateProfile }) {
       setProfileLoading(false);
     });
   }, [account.pk]);
+
+  // Own posts
+  useEffect(() => {
+    setMyLoading(true);
+    setMyNotes([]);
+    if (mySubRef.current) mySubRef.current.close();
+    mySubRef.current = getPool().subscribeMany(
+      ALL_RELAYS,
+      { kinds: [1], authors: [account.pk], limit: 30 },
+      {
+        onevent: (ev) => {
+          setMyNotes((prev) => {
+            if (prev.find((n) => n.id === ev.id)) return prev;
+            return [ev, ...prev].sort((a, b) => b.created_at - a.created_at);
+          });
+        },
+        oneose: () => setMyLoading(false),
+      }
+    );
+    return () => { if (mySubRef.current) mySubRef.current.close(); };
+  }, [account.pk]);
+
+  // Feed
+  const addFeedNote = useCallback((event) => {
+    setFeedNotes((prev) => {
+      if (prev.find((n) => n.id === event.id)) return prev;
+      return [event, ...prev].sort((a, b) => b.created_at - a.created_at);
+    });
+  }, []);
+
+  useEffect(() => {
+    setFeedLoading(true);
+    setFeedNotes([]);
+    if (feedSubRef.current) feedSubRef.current.close();
+    if (feedMode === "admin" && serverAdminPubkey) {
+      feedSubRef.current = getPool().subscribeMany(
+        ALL_RELAYS,
+        { kinds: [1], authors: [serverAdminPubkey], limit: 50 },
+        { onevent: addFeedNote, oneose: () => setFeedLoading(false) }
+      );
+    } else if (feedMode === "relay") {
+      feedSubRef.current = subscribeFeed(DEFAULT_RELAYS, addFeedNote, () => setFeedLoading(false), 50);
+    } else {
+      feedSubRef.current = subscribeGlobalFeed(ALL_RELAYS, addFeedNote, () => setFeedLoading(false), 50);
+    }
+    return () => { if (feedSubRef.current) feedSubRef.current.close(); };
+  }, [feedMode, addFeedNote, serverAdminPubkey]);
+
+  useEffect(() => {
+    const unknownPubkeys = feedNotes.map((n) => n.pubkey).filter((pk) => pk !== account.pk && !feedProfileCache.current[pk]);
+    if (unknownPubkeys.length === 0) return;
+    const unique = [...new Set(unknownPubkeys)];
+    unique.forEach((pk) => { feedProfileCache.current[pk] = true; });
+    fetchProfiles(ALL_RELAYS, unique).then((fetched) => {
+      for (const [pk, p] of Object.entries(fetched)) feedProfileCache.current[pk] = p;
+      if (Object.keys(fetched).length > 0) setFeedProfiles((prev) => ({ ...prev, ...fetched }));
+    });
+  }, [feedNotes, account.pk]);
+
+  function getFeedAuthorName(ev) {
+    if (ev.pubkey === account.pk) return account.profile_name || shortPubkey(ev.pubkey);
+    const p = feedProfiles[ev.pubkey];
+    return p?.display_name || p?.name || shortPubkey(ev.pubkey);
+  }
+  function getFeedAuthorImage(ev) {
+    if (ev.pubkey === account.pk) return account.profile_image || null;
+    return feedProfiles[ev.pubkey]?.picture || null;
+  }
+  function isReply(ev) { return ev.tags?.some((t) => t[0] === "e"); }
+
+  async function handlePost() {
+    if (!postContent.trim() || !composeAccount) return;
+    setPosting(true);
+    try {
+      const signed = await publishNote(postContent, composeAccount);
+      setMyNotes((prev) => [signed, ...prev]);
+      addFeedNote(signed);
+      setPostContent("");
+    } catch (e) {
+      alert("Failed to post: " + e.message);
+    }
+    setPosting(false);
+  }
 
   function startEditing() {
     const fields = {
@@ -1266,11 +1362,97 @@ function OwnProfilePage({ adminAccount, onUpdateProfile }) {
 
   if (profileLoading) return <div className="loading">Loading profile...</div>;
 
+  const displayName = profile?.display_name || profile?.name || account.profile_name || account.npub.slice(0, 12);
+  const feedRootNotes = feedNotes.filter((n) => !isReply(n));
+
   return (
     <div>
-      <h2 className="page-title">Your Profile</h2>
+      <div className="feed-tabs">
+        <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>Posts</button>
+        <button className={tab === "dms" ? "active" : ""} onClick={() => setTab("dms")}>Messages</button>
+        <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Profile</button>
+      </div>
 
-      {!editing && (
+      {tab === "posts" && (
+        <div>
+          <div className="feed-compose">
+            <div className="compose-box">
+              <textarea
+                placeholder={`What's on your mind?`}
+                value={postContent}
+                onChange={(e) => setPostContent(e.target.value)}
+                rows={3}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handlePost(); }
+                }}
+              />
+              <div className="compose-footer">
+                <CharacterSwitcher characters={allIdentities || []} selectedCharId={composeAsId} onSelect={setComposeAsId} />
+                <button className="btn-primary" disabled={posting || !postContent.trim()} onClick={handlePost}>
+                  {posting ? "Posting..." : "Post"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="profile-feed">
+            <h3>Your Posts</h3>
+            {myLoading && myNotes.length === 0 && <div className="loading">Loading...</div>}
+            {!myLoading && myNotes.length === 0 && <div className="loading">No posts yet. Be the first!</div>}
+            <div className="notes-list">
+              {myNotes.map((ev) => (
+                <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
+                  <div className="note-content">{ev.content}</div>
+                  <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="feed-section">
+            <div className="feed-section-header">
+              <h3>Feed</h3>
+              <div className="feed-toggle">
+                <button className={`feed-toggle-btn ${feedMode === "relay" ? "active" : ""}`} onClick={() => setFeedMode("relay")}>Our Relay</button>
+                {serverAdminPubkey && <button className={`feed-toggle-btn ${feedMode === "admin" ? "active" : ""}`} onClick={() => setFeedMode("admin")}>Admin</button>}
+                <button className={`feed-toggle-btn ${feedMode === "global" ? "active" : ""}`} onClick={() => setFeedMode("global")}>Global Nostr</button>
+              </div>
+            </div>
+            {feedLoading && feedNotes.length === 0 && <div className="loading">Loading...</div>}
+            {!feedLoading && feedNotes.length === 0 && <div className="loading">{feedMode === "admin" ? "No posts from the admin yet." : "No posts yet."}</div>}
+            <div className="notes-list">
+              {feedRootNotes.map((ev) => (
+                <div key={ev.id} className="note-card">
+                  <div className="note-header">
+                    <div className="note-avatar clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
+                      {getFeedAuthorImage(ev) ? (
+                        <img src={getFeedAuthorImage(ev)} alt="" style={{ width: 32, height: 32, borderRadius: 2, objectFit: "cover" }} />
+                      ) : (
+                        <div className="avatar-placeholder">{getFeedAuthorName(ev).charAt(0).toUpperCase()}</div>
+                      )}
+                    </div>
+                    <div className="note-meta">
+                      <span className="note-author clickable" onClick={() => setHash("profile/" + npubEncode(ev.pubkey))}>
+                        {getFeedAuthorName(ev)}
+                        {serverAdminPubkey && ev.pubkey === serverAdminPubkey && ev.pubkey !== account.pk && <span style={{ fontSize: "0.55rem", color: "var(--accent)", marginLeft: 6 }}>ADMIN</span>}
+                        {ev.pubkey === account.pk && <span style={{ fontSize: "0.55rem", color: "var(--accent)", marginLeft: 6 }}>YOU</span>}
+                      </span>
+                      <span className="note-time">{formatTime(ev.created_at)}</span>
+                    </div>
+                  </div>
+                  <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{ev.content}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "dms" && (
+        <DmInbox account={account} allIdentities={allIdentities || []} onRead={onDmRead} />
+      )}
+
+      {tab === "profile" && !editing && (
         <div className="edit-section">
           <div className="char-hero">
             {profile?.banner && <div className="char-hero-banner"><img src={profile.banner} alt="" /></div>}
@@ -1280,11 +1462,12 @@ function OwnProfilePage({ adminAccount, onUpdateProfile }) {
                   <img src={profile?.picture || account.profile_image} alt="" />
                 ) : (
                   <div className="avatar-placeholder large">
-                    {(profile?.display_name || profile?.name || account.profile_name || "U").charAt(0).toUpperCase()}
+                    {displayName.charAt(0).toUpperCase()}
                   </div>
                 )}
               </div>
-              <h2 className="char-hero-name">{profile?.display_name || profile?.name || account.profile_name || account.npub.slice(0, 12)} <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>YOU</span></h2>
+              <h2 className="char-hero-name">{displayName} <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>YOU</span></h2>
+              <NpubBadge npub={account.npub} />
               {(profile?.about || account.profile_about) && <p className="char-hero-personality">{profile?.about || account.profile_about}</p>}
               {profile?.website && (
                 <p className="char-hero-world">
@@ -1293,10 +1476,6 @@ function OwnProfilePage({ adminAccount, onUpdateProfile }) {
               )}
               {profile?.nip05 && <p className="char-hero-world">{profile.nip05}</p>}
               {profile?.lud16 && <p className="char-hero-world">{profile.lud16}</p>}
-              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <code className="char-npub">{account.npub}</code>
-                <CopyBtn text={account.npub} label="npub" />
-              </div>
               <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
                 <button className="btn-primary" onClick={startEditing}>Edit Profile</button>
               </div>
@@ -1306,7 +1485,7 @@ function OwnProfilePage({ adminAccount, onUpdateProfile }) {
         </div>
       )}
 
-      {editing && (
+      {tab === "profile" && editing && (
         <div className="edit-section">
           <h3>Edit Profile (NIP-01)</h3>
           <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginBottom: 16 }}>
@@ -1431,8 +1610,8 @@ function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey }) {
               <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>ADMIN</span>
             )}
           </h2>
+          <NpubBadge npub={npub} />
           {about && <p className="char-hero-personality">{about}</p>}
-          <code className="char-npub" onClick={() => navigator.clipboard.writeText(npub)}>{npub}</code>
           {activeAccount && (
             <div className="char-hero-actions" style={{ flexDirection: "row", justifyContent: "center", marginTop: 12 }}>
               <button className="btn-primary" style={{ padding: "8px 20px", fontSize: "0.9rem" }} onClick={() => setHash("messages/" + npub)}>
@@ -1461,10 +1640,179 @@ function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey }) {
 }
 
 // ══════════════════════════════════════
+//  DM INBOX (conversation list for an identity)
+// ══════════════════════════════════════
+
+function DmInbox({ account, allIdentities = [], onRead }) {
+  const [conversations, setConversations] = useState({});
+  const [profiles, setProfiles] = useState({});
+  const [loading, setLoading] = useState(true);
+  const subRef = useRef(null);
+  const profileCache = useRef({});
+
+  function getConvoLastSeen(otherPk) {
+    try { return parseInt(localStorage.getItem(`npc_dm_convo_${account?.pk}_${otherPk}`) || "0", 10); } catch { return 0; }
+  }
+  function markConvoRead(otherPk) {
+    localStorage.setItem(`npc_dm_convo_${account?.pk}_${otherPk}`, String(Math.floor(Date.now() / 1000)));
+  }
+  function isConvoUnread(otherPk, latestTs) {
+    return latestTs > getConvoLastSeen(otherPk);
+  }
+
+  useEffect(() => {
+    // Mark identity-level DMs as read
+    localStorage.setItem(`npc_dm_seen_${account?.pk}`, String(Math.floor(Date.now() / 1000)));
+    if (onRead) onRead(account?.pk);
+  }, [account?.pk]);
+
+  useEffect(() => {
+    if (!account) return;
+    setLoading(true);
+    setConversations({});
+    if (subRef.current) subRef.current.close();
+
+    const convos = {};
+    async function processEvent(event) {
+      try {
+        const isSent = event.pubkey === account.pk;
+        const otherPk = isSent ? event.tags.find((t) => t[0] === "p")?.[1] : event.pubkey;
+        if (!otherPk) return;
+        const { plaintext } = await decryptDM(event, account);
+        const msg = { id: event.id, content: plaintext, created_at: event.created_at, isSent };
+        if (!convos[otherPk]) convos[otherPk] = { messages: [], latest: 0 };
+        if (convos[otherPk].messages.find((m) => m.id === msg.id)) return;
+        convos[otherPk].messages.push(msg);
+        if (msg.created_at > convos[otherPk].latest) convos[otherPk].latest = msg.created_at;
+        setConversations({ ...convos });
+      } catch {}
+    }
+
+    subRef.current = subscribeDMs(DEFAULT_RELAYS, account.pk, processEvent, () => setLoading(false));
+    return () => { if (subRef.current) subRef.current.close(); };
+  }, [account?.pk]);
+
+  // Fetch profiles for conversation partners
+  useEffect(() => {
+    const pks = Object.keys(conversations).filter((pk) => !profileCache.current[pk]);
+    if (pks.length === 0) return;
+    pks.forEach((pk) => { profileCache.current[pk] = true; });
+    fetchProfiles(ALL_RELAYS, pks).then((fetched) => {
+      for (const [pk, p] of Object.entries(fetched)) profileCache.current[pk] = p;
+      if (Object.keys(fetched).length > 0) setProfiles((prev) => ({ ...prev, ...fetched }));
+    });
+  }, [conversations]);
+
+  const sorted = Object.entries(conversations).sort((a, b) => b[1].latest - a[1].latest);
+
+  const otherIdentities = allIdentities.filter((c) => c.pk !== account.pk);
+
+  if (loading && sorted.length === 0) return (
+    <div>
+      {otherIdentities.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>Your Identities</div>
+          <div className="notes-list">
+            {otherIdentities.map((c) => (
+              <div key={c.id} className="note-card clickable" onClick={() => setHash("messages/" + c.npub)}>
+                <div className="note-header">
+                  <div className="note-avatar">
+                    {c.profile_image ? <img src={c.profile_image} alt="" style={{ width: 32, height: 32, borderRadius: 2, objectFit: "cover" }} /> : <div className="avatar-placeholder">{(c.name || "?").charAt(0).toUpperCase()}</div>}
+                  </div>
+                  <div className="note-meta"><span className="note-author">{c.name}</span></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="loading">Loading messages...</div>
+    </div>
+  );
+
+  return (
+    <div>
+      {otherIdentities.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>Your Identities</div>
+          <div className="notes-list">
+            {otherIdentities.map((c) => {
+              const existing = conversations[c.pk];
+              const lastMsg = existing?.messages?.sort((a, b) => b.created_at - a.created_at)[0];
+              const unread = lastMsg && !lastMsg.isSent && isConvoUnread(c.pk, lastMsg.created_at);
+              return (
+                <div key={c.id} className={`note-card clickable${unread ? " note-unread" : ""}`} onClick={() => { markConvoRead(c.pk); setHash("messages/" + c.npub); }}>
+                  <div className="note-header">
+                    <div className="note-avatar">
+                      {c.profile_image ? <img src={c.profile_image} alt="" style={{ width: 32, height: 32, borderRadius: 2, objectFit: "cover" }} /> : <div className="avatar-placeholder">{(c.name || "?").charAt(0).toUpperCase()}</div>}
+                    </div>
+                    <div className="note-meta">
+                      <span className="note-author">{c.name}{unread && <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", marginLeft: 6, verticalAlign: "middle" }} />}</span>
+                      {lastMsg && <span className="note-time">{formatTime(lastMsg.created_at)}</span>}
+                    </div>
+                  </div>
+                  {lastMsg && (
+                    <div className="note-content" style={{ color: unread ? "var(--text)" : "var(--text-dim)", fontSize: "0.82rem", fontWeight: unread ? 600 : 400 }}>
+                      {lastMsg.isSent && <span style={{ color: "var(--text-faint)" }}>You: </span>}
+                      {lastMsg.content.slice(0, 80)}{lastMsg.content.length > 80 ? "..." : ""}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {sorted.length === 0 && !loading && otherIdentities.length === 0 && <div className="loading">No messages yet.</div>}
+
+      {sorted.filter(([pk]) => !allIdentities.some((c) => c.pk === pk)).length > 0 && (
+        <div>
+          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>Conversations</div>
+          <div className="notes-list">
+      {sorted.filter(([pk]) => !allIdentities.some((c) => c.pk === pk)).map(([pk, convo]) => {
+        const p = profiles[pk] || profileCache.current[pk];
+        const name = (typeof p === "object" && p) ? (p.display_name || p.name || shortPubkey(pk)) : shortPubkey(pk);
+        const picture = (typeof p === "object" && p) ? p.picture : null;
+        const lastMsg = convo.messages.sort((a, b) => b.created_at - a.created_at)[0];
+        const unread = lastMsg && !lastMsg.isSent && isConvoUnread(pk, lastMsg.created_at);
+        return (
+          <div key={pk} className={`note-card clickable${unread ? " note-unread" : ""}`} onClick={() => { markConvoRead(pk); setHash("messages/" + npubEncode(pk)); }}>
+            <div className="note-header">
+              <div className="note-avatar">
+                {picture ? (
+                  <img src={picture} alt="" style={{ width: 32, height: 32, borderRadius: 2, objectFit: "cover" }} />
+                ) : (
+                  <div className="avatar-placeholder">{name.charAt(0).toUpperCase()}</div>
+                )}
+              </div>
+              <div className="note-meta">
+                <span className="note-author">{name}{unread && <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", marginLeft: 6, verticalAlign: "middle" }} />}</span>
+                <span className="note-time">{formatTime(lastMsg.created_at)}</span>
+              </div>
+            </div>
+            <div className="note-content" style={{ color: unread ? "var(--text)" : "var(--text-dim)", fontSize: "0.82rem", fontWeight: unread ? 600 : 400 }}>
+              {lastMsg.isSent && <span style={{ color: "var(--text-faint)" }}>You: </span>}
+              {lastMsg.content.slice(0, 100)}{lastMsg.content.length > 100 ? "..." : ""}
+            </div>
+            <div style={{ fontSize: "0.7rem", color: "var(--text-faint)", marginTop: 4 }}>
+              {convo.messages.length} message{convo.messages.length === 1 ? "" : "s"}
+            </div>
+          </div>
+        );
+      })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
 //  THREAD VIEW
 // ══════════════════════════════════════
 
-function ThreadView({ eventId, account, characters = [] }) {
+function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
   const [rootEvent, setRootEvent] = useState(null);
   const [replies, setReplies] = useState([]);
   const [profiles, setProfiles] = useState({});
@@ -1474,11 +1822,10 @@ function ThreadView({ eventId, account, characters = [] }) {
   const subRef = useRef(null);
   const profileCache = useRef({});
 
-  // Character switcher for replies
-  const activeChar = characters.find((c) => accountFromSkHex(c.skHex).pk === account?.pk);
-  const [replyAsCharId, setReplyAsCharId] = useState(activeChar?.id || characters[0]?.id || null);
-  const replyChar = characters.find((c) => c.id === replyAsCharId);
-  const replyAccount = replyChar ? accountFromSkHex(replyChar.skHex) : account;
+  // Identity switcher for replies
+  const [replyAsCharId, setReplyAsCharId] = useState(activeCharId || allIdentities[0]?.id || null);
+  const replyIdentity = allIdentities.find((c) => c.id === replyAsCharId) || allIdentities[0];
+  const replyAccount = replyIdentity ? accountFromSkHex(replyIdentity.skHex) : account;
 
   useEffect(() => {
     setLoading(true);
@@ -1517,15 +1864,15 @@ function ThreadView({ eventId, account, characters = [] }) {
   }, [rootEvent, replies]);
 
   function getName(ev) {
-    const ownChar = characters.find((c) => c.pk === ev.pubkey);
-    if (ownChar) return ownChar.name;
+    const own = allIdentities.find((c) => c.pk === ev.pubkey);
+    if (own) return own.name;
     const p = profiles[ev.pubkey];
     return p?.display_name || p?.name || shortPubkey(ev.pubkey);
   }
   function getInitial(ev) { return getName(ev).charAt(0).toUpperCase(); }
   function getAuthorImage(ev) {
-    const ownChar = characters.find((c) => c.pk === ev.pubkey);
-    if (ownChar?.profile_image) return ownChar.profile_image;
+    const own = allIdentities.find((c) => c.pk === ev.pubkey);
+    if (own?.profile_image) return own.profile_image;
     const p = profiles[ev.pubkey];
     return p?.picture || null;
   }
@@ -1595,19 +1942,18 @@ function ThreadView({ eventId, account, characters = [] }) {
         </div>
       )}
       {!loading && replies.length === 0 && rootEvent && <p className="thread-no-replies">No replies yet. Be the first!</p>}
-      {account && rootEvent && characters.length > 0 && (
+      {account && rootEvent && allIdentities.length > 0 && (
         <div className="thread-reply-compose">
           <textarea placeholder="Write a reply..." value={replyContent} onChange={(e) => setReplyContent(e.target.value)} rows={3}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleReply(); } }} />
           <div className="compose-footer">
-            <CharacterSwitcher characters={characters} selectedCharId={replyAsCharId} onSelect={setReplyAsCharId} />
+            <CharacterSwitcher characters={allIdentities} selectedCharId={replyAsCharId} onSelect={setReplyAsCharId} />
             <button className="btn-primary" disabled={posting || !replyContent.trim()} onClick={handleReply}>
               {posting ? "Replying..." : "Reply"}
             </button>
           </div>
         </div>
       )}
-      <ImageModal src={modalImage} onClose={() => setModalImage(null)} />
     </div>
   );
 }
@@ -1616,7 +1962,7 @@ function ThreadView({ eventId, account, characters = [] }) {
 //  MESSAGE VIEW
 // ══════════════════════════════════════
 
-function MessageView({ recipientPubkey, account, characters = [] }) {
+function MessageView({ recipientPubkey, account, allIdentities = [], activeCharId }) {
   const [recipientName, setRecipientName] = useState("");
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -1625,11 +1971,10 @@ function MessageView({ recipientPubkey, account, characters = [] }) {
   const subRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // Character switcher for DMs
-  const activeChar = characters.find((c) => accountFromSkHex(c.skHex).pk === account?.pk);
-  const [dmAsCharId, setDmAsCharId] = useState(activeChar?.id || characters[0]?.id || null);
-  const dmChar = characters.find((c) => c.id === dmAsCharId);
-  const dmAccount = dmChar ? accountFromSkHex(dmChar.skHex) : account;
+  // Identity switcher for DMs
+  const [dmAsCharId, setDmAsCharId] = useState(activeCharId || allIdentities[0]?.id || null);
+  const dmIdentity = allIdentities.find((c) => c.id === dmAsCharId) || allIdentities[0];
+  const dmAccount = dmIdentity ? accountFromSkHex(dmIdentity.skHex) : account;
 
   useEffect(() => {
     if (!recipientPubkey) return;
@@ -1701,8 +2046,8 @@ function MessageView({ recipientPubkey, account, characters = [] }) {
         <div ref={messagesEndRef} />
       </div>
       <div className="conversation-compose">
-        {characters.length > 1 && (
-          <CharacterSwitcher characters={characters} selectedCharId={dmAsCharId} onSelect={setDmAsCharId} />
+        {allIdentities.length > 1 && (
+          <CharacterSwitcher characters={allIdentities} selectedCharId={dmAsCharId} onSelect={setDmAsCharId} />
         )}
         <input type="text" placeholder={`Message ${recipientName}...`} value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -1721,7 +2066,7 @@ function MessageView({ recipientPubkey, account, characters = [] }) {
 
 const PI_URL = import.meta.env.VITE_PI_URL || "";
 
-function PiChat({ characters, activeCharId, adminAccount }) {
+function PiChat({ allIdentities, activeCharId, adminAccount }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
@@ -1760,13 +2105,13 @@ function PiChat({ characters, activeCharId, adminAccount }) {
     });
   }, []);
 
-  const activeChar = characters.find((c) => c.id === activeCharId);
-  const sessionId = activeChar ? activeChar.pk.slice(0, 16) : "default";
+  const activeIdentity = (allIdentities || []).find((c) => c.id === activeCharId) || allIdentities?.[0];
+  const sessionId = activeIdentity ? activeIdentity.pk.slice(0, 16) : "default";
 
   // Connect WebSocket
   useEffect(() => {
     if (!PI_URL || !adminAccount) return;
-    const pubkey = activeChar?.pk || "";
+    const pubkey = activeIdentity?.pk || "";
     const url = `${PI_URL}/ws?session=${sessionId}&pubkey=${pubkey}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -2144,7 +2489,7 @@ function PiChat({ characters, activeCharId, adminAccount }) {
                     <div className="pi-welcome-title">Pi Agent Ready</div>
                     <div className="pi-welcome-info">
                       <div><strong>Model:</strong> {piState.model?.name || piState.model?.id || "—"}</div>
-                      <div><strong>Session:</strong> {activeChar?.name || "default"}</div>
+                      <div><strong>Session:</strong> {activeIdentity?.name || "default"}</div>
                       <div><strong>Tools:</strong> read, write, edit, bash</div>
                       {piState.model?.contextWindow && (
                         <div><strong>Context:</strong> {(piState.model.contextWindow / 1000).toFixed(0)}k tokens</div>
@@ -2160,7 +2505,7 @@ function PiChat({ characters, activeCharId, adminAccount }) {
             {messages.map((msg, i) => (
               <div key={i} className={`pi-chat-msg pi-chat-${msg.role} ${msg.isError ? "pi-chat-error" : ""}`}>
                 <div className="pi-chat-msg-role">
-                  {msg.role === "user" && (activeChar?.name || "You")}
+                  {msg.role === "user" && (activeIdentity?.name || "You")}
                   {msg.role === "assistant" && "Pi Agent"}
                   {msg.role === "tool" && (
                     <span className="pi-tool-header">
@@ -2875,6 +3220,43 @@ function CopyBtn({ text, label }) {
   );
 }
 
+function NpubBadge({ npub }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+      <code className="char-npub">{npub}</code>
+      <CopyBtn text={npub} label="npub" />
+    </div>
+  );
+}
+
+function KeysSection({ npub, nsec }) {
+  const [showNsec, setShowNsec] = useState(false);
+  return (
+    <div style={{ margin: "24px 0" }}>
+      <h3>Keys</h3>
+      <div className="admin-key-row">
+        <span>npub</span>
+        <code>{npub}</code>
+        <CopyBtn text={npub} label="npub" />
+      </div>
+      <div className="admin-key-row">
+        <span>nsec</span>
+        {showNsec ? (
+          <code className="nsec-display">{nsec}</code>
+        ) : (
+          <code style={{ color: "var(--text-faint)" }}>{"*".repeat(20)}</code>
+        )}
+        <div style={{ display: "flex", gap: 2 }}>
+          <button className="btn-icon" onClick={() => setShowNsec(!showNsec)} title={showNsec ? "Hide nsec" : "Reveal nsec"}>
+            {showNsec ? <IconEyeOff /> : <IconEye />}
+          </button>
+          <CopyBtn text={nsec} label="nsec" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminKeySection({ adminAccount, isAdmin }) {
   const [showNsec, setShowNsec] = useState(false);
 
@@ -3007,49 +3389,66 @@ function AdminWhitelist({ adminAccount }) {
 }
 
 function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) {
+  const [exported, setExported] = useState(false);
+
   function handleExportKeys() {
-    const lines = characters.map((c, i) => {
+    const sections = [];
+
+    // User/admin key
+    if (adminAccount) {
+      sections.push([
+        "# Your Account Key",
+        `USER_NPUB=${adminAccount.npub}`,
+        `USER_NSEC=${adminAccount.nsec}`,
+        `USER_SKHEX=${adminAccount.skHex}`,
+        `USER_PK=${adminAccount.pk}`,
+        "",
+      ].join("\n"));
+    }
+
+    // Character keys
+    characters.forEach((c, i) => {
       const idx = i + 1;
-      return [
-        `# ${c.name}`,
+      sections.push([
+        `# Character: ${c.name}`,
         `CHARACTER_${idx}_NAME=${c.name}`,
         `CHARACTER_${idx}_NSEC=${c.nsec}`,
         `CHARACTER_${idx}_SKHEX=${c.skHex}`,
         `CHARACTER_${idx}_NPUB=${c.npub}`,
         `CHARACTER_${idx}_PK=${c.pk}`,
         "",
-      ].join("\n");
+      ].join("\n"));
     });
 
     const content = [
-      "# NPC No More — Character Keys Export",
+      "# NPC No More — Keys Export",
       `# Exported: ${new Date().toISOString()}`,
-      `# Characters: ${characters.length}`,
+      `# Account + ${characters.length} character${characters.length === 1 ? "" : "s"}`,
       "#",
-      "# WARNING: These are private keys. Anyone with access can post as your characters.",
+      "# WARNING: These are private keys. Anyone with access can post as you or your characters.",
       "# Store securely and never commit to a public repository.",
       "",
-      ...lines,
+      ...sections,
     ].join("\n");
 
     const blob = new Blob([content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "npc-no-more-keys.env";
+    a.download = `npc-no-more-keys-${new Date().toISOString().slice(0, 10)}.env`;
     a.click();
     URL.revokeObjectURL(url);
+    setExported(true);
   }
+
+  const isAdmin = !!serverAdminPubkey && serverAdminPubkey === adminAccount?.pk;
 
   return (
     <div>
       <h2 className="page-title">Settings</h2>
 
       {adminAccount && (
-        <AdminKeySection
-          adminAccount={adminAccount}
-          isAdmin={!!serverAdminPubkey && serverAdminPubkey === adminAccount.pk}
-        />
+        <AdminKeySection adminAccount={adminAccount} isAdmin={isAdmin} />
       )}
 
       <div className="edit-section" style={{ marginTop: 20 }}>
@@ -3064,7 +3463,7 @@ function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) 
               <span>Status</span>
               <RelayStatus url={OWN_RELAY} />
             </div>
-            {serverAdminPubkey && serverAdminPubkey !== adminAccount?.pk && (
+            {serverAdminPubkey && !isAdmin && (
               <div style={{ marginTop: 8 }}>
                 <div className="admin-key-row">
                   <span>Admin</span>
@@ -3082,8 +3481,7 @@ function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) 
               </div>
             )}
             <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 12 }}>
-              This is the private relay for NPC No More characters. All posts are published here first.
-              The &quot;Our Relay&quot; feed in the Posts tab shows only events from this relay.
+              Private relay for NPC No More. All posts are published here first.
             </p>
           </div>
         ) : (
@@ -3091,48 +3489,32 @@ function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) 
             No private relay configured. Using public relays only.
           </p>
         )}
-        <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
-            Public Relays
-          </div>
-          {PUBLIC_RELAYS.map((r) => (
-            <div key={r} className="admin-key-row">
-              <code style={{ fontSize: "0.72rem" }}>{r}</code>
-            </div>
-          ))}
-        </div>
       </div>
 
       <div className="edit-section" style={{ marginTop: 20 }}>
         <h3>Export Keys</h3>
         <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 16 }}>
-          Download all character private keys as a .env file. Store this securely — anyone with these keys can post as your characters.
+          Download your account key and all character private keys. Store securely — anyone with these keys can post as you.
         </p>
-        <button className="btn-primary" onClick={handleExportKeys} disabled={characters.length === 0}>
-          Export {characters.length} {characters.length === 1 ? "key" : "keys"} as .env
+        <button className="btn-primary" onClick={handleExportKeys}>
+          Export all keys as .env
         </button>
-      </div>
-
-      <div className="edit-section" style={{ marginTop: 20 }}>
-        <h3>Characters</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {characters.map((c) => (
-            <div key={c.id} className="admin-key-row">
-              <span style={{ fontFamily: "var(--font-display)", fontSize: "0.95rem", color: "var(--cream)" }}>{c.name}</span>
-              <code>{c.npub.slice(0, 20)}...{c.npub.slice(-8)}</code>
-            </div>
-          ))}
-        </div>
+        {exported && <p className="success" style={{ marginTop: 8 }}>Keys exported.</p>}
       </div>
 
       <div className="edit-section" style={{ marginTop: 20, borderLeftColor: "var(--danger-dim)" }}>
         <h3>Danger Zone</h3>
         <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 16 }}>
-          Delete all characters and data. This cannot be undone. Export your keys first.
+          Delete all characters, your account key, and local data. This cannot be undone.
         </p>
-        <button className="btn-small btn-reset" onClick={onReset}>
+        <button className="btn-small btn-reset" onClick={onReset} disabled={!exported}>
           Delete all data
         </button>
+        {!exported && (
+          <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 8 }}>
+            Export your keys first before deleting.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -3151,9 +3533,22 @@ export default function App() {
   const [route, setRoute] = useState("home");
   const [routeKey, setRouteKey] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [unreadPks, setUnreadPks] = useState(new Set());
 
+  const ADMIN_ID = "__admin__";
+  const adminAsIdentity = adminAccount ? {
+    id: ADMIN_ID,
+    name: adminAccount.profile_name || "You",
+    profile_image: adminAccount.profile_image || "",
+    pk: adminAccount.pk,
+    npub: adminAccount.npub,
+    skHex: adminAccount.skHex,
+    isAdminIdentity: true,
+  } : null;
+  const allIdentities = [...(adminAsIdentity ? [adminAsIdentity] : []), ...characters];
+  const activeIdentity = allIdentities.find((c) => c.id === activeCharId) || adminAsIdentity;
   const activeChar = characters.find((c) => c.id === activeCharId) || null;
-  const activeAccount = activeChar ? accountFromSkHex(activeChar.skHex) : adminAccount;
+  const activeAccount = activeIdentity ? accountFromSkHex(activeIdentity.skHex) : null;
 
   useEffect(() => {
     // Load admin account
@@ -3175,11 +3570,11 @@ export default function App() {
     const chars = loadCharacters();
     setCharacters(chars);
     const savedId = loadActiveCharId();
-    if (savedId && chars.find((c) => c.id === savedId)) {
+    if (savedId === "__admin__" || (savedId && chars.find((c) => c.id === savedId))) {
       setActiveCharId(savedId);
-    } else if (chars.length > 0) {
-      setActiveCharId(chars[0].id);
-      saveActiveCharId(chars[0].id);
+    } else {
+      setActiveCharId("__admin__");
+      saveActiveCharId("__admin__");
     }
     setLoading(false);
   }, []);
@@ -3195,6 +3590,54 @@ export default function App() {
     window.addEventListener("hashchange", applyHash);
     return () => window.removeEventListener("hashchange", applyHash);
   }, []);
+
+  // ── Unread DM tracking ──
+  const dmSubRef = useRef(null);
+
+  function getDmLastSeen(pk) {
+    try { return parseInt(localStorage.getItem(`npc_dm_seen_${pk}`) || "0", 10); } catch { return 0; }
+  }
+  function setDmLastSeen(pk) {
+    localStorage.setItem(`npc_dm_seen_${pk}`, String(Math.floor(Date.now() / 1000)));
+    setUnreadPks((prev) => { const next = new Set(prev); next.delete(pk); return next; });
+  }
+
+  useEffect(() => {
+    if (allIdentities.length === 0) return;
+    if (dmSubRef.current) dmSubRef.current.close();
+
+    const pks = allIdentities.map((c) => c.pk);
+    // Subscribe to kind:4 DMs sent TO any of our identities, since the latest last-seen
+    const minSince = Math.min(...pks.map(getDmLastSeen)) || (Math.floor(Date.now() / 1000) - 86400);
+
+    dmSubRef.current = getPool().subscribeMany(
+      DEFAULT_RELAYS,
+      { kinds: [4], "#p": pks, since: minSince },
+      {
+        onevent: (ev) => {
+          // Find which of our identities this DM is for
+          const recipientTag = ev.tags.find((t) => t[0] === "p");
+          const recipientPk = recipientTag?.[1];
+          if (!recipientPk || !pks.includes(recipientPk)) return;
+          // If the sender is one of our own identities, skip
+          if (pks.includes(ev.pubkey)) return;
+          const lastSeen = getDmLastSeen(recipientPk);
+          if (ev.created_at > lastSeen) {
+            setUnreadPks((prev) => new Set([...prev, recipientPk]));
+          }
+        },
+        oneose: () => {},
+      }
+    );
+    return () => { if (dmSubRef.current) dmSubRef.current.close(); };
+  }, [allIdentities.map((c) => c.pk).join(",")]);
+
+  // Mark DMs as read when opening Messages tab
+  useEffect(() => {
+    if (route === "messages" && activeIdentity) {
+      setDmLastSeen(activeIdentity.pk);
+    }
+  }, [route, activeIdentity?.pk]);
 
   function switchCharacter(id) {
     setActiveCharId(id);
@@ -3257,7 +3700,7 @@ export default function App() {
 
   function renderMain() {
     if (route === "pi") {
-      return <PiChat characters={characters} activeCharId={activeCharId} adminAccount={adminAccount} />;
+      return <PiChat allIdentities={allIdentities} activeCharId={activeCharId} adminAccount={adminAccount} />;
     }
     if (route === "network") {
       return <NetworkPage characters={characters} activeAccount={activeAccount} />;
@@ -3268,45 +3711,51 @@ export default function App() {
     if (route === "profile" && routeKey) {
       // Admin/user viewing their own profile
       if (adminAccount && routeKey === adminAccount.pk) {
-        return <OwnProfilePage adminAccount={adminAccount} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} />;
+        return <OwnProfilePage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} allIdentities={allIdentities} activeCharId={activeCharId} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} onDmRead={setDmLastSeen} />;
       }
       const ownedChar = characters.find((c) => c.pk === routeKey) || null;
       if (ownedChar) {
         return (
-          <OwnedCharacterPage adminAccount={adminAccount}
+          <OwnedCharacterPage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey}
             key={ownedChar.id}
             character={ownedChar}
             account={accountFromSkHex(ownedChar.skHex)}
             characters={characters}
+            allIdentities={allIdentities}
+            activeCharId={activeCharId}
             onUpdateChar={handleUpdateCharacter}
             onDeleteChar={handleDeleteCharacter}
+            onDmRead={setDmLastSeen}
           />
         );
       }
       return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} serverAdminPubkey={serverAdminPubkey} />;
     }
     if (route === "thread" && routeKey) {
-      return <ThreadView eventId={routeKey} account={activeAccount} characters={characters} />;
+      return <ThreadView eventId={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} />;
     }
     if (route === "messages" && routeKey) {
-      return <MessageView recipientPubkey={routeKey} account={activeAccount} characters={characters} />;
+      return <MessageView recipientPubkey={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} />;
     }
     // Home route: show active character's page
+    // Home route: show page for active identity
     if (activeChar) {
       return (
-        <OwnedCharacterPage adminAccount={adminAccount}
+        <OwnedCharacterPage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey}
           key={activeChar.id}
           character={activeChar}
           account={activeAccount}
           characters={characters}
+          allIdentities={allIdentities}
+          activeCharId={activeCharId}
           onUpdateChar={handleUpdateCharacter}
           onDeleteChar={handleDeleteCharacter}
+          onDmRead={setDmLastSeen}
         />
       );
     }
-    // No characters yet — show own profile as home
     if (adminAccount) {
-      return <OwnProfilePage adminAccount={adminAccount} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} />;
+      return <OwnProfilePage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} allIdentities={allIdentities} activeCharId={activeCharId} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} />;
     }
     return <div className="loading">Create a character to get started.</div>;
   }
@@ -3314,27 +3763,29 @@ export default function App() {
   return (
     <div className="app-layout">
       <Sidebar
-        characters={characters}
+        allIdentities={allIdentities}
         activeCharId={activeCharId}
-        currentPubkey={currentProfilePk}
-        adminAccount={adminAccount}
         serverAdminPubkey={serverAdminPubkey}
+        adminPk={adminAccount?.pk}
+        onSelectIdentity={switchCharacter}
+        unreadPks={unreadPks}
       />
 
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
       <div className={`sidebar-mobile ${sidebarOpen ? "open" : ""}`}>
         <Sidebar
-          characters={characters}
+          allIdentities={allIdentities}
           activeCharId={activeCharId}
-          currentPubkey={currentProfilePk}
-          adminAccount={adminAccount}
           serverAdminPubkey={serverAdminPubkey}
+          adminPk={adminAccount?.pk}
+          onSelectIdentity={switchCharacter}
+          unreadPks={unreadPks}
         />
       </div>
 
       <div className="main-content">
         <MobileHeader
-          activeChar={activeChar}
+          activeChar={activeIdentity}
           sidebarOpen={sidebarOpen}
           setSidebarOpen={setSidebarOpen}
         />
