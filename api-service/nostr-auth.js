@@ -9,7 +9,7 @@ import { verifyEvent } from "nostr-tools/pure";
 import { writeFileSync, readFileSync, existsSync } from "fs";
 
 const MAX_AGE_SECONDS = 120;
-const AUTH_FILE = process.env.AUTH_FILE || "/tmp/auth.json";
+const AUTH_FILE = process.env.AUTH_FILE || "/data/images/auth.json";
 
 // State: admin pubkey + whitelist
 let authState = { admin: "", whitelist: [] };
