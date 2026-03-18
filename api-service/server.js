@@ -168,12 +168,13 @@ app.post("/admin/whitelist", protectEndpoint, async (req, res) => {
 });
 
 // Register a character pubkey on the relay (any authenticated user)
-app.post("/register-pubkey", protectEndpoint, async (req, res) => {
+// Register a pubkey on the relay whitelist (public — allows any new identity to post)
+app.post("/register-pubkey", async (req, res) => {
   const { pubkey, label } = req.body;
   if (!pubkey || typeof pubkey !== "string" || pubkey.length !== 64) {
     return res.status(400).json({ error: "invalid pubkey (64 hex chars)" });
   }
-  await addToRelayWhitelist(pubkey, label || "character");
+  await addToRelayWhitelist(pubkey, label || "identity");
   res.json({ ok: true });
 });
 

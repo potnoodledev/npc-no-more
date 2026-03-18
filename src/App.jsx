@@ -102,9 +102,9 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, onSe
                 (c.name || "U").charAt(0).toUpperCase()
               )}
             </span>
-            <span className="sidebar-char-name">
-              {c.name}
-              {c.isAdminIdentity && <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 6 }}>{isAdmin ? "ADMIN" : "USER"}</span>}
+            <span className="sidebar-char-name" style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+              <span>{c.name}</span>
+              {c.isAdminIdentity && <span style={{ fontSize: "0.55rem", color: "var(--accent)" }}>{isAdmin ? "ADMIN" : "USER"}</span>}
             </span>
           </button>
         ))}
@@ -249,6 +249,17 @@ function UserSetup({ serverAdminPubkey, onComplete }) {
             const data = await res.json().catch(() => ({}));
             throw new Error(data.error || "Failed to claim admin");
           }
+        }
+      }
+      // Register pubkey on relay (for non-admin users, claim-admin already handles it for admin)
+      if (hasAdmin) {
+        const apiUrl = import.meta.env.VITE_API_URL || "";
+        if (apiUrl) {
+          await fetch(`${apiUrl}/register-pubkey`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pubkey: account.pk, label: "user" }),
+          }).catch(() => {});
         }
       }
       account.profile_name = name;
