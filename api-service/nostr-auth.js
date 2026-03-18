@@ -11,12 +11,15 @@ import { writeFileSync, readFileSync, existsSync } from "fs";
 const MAX_AGE_SECONDS = 120;
 const AUTH_FILE = process.env.AUTH_FILE || "/tmp/auth.json";
 
-// State: admin pubkey + whitelist
-let authState = { admin: "", whitelist: [] };
+// State: admin pubkey + whitelist + invite keys
+let authState = { admin: "", whitelist: [], inviteKeys: [] };
 
 // Load persisted state
 if (existsSync(AUTH_FILE)) {
-  try { authState = JSON.parse(readFileSync(AUTH_FILE, "utf-8")); } catch {}
+  try {
+    const loaded = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
+    authState = { admin: "", whitelist: [], inviteKeys: [], ...loaded };
+  } catch {}
 }
 if (process.env.ADMIN_PUBKEY && !authState.admin) {
   authState.admin = process.env.ADMIN_PUBKEY;
@@ -85,8 +88,46 @@ export function claimAdmin(pubkey) {
   return true;
 }
 
+// ── Invite Keys ──
+
+export function createInviteKey(maxUses = 1) {
+  const key = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  const invite = { key, maxUses, uses: 0, createdAt: Math.floor(Date.now() / 1000) };
+  authState.inviteKeys.push(invite);
+  saveState();
+  console.log(`[auth] Invite key created: ${key} (max ${maxUses} uses)`);
+  return invite;
+}
+
+export function getInviteKeys() {
+  return authState.inviteKeys || [];
+}
+
+export function deleteInviteKey(key) {
+  authState.inviteKeys = (authState.inviteKeys || []).filter((k) => k.key !== key);
+  saveState();
+}
+
+export function redeemInviteKey(key, pubkey) {
+  const invite = (authState.inviteKeys || []).find((k) => k.key === key);
+  if (!invite) return { ok: false, error: "invalid invite key" };
+  if (invite.uses >= invite.maxUses) return { ok: false, error: "invite key has been used up" };
+  // Don't double-count same pubkey
+  if (!invite.redeemedBy) invite.redeemedBy = [];
+  if (invite.redeemedBy.includes(pubkey)) return { ok: true, alreadyRedeemed: true };
+  invite.uses++;
+  invite.redeemedBy.push(pubkey);
+  // Auto-whitelist the pubkey
+  if (!authState.whitelist.includes(pubkey)) {
+    authState.whitelist.push(pubkey);
+  }
+  saveState();
+  console.log(`[auth] Invite key redeemed by ${pubkey.slice(0, 16)}... (${invite.uses}/${invite.maxUses})`);
+  return { ok: true };
+}
+
 export function resetAuth() {
-  authState = { admin: "", whitelist: [] };
+  authState = { admin: "", whitelist: [], inviteKeys: [] };
   saveState();
   console.log("[auth] Auth state reset");
 }

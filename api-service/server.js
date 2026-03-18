@@ -10,7 +10,7 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
-import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist, resetAuth } from "./nostr-auth.js";
+import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist, resetAuth, createInviteKey, getInviteKeys, deleteInviteKey, redeemInviteKey } from "./nostr-auth.js";
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
@@ -169,6 +169,38 @@ app.post("/admin/whitelist", protectEndpoint, async (req, res) => {
 
 // Register a character pubkey on the relay (any authenticated user)
 // Register a pubkey on the relay whitelist (public — allows any new identity to post)
+// ── Invite Keys ──
+
+app.post("/admin/invite-keys", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  const { maxUses } = req.body || {};
+  const invite = createInviteKey(maxUses || 1);
+  res.json(invite);
+});
+
+app.get("/admin/invite-keys", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  res.json({ inviteKeys: getInviteKeys() });
+});
+
+app.delete("/admin/invite-keys/:key", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  deleteInviteKey(req.params.key);
+  res.json({ ok: true, inviteKeys: getInviteKeys() });
+});
+
+// Public: redeem an invite key (auto-whitelists the pubkey)
+app.post("/redeem-invite", async (req, res) => {
+  const { key, pubkey } = req.body;
+  if (!key || !pubkey || pubkey.length !== 64) {
+    return res.status(400).json({ error: "key and pubkey required" });
+  }
+  const result = redeemInviteKey(key, pubkey);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  await addToRelayWhitelist(pubkey, "invited");
+  res.json({ ok: true });
+});
+
 app.post("/register-pubkey", async (req, res) => {
   const { pubkey, label } = req.body;
   if (!pubkey || typeof pubkey !== "string" || pubkey.length !== 64) {

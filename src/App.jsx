@@ -49,6 +49,7 @@ function parseHash() {
   if (!hash) return { route: "home" };
   const parts = hash.split("/");
   if (parts[0] === "characters" && parts[1] === "new") return { route: "new-character" };
+  if (parts[0] === "invite" && parts[1]) return { route: "invite", key: parts[1] };
   if (parts[0] === "network") return { route: "network" };
   if (parts[0] === "pi") return { route: "pi" };
   if (parts[0] === "settings") return { route: "settings" };
@@ -160,7 +161,7 @@ function MobileHeader({ activeChar, sidebarOpen, setSidebarOpen }) {
 //  USER / ADMIN SETUP
 // ══════════════════════════════════════
 
-function UserSetup({ serverAdminPubkey, onComplete }) {
+function UserSetup({ serverAdminPubkey, onComplete, inviteKey }) {
   // Create keypair in memory only — persisted on save
   const [account] = useState(() => createAccount());
   const [name, setName] = useState("");
@@ -176,7 +177,9 @@ function UserSetup({ serverAdminPubkey, onComplete }) {
   const [avatarModal, setAvatarModal] = useState(null);
 
   const hasAdmin = !!serverAdminPubkey;
+  const hasInvite = !!inviteKey;
   const canUseNim = isNimAvailable();
+  const aiDisabled = hasAdmin && !hasInvite;
 
   async function handleRollDice() {
     setRolling(true);
@@ -251,15 +254,26 @@ function UserSetup({ serverAdminPubkey, onComplete }) {
           }
         }
       }
-      // Register pubkey on relay (for non-admin users, claim-admin already handles it for admin)
+      // Register pubkey on relay + redeem invite if present
       if (hasAdmin) {
         const apiUrl = import.meta.env.VITE_API_URL || "";
         if (apiUrl) {
           await fetch(`${apiUrl}/register-pubkey`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pubkey: account.pk, label: "user" }),
+            body: JSON.stringify({ pubkey: account.pk, label: hasInvite ? "invited" : "user" }),
           }).catch(() => {});
+          if (hasInvite) {
+            const redeemRes = await fetch(`${apiUrl}/redeem-invite`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ key: inviteKey, pubkey: account.pk }),
+            });
+            if (!redeemRes.ok) {
+              const data = await redeemRes.json().catch(() => ({}));
+              console.warn("[invite] Redemption failed:", data.error);
+            }
+          }
         }
       }
       account.profile_name = name;
@@ -284,23 +298,30 @@ function UserSetup({ serverAdminPubkey, onComplete }) {
       <div className="setup-card">
         <h1>NPC No More</h1>
         <p className="setup-tagline">
-          {hasAdmin ? "Welcome — set up your profile" : "First-time setup — create your profile"}
+          {!hasAdmin ? "First-time setup — create your profile" : hasInvite ? "You're invited — set up your profile" : "Welcome — set up your profile"}
         </p>
         <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 12 }}>
-          {hasAdmin
-            ? "Create your profile so other users and the admin can identify you. Your Nostr keypair will be generated when you save."
-            : "This is you — not a character. Your Nostr keypair and admin privileges are created when you save."
+          {!hasAdmin
+            ? "This is you — not a character. Your Nostr keypair and admin privileges are created when you save."
+            : hasInvite
+            ? "You've been invited! Set up your profile and start creating characters with AI."
+            : "Create your profile so other users and the admin can identify you. Your Nostr keypair will be generated when you save."
           }
         </p>
 
         {canUseNim && (
           <div className="dice-roll-section">
-            {hasAdmin && (
+            {aiDisabled && (
               <p style={{ color: "var(--neon)", fontSize: "0.78rem", marginBottom: 8 }}>
                 AI features are disabled until the admin whitelists your key.
               </p>
             )}
-            <button className={`btn-dice${rolling ? " loading" : ""}`} onClick={handleRollDice} disabled={rolling || hasAdmin}>
+            {hasInvite && (
+              <p style={{ color: "var(--accent)", fontSize: "0.78rem", marginBottom: 8 }}>
+                You have an invite key — AI features are enabled!
+              </p>
+            )}
+            <button className={`btn-dice${rolling ? " loading" : ""}`} onClick={handleRollDice} disabled={rolling || aiDisabled}>
               {rolling ? "Generating..." : "Generate Profile with AI"}
             </button>
             {rolling && rolledModel && (
@@ -334,7 +355,7 @@ function UserSetup({ serverAdminPubkey, onComplete }) {
             <span className="avatar-gen-label">Profile Picture</span>
             <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
               {canUseNim && (
-                <button className="btn-small" onClick={handleGenerateAvatar} disabled={generatingAvatar || !name.trim() || hasAdmin} title={!name.trim() ? "Enter a display name first" : ""}>
+                <button className="btn-small" onClick={handleGenerateAvatar} disabled={generatingAvatar || !name.trim() || aiDisabled} title={!name.trim() ? "Enter a display name first" : ""}>
                   {generatingAvatar ? "Generating..." : "Generate"}
                 </button>
               )}
@@ -3447,6 +3468,78 @@ function AdminKeySection({ adminAccount, isAdmin }) {
         </div>
       </div>
       {isAdmin && <AdminWhitelist adminAccount={adminAccount} />}
+      {isAdmin && <InviteKeyManager adminAccount={adminAccount} />}
+    </div>
+  );
+}
+
+function InviteKeyManager({ adminAccount }) {
+  const [keys, setKeys] = useState([]);
+  const [maxUses, setMaxUses] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState("");
+
+  const apiUrl = import.meta.env.VITE_API_URL || "";
+  const siteUrl = window.location.origin + window.location.pathname;
+
+  useEffect(() => {
+    if (!apiUrl || !adminAccount) return;
+    const url = `${apiUrl}/admin/invite-keys`;
+    getAuthHeaders(url, "GET", adminAccount).then((headers) => {
+      fetch(url, { headers }).then((r) => r.json()).then((data) => {
+        setKeys(data.inviteKeys || []);
+        setLoading(false);
+      }).catch(() => setLoading(false));
+    });
+  }, [adminAccount]);
+
+  async function handleCreate() {
+    const url = `${apiUrl}/admin/invite-keys`;
+    const headers = await getAuthHeaders(url, "POST", adminAccount);
+    headers["Content-Type"] = "application/json";
+    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ maxUses }) });
+    const invite = await res.json();
+    setKeys((prev) => [...prev, invite]);
+  }
+
+  async function handleDelete(key) {
+    const url = `${apiUrl}/admin/invite-keys/${key}`;
+    const headers = await getAuthHeaders(url, "DELETE", adminAccount);
+    await fetch(url, { method: "DELETE", headers });
+    setKeys((prev) => prev.filter((k) => k.key !== key));
+  }
+
+  function copyLink(key) {
+    navigator.clipboard.writeText(`${siteUrl}#/invite/${key}`);
+    setCopied(key);
+    setTimeout(() => setCopied(""), 1500);
+  }
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: 8 }}>
+        Invite Keys
+      </div>
+      {loading && <div style={{ color: "var(--text-faint)", fontSize: "0.78rem" }}>Loading...</div>}
+      {!loading && keys.length === 0 && (
+        <div style={{ color: "var(--text-faint)", fontSize: "0.78rem", marginBottom: 8 }}>No invite keys. Create one to invite users with AI access.</div>
+      )}
+      {keys.map((k) => (
+        <div key={k.key} className="admin-key-row" style={{ marginBottom: 4 }}>
+          <code style={{ fontSize: "0.62rem", flex: 1 }}>{k.key}</code>
+          <span style={{ fontSize: "0.68rem", color: "var(--text-faint)" }}>{k.uses}/{k.maxUses}</span>
+          <button className="btn-icon" onClick={() => copyLink(k.key)} title="Copy invite link">
+            {copied === k.key ? <IconCheck /> : <IconCopy />}
+          </button>
+          <button className="btn-small btn-reset" onClick={() => handleDelete(k.key)} style={{ padding: "2px 8px", fontSize: "0.65rem" }}>Delete</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+        <label style={{ fontSize: "0.72rem", color: "var(--text-dim)" }}>
+          Max uses: <input type="number" min="1" max="100" value={maxUses} onChange={(e) => setMaxUses(parseInt(e.target.value) || 1)} style={{ width: 50, padding: "4px 6px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", fontSize: "0.72rem", textAlign: "center" }} />
+        </label>
+        <button className="btn-small" onClick={handleCreate}>Create Invite Key</button>
+      </div>
     </div>
   );
 }
@@ -3842,9 +3935,11 @@ export default function App() {
   if (loading) return null;
 
   // Key setup — first time visiting the site
+  const pendingInviteKey = route === "invite" ? routeKey : null;
   if (!adminAccount) {
-    return <UserSetup serverAdminPubkey={serverAdminPubkey} onComplete={(acc) => {
+    return <UserSetup serverAdminPubkey={serverAdminPubkey} inviteKey={pendingInviteKey} onComplete={(acc) => {
       setAdminAccount(acc);
+      if (pendingInviteKey) setHash(""); // Clear invite URL after setup
       // Re-fetch admin state so sidebar shows correct ADMIN/USER badge
       const apiUrl = import.meta.env.VITE_API_URL || "";
       if (apiUrl) {
