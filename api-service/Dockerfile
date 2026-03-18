@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --production
 COPY server.js nostr-auth.js ./
+COPY config/ ./config/
 RUN mkdir -p /data/images
 ENV PORT=3456
 ENV DATA_DIR=/data/images

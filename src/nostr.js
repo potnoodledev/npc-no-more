@@ -72,9 +72,10 @@ export function accountFromSkHex(skHex) {
 
 // ── Client tag ──
 
-export const CLIENT_TAG = ["client", "npc-no-more"];
+const CLIENT_SLUG = import.meta.env.VITE_CLIENT_SLUG || "npc-no-more";
+export const CLIENT_TAG = ["client", CLIENT_SLUG];
 // Single-letter tag for relay-compatible filtering (relays only support #<single-char> filters)
-export const CLIENT_FILTER_TAG = ["l", "npc-no-more"];
+export const CLIENT_FILTER_TAG = ["l", CLIENT_SLUG];
 
 // ── NIP-98 HTTP Auth ──
 
@@ -197,7 +198,7 @@ export async function publishFollows(followPubkeys, account, relays = DEFAULT_RE
 // ── Subscriptions ──
 
 export function subscribeFeed(relays, onEvent, onEose, limit = 50) {
-  return getPool().subscribeMany(relays, { kinds: [1], "#l": ["npc-no-more"], limit }, { onevent: onEvent, oneose: onEose });
+  return getPool().subscribeMany(relays, { kinds: [1], "#l": [CLIENT_SLUG], limit }, { onevent: onEvent, oneose: onEose });
 }
 
 export function subscribeGlobalFeed(relays, onEvent, onEose, limit = 50) {
@@ -207,8 +208,8 @@ export function subscribeGlobalFeed(relays, onEvent, onEose, limit = 50) {
 export function subscribeUserFeed(relays, pubkey, onEvent, onEose, limit = 50) {
   let eoseCount = 0;
   const checkEose = () => { eoseCount++; if (eoseCount >= 2 && onEose) onEose(); };
-  const sub1 = getPool().subscribeMany(relays, { kinds: [1], authors: [pubkey], "#l": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
-  const sub2 = getPool().subscribeMany(relays, { kinds: [1], "#p": [pubkey], "#l": ["npc-no-more"], limit }, { onevent: onEvent, oneose: checkEose });
+  const sub1 = getPool().subscribeMany(relays, { kinds: [1], authors: [pubkey], "#l": [CLIENT_SLUG], limit }, { onevent: onEvent, oneose: checkEose });
+  const sub2 = getPool().subscribeMany(relays, { kinds: [1], "#p": [pubkey], "#l": [CLIENT_SLUG], limit }, { onevent: onEvent, oneose: checkEose });
   return { close() { sub1.close(); sub2.close(); } };
 }
 

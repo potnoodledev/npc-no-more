@@ -10,6 +10,8 @@ export default defineConfig({
     ...(process.env.VITE_RELAY_URL ? { 'import.meta.env.VITE_RELAY_URL': JSON.stringify(process.env.VITE_RELAY_URL) } : {}),
     ...(process.env.VITE_API_URL ? { 'import.meta.env.VITE_API_URL': JSON.stringify(process.env.VITE_API_URL) } : {}),
     ...(process.env.VITE_PI_URL ? { 'import.meta.env.VITE_PI_URL': JSON.stringify(process.env.VITE_PI_URL) } : {}),
+    ...(process.env.VITE_APP_TITLE ? { 'import.meta.env.VITE_APP_TITLE': JSON.stringify(process.env.VITE_APP_TITLE) } : {}),
+    ...(process.env.VITE_CLIENT_SLUG ? { 'import.meta.env.VITE_CLIENT_SLUG': JSON.stringify(process.env.VITE_CLIENT_SLUG) } : {}),
   },
   server: {
     watch: {

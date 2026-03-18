@@ -38,8 +38,10 @@ jobs:
           VITE_RELAY_URL: ${{ vars.RELAY_URL }}
           VITE_API_URL: ${{ vars.API_URL }}
           VITE_PI_URL: ${{ vars.PI_URL }}
+          VITE_APP_TITLE: ${{ vars.APP_TITLE }}
+          VITE_CLIENT_SLUG: ${{ vars.CLIENT_SLUG }}
         run: |
-          echo "Building with relay: $VITE_RELAY_URL api: $VITE_API_URL pi: $VITE_PI_URL"
+          echo "Building with relay: $VITE_RELAY_URL api: $VITE_API_URL pi: $VITE_PI_URL title: $VITE_APP_TITLE"
           npm run build
 
       - uses: actions/configure-pages@v4

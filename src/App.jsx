@@ -40,6 +40,8 @@ import {
 import { npubEncode, decode as nip19decode } from "nostr-tools/nip19";
 import "./App.css";
 
+const APP_TITLE = import.meta.env.VITE_APP_TITLE || "NPC No More";
+
 // ══════════════════════════════════════
 //  HASH ROUTER
 // ══════════════════════════════════════
@@ -201,7 +203,7 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, onSe
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <h1 className="sidebar-title clickable" onClick={() => setHash("")}>NPC No More</h1>
+        <h1 className="sidebar-title clickable" onClick={() => setHash("")}>{APP_TITLE}</h1>
       </div>
 
       <div className="sidebar-section-label">Identities</div>
@@ -260,7 +262,7 @@ function MobileHeader({ activeChar, sidebarOpen, setSidebarOpen }) {
       <button className="mobile-menu-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>
         &#9776;
       </button>
-      <h1 className="clickable" onClick={() => setHash("")}>NPC No More</h1>
+      <h1 className="clickable" onClick={() => setHash("")}>{APP_TITLE}</h1>
       {activeChar && (
         <span className="mobile-active-char" onClick={() => setHash("profile/" + activeChar.npub)}>
           {activeChar.profile_image ? (
@@ -427,7 +429,7 @@ function UserSetup({ serverAdminPubkey, onComplete, invitePk }) {
   return (
     <div className="setup-wizard">
       <div className="setup-card">
-        <h1>NPC No More</h1>
+        <h1>{APP_TITLE}</h1>
         <p className="setup-tagline">
           {!hasAdmin ? "First-time setup — create your profile" : hasInvite ? "You're invited — set up your profile" : "Welcome — set up your profile"}
         </p>
@@ -644,7 +646,7 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
   return (
     <div className="setup-wizard">
       <div className="setup-card">
-        <h1>NPC No More</h1>
+        <h1>{APP_TITLE}</h1>
         <p className="setup-tagline">Create a new character</p>
 
         <div className="auth-tabs">
@@ -3945,7 +3947,7 @@ function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) 
     });
 
     const content = [
-      "# NPC No More — Keys Export",
+      `# ${APP_TITLE} — Keys Export`,
       `# Exported: ${new Date().toISOString()}`,
       `# Account + ${characters.length} character${characters.length === 1 ? "" : "s"}`,
       "#",
@@ -4005,7 +4007,7 @@ function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) 
               </div>
             )}
             <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 12 }}>
-              Private relay for NPC No More. All posts are published here first.
+              Private relay for {APP_TITLE}. All posts are published here first.
             </p>
           </div>
         ) : (

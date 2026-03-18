@@ -1,7 +1,12 @@
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(cors());
@@ -15,6 +20,28 @@ import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
+
+// ── Character Generation Config ──
+function loadCharacterGenConfig() {
+  const defaultConfig = {
+    systemPrompt: 'You generate short character profiles for a social fiction platform. Be creative and unexpected — mix genres and tropes in surprising ways.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  "name": "A unique name or alias",\n  "personality": "1-2 sentences: who they are, what makes them interesting."\n}',
+    userPrompt: "Generate a random character. Be bold and weird.",
+    hints: { enabled: true, values: ["sound, music, or frequencies", "food, cooking, or taste", "between dimensions or timelines", "a rogue bureaucrat", "underwater or oceanic", "maps, routes, or navigation", "dreams or sleep", "a game within a game", "living buildings", "trading impossible things"] },
+  };
+  // 1. Env var override (for Railway) — JSON string
+  if (process.env.CHARACTER_GEN_CONFIG) {
+    try { return { ...defaultConfig, ...JSON.parse(process.env.CHARACTER_GEN_CONFIG) }; }
+    catch (e) { console.error("Failed to parse CHARACTER_GEN_CONFIG env var:", e.message); }
+  }
+  // 2. Config file
+  const configPath = path.join(__dirname, "config", "character-gen.json");
+  if (fs.existsSync(configPath)) {
+    try { return { ...defaultConfig, ...JSON.parse(fs.readFileSync(configPath, "utf-8")) }; }
+    catch (e) { console.error("Failed to parse character-gen.json:", e.message); }
+  }
+  return defaultConfig;
+}
+const charGenConfig = loadCharacterGenConfig();
 
 // ── Rate Limiting ──
 const rateLimits = new Map(); // ip -> { count, resetAt }
@@ -241,23 +268,13 @@ app.post("/nim/generate", protectEndpoint, async (req, res) => {
 
   const model = NIM_MODELS[Math.floor(Math.random() * NIM_MODELS.length)];
 
-  const systemPrompt = `You generate short character profiles for a social fiction platform. Be creative and unexpected — mix genres and tropes in surprising ways.
+  const systemPrompt = charGenConfig.systemPrompt;
 
-Respond ONLY with valid JSON (no markdown, no code fences):
-{
-  "name": "A unique name or alias",
-  "personality": "1-2 sentences: who they are, what makes them interesting."
-}`;
-
-  const hints = [
-    "sound, music, or frequencies", "food, cooking, or taste",
-    "between dimensions or timelines", "a rogue bureaucrat",
-    "underwater or oceanic", "maps, routes, or navigation",
-    "dreams or sleep", "a game within a game",
-    "living buildings", "trading impossible things",
-  ];
-
-  const userPrompt = `Generate a random character. Be bold and weird. Hint: ${hints[Math.floor(Math.random() * hints.length)]}`;
+  let userPrompt = charGenConfig.userPrompt;
+  if (charGenConfig.hints?.enabled && charGenConfig.hints.values?.length) {
+    const hint = charGenConfig.hints.values[Math.floor(Math.random() * charGenConfig.hints.values.length)];
+    userPrompt += ` Hint: ${hint}`;
+  }
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
