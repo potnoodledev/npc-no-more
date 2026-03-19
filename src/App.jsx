@@ -100,8 +100,9 @@ function ModelBadge({ model }) {
 // ══════════════════════════════════════
 
 const STRUDEL_URL_RE = /https?:\/\/(?:strudel\.cc|localhost:\d+)\/#\S+/g;
+const DANCE_URL_RE = /https?:\/\/pub-f5ae3b0da5d447b4b4f6a8cd2270c415\.r2\.dev\/cat-viewer\/\S+/g;
 const NOSTR_MENTION_RE = /nostr:npub1[a-z0-9]{58}/g;
-const RICH_CONTENT_RE = /(?:https?:\/\/(?:strudel\.cc|localhost:\d+)\/#\S+|nostr:npub1[a-z0-9]{58})/g;
+const RICH_CONTENT_RE = /(?:https?:\/\/(?:strudel\.cc|localhost:\d+)\/#\S+|https?:\/\/pub-f5ae3b0da5d447b4b4f6a8cd2270c415\.r2\.dev\/cat-viewer\/\S+|nostr:npub1[a-z0-9]{58})/g;
 
 function renderNoteContent(content) {
   if (!content || typeof content !== "string") return content;
@@ -116,6 +117,8 @@ function renderNoteContent(content) {
     const token = match[0];
     if (token.startsWith("nostr:npub1")) {
       parts.push({ type: "mention", npub: token.slice(6) });
+    } else if (token.includes("r2.dev/cat-viewer")) {
+      parts.push({ type: "dance", url: token });
     } else {
       parts.push({ type: "strudel", url: token });
     }
@@ -128,6 +131,7 @@ function renderNoteContent(content) {
   return parts.map((part, i) => {
     if (typeof part === "string") return <span key={i}>{part}</span>;
     if (part.type === "mention") return <NostrMention key={i} npub={part.npub} />;
+    if (part.type === "dance") return <DanceCard key={i} url={part.url} />;
     return <StrudelCard key={i} url={part.url} />;
   });
 }
@@ -192,20 +196,40 @@ function buildKnownProfiles(identities, relayProfiles) {
 function StrudelCard({ url }) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <div className="strudel-card">
+    <div className="strudel-card clickable" onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
       <div className="strudel-card-header">
         <span className="strudel-card-icon">&#9835;</span>
         <span className="strudel-card-label">Strudel Pattern</span>
-        <a href={url} target="_blank" rel="noopener noreferrer" className="strudel-card-open" onClick={(e) => e.stopPropagation()}>
-          Open in Strudel
-        </a>
-        <button className="strudel-card-toggle" onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
-          {expanded ? "Hide" : "Play"}
-        </button>
+        <span className="strudel-card-toggle">{expanded ? "Hide" : "Play"}</span>
       </div>
       {expanded && (
-        <div className="strudel-embed">
+        <div className="strudel-embed" onClick={(e) => e.stopPropagation()}>
           <iframe src={url} title="Strudel pattern" sandbox="allow-scripts allow-same-origin" />
+          <div className="strudel-embed-footer">
+            <a href={url} target="_blank" rel="noopener noreferrer" className="strudel-card-open" onClick={(e) => e.stopPropagation()}>
+              Open in Strudel
+            </a>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DanceCard({ url }) {
+  const [expanded, setExpanded] = useState(false);
+  const animMatch = url.match(/animation=([^&]+)/);
+  const anim = animMatch?.[1]?.replace(/Cat_|_Dance|_/g, (m) => m === "_" ? " " : "").trim() || "Dance";
+  return (
+    <div className="dance-card clickable" onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
+      <div className="dance-card-header">
+        <span className="dance-card-icon">🐱</span>
+        <span className="dance-card-label">{anim}</span>
+        <span className="dance-card-toggle">{expanded ? "Hide" : "Watch"}</span>
+      </div>
+      {expanded && (
+        <div className="dance-embed" onClick={(e) => e.stopPropagation()}>
+          <iframe src={url} title="Dancing cat" allow="autoplay" />
         </div>
       )}
     </div>
@@ -216,7 +240,7 @@ function StrudelCard({ url }) {
 //  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
-function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, onSelectIdentity, unreadPks }) {
+function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUserWhitelisted, onSelectIdentity, unreadPks }) {
   const isAdmin = !!serverAdminPubkey && serverAdminPubkey === adminPk;
   return (
     <aside className="sidebar">
@@ -253,10 +277,12 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, onSe
       </div>
 
       <div className="sidebar-footer">
-        <button className="sidebar-item" onClick={() => setHash("pi")}>
-          <span className="sidebar-icon">&#9000;</span>
-          <span>Pi Agent</span>
-        </button>
+        {isUserWhitelisted && (
+          <button className="sidebar-item" onClick={() => setHash("pi")}>
+            <span className="sidebar-icon">&#9000;</span>
+            <span>Superclaw</span>
+          </button>
+        )}
         <button className="sidebar-item" onClick={() => setHash("network")}>
           <span className="sidebar-icon">&#9673;</span>
           <span>Network</span>
@@ -849,7 +875,7 @@ function CharacterSwitcher({ characters, selectedCharId, onSelect }) {
 //  OWNED CHARACTER PAGE (tabs: Posts / Profile)
 // ══════════════════════════════════════
 
-function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, onDmRead }) {
+function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead }) {
   const [tab, setTab] = useState("posts"); // "posts" | "profile"
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
@@ -858,8 +884,6 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
   const [composeAsCharId, setComposeAsCharId] = useState(activeCharId || character.id);
   const composeIdentity = (allIdentities || characters).find((c) => c.id === composeAsCharId) || character;
   const composeAccount = composeIdentity ? accountFromSkHex(composeIdentity.skHex) : account;
-  const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === adminAccount?.pk;
-
   async function handleGeneratePost() {
     if (!composeIdentity) return;
     setGenerating(true);
@@ -875,7 +899,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
       if (result.model?.name) setPostModel(result.model.name);
     } catch (e) {
       const msg = e?.message || "";
-      if (!isWhitelisted && (msg.includes("401") || msg.includes("unauthorized"))) {
+      if (msg.includes("401") || msg.includes("unauthorized")) {
         setPostContent("Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features.");
       }
     }
@@ -1184,11 +1208,11 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                   value={postModel}
                   onChange={(e) => setPostModel(e.target.value)}
                 />
-                <span title={!isWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a post in this character's voice"}>
+                <span title={!isUserWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a post in this character's voice"}>
                   <button
                     className="btn-generate-post"
                     onClick={handleGeneratePost}
-                    disabled={generating || !isWhitelisted}
+                    disabled={generating || !isUserWhitelisted}
                   >
                     {generating ? "Generating..." : "✦ Generate"}
                   </button>
@@ -1394,7 +1418,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
 //  OWN PROFILE PAGE (admin/user account)
 // ══════════════════════════════════════
 
-function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, activeCharId, onUpdateProfile, onDmRead }) {
+function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, allIdentities, activeCharId, onUpdateProfile, onDmRead }) {
   const account = adminAccount;
   const [tab, setTab] = useState("posts");
   const [postContent, setPostContent] = useState("");
@@ -1404,7 +1428,6 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
   const [composeAsId, setComposeAsId] = useState(activeCharId || "__admin__");
   const composeIdentity = (allIdentities || []).find((c) => c.id === composeAsId) || { skHex: account.skHex, name: account.profile_name || "You" };
   const composeAccount = accountFromSkHex(composeIdentity.skHex);
-  const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === account?.pk;
 
   async function handleGeneratePost() {
     setGenerating(true);
@@ -1421,7 +1444,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
       if (result.model?.name) setPostModel(result.model.name);
     } catch (e) {
       const msg = e?.message || "";
-      if (!isWhitelisted && (msg.includes("401") || msg.includes("unauthorized"))) {
+      if (msg.includes("401") || msg.includes("unauthorized")) {
         setPostContent("Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features.");
       }
     }
@@ -1658,11 +1681,11 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
                   value={postModel}
                   onChange={(e) => setPostModel(e.target.value)}
                 />
-                <span title={!isWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a post in this character's voice"}>
+                <span title={!isUserWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a post in this character's voice"}>
                   <button
                     className="btn-generate-post"
                     onClick={handleGeneratePost}
-                    disabled={generating || !isWhitelisted}
+                    disabled={generating || !isUserWhitelisted}
                   >
                     {generating ? "Generating..." : "✦ Generate"}
                   </button>
@@ -2091,7 +2114,7 @@ function DmInbox({ account, allIdentities = [], onRead }) {
 //  THREAD VIEW
 // ══════════════════════════════════════
 
-function ThreadView({ eventId, account, allIdentities = [], activeCharId, adminAccount, serverAdminPubkey }) {
+function ThreadView({ eventId, account, allIdentities = [], activeCharId, adminAccount, serverAdminPubkey, isUserWhitelisted }) {
   const [rootEvent, setRootEvent] = useState(null);
   const [replies, setReplies] = useState([]);
   const [profiles, setProfiles] = useState({});
@@ -2107,7 +2130,6 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId, adminA
   const [replyAsCharId, setReplyAsCharId] = useState(activeCharId || allIdentities[0]?.id || null);
   const replyIdentity = allIdentities.find((c) => c.id === replyAsCharId) || allIdentities[0];
   const replyAccount = replyIdentity ? accountFromSkHex(replyIdentity.skHex) : account;
-  const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === (adminAccount || account)?.pk;
 
   async function handleGenerateReply() {
     if (!replyIdentity || !rootEvent) return;
@@ -2264,11 +2286,11 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId, adminA
               value={replyModel}
               onChange={(e) => setReplyModel(e.target.value)}
             />
-            <span title={!isWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a reply in this character's voice"}>
+            <span title={!isUserWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a reply in this character's voice"}>
               <button
                 className="btn-generate-post"
                 onClick={handleGenerateReply}
-                disabled={generating || !isWhitelisted}
+                disabled={generating || !isUserWhitelisted}
               >
                 {generating ? "Generating..." : "✦ Generate"}
               </button>
@@ -2394,7 +2416,7 @@ function MessageView({ recipientPubkey, account, allIdentities = [], activeCharI
 }
 
 // ══════════════════════════════════════
-//  PI AGENT CHAT
+//  SUPERCLAW CHAT
 // ══════════════════════════════════════
 
 const PI_URL = import.meta.env.VITE_PI_URL || "";
@@ -2883,11 +2905,11 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
 
   return (
     <div>
-      <h2 className="page-title">Pi Agent</h2>
+      <h2 className="page-title">Superclaw</h2>
 
       {!PI_URL && (
         <div className="loading">
-          Pi Agent not configured. Set <code>VITE_PI_URL</code> in your .env file.
+          Superclaw not configured. Set <code>VITE_PI_URL</code> in your .env file.
         </div>
       )}
 
@@ -2896,7 +2918,7 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
           <div className="pi-chat-messages">
             {messages.length === 0 && (
               <div className="pi-welcome">
-                {!connected && !connError && <div className="loading">Connecting to Pi Agent...</div>}
+                {!connected && !connError && <div className="loading">Connecting to Superclaw...</div>}
                 {!connected && connError && (
                   <div className="loading" style={{ color: "var(--neon)" }}>
                     {connError}
@@ -2904,7 +2926,7 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
                 )}
                 {connected && piState && (
                   <>
-                    <div className="pi-welcome-title">Pi Agent Ready</div>
+                    <div className="pi-welcome-title">Superclaw Ready</div>
                     <div className="pi-welcome-info">
                       <div><strong>Model:</strong> {piState.model?.name || piState.model?.id || "—"}</div>
                       <div><strong>Session:</strong> {activeIdentity?.name || "default"}</div>
@@ -2913,7 +2935,12 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
                         <div><strong>Context:</strong> {(piState.model.contextWindow / 1000).toFixed(0)}k tokens</div>
                       )}
                       {piState.model?.reasoning && <div><strong>Reasoning:</strong> enabled</div>}
-                      <div><strong>Skills:</strong> {installedSkills.length > 0 ? installedSkills.map(s => s.name).join(", ") : "none"} <span style={{ opacity: 0.5 }}>(manage via + in status bar)</span></div>
+                      <div><strong>Skills:</strong> {installedSkills.length > 0 ? installedSkills.map(s => s.default ? `${s.name} (default)` : s.name).join(", ") : "none"}</div>
+                      <div style={{ fontSize: "0.75rem", opacity: 0.6, marginTop: 4, lineHeight: 1.8 }}>
+                        📮 <em>"post about..."</em> — publish to the relay<br />
+                        🎵 <em>"make a strudel pattern"</em> — create live-coded music<br />
+                        🐱 <em>"dance!"</em> — post a 3D dancing cat (macarena, hiphop, salsa)
+                      </div>
                     </div>
                     <div className="pi-welcome-hint">Type a message or press / for commands</div>
                   </>
@@ -2925,7 +2952,7 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
               <div key={i} className={`pi-chat-msg pi-chat-${msg.role} ${msg.isError ? "pi-chat-error" : ""}`}>
                 <div className="pi-chat-msg-role">
                   {msg.role === "user" && (activeIdentity?.name || "You")}
-                  {msg.role === "assistant" && "Pi Agent"}
+                  {msg.role === "assistant" && "Superclaw"}
                   {msg.role === "tool" && (
                     <span className="pi-tool-header">
                       <span className="pi-tool-icon">{msg.tool === "bash" ? "$" : msg.tool === "read" ? "R" : msg.tool === "write" ? "W" : msg.tool === "edit" ? "E" : "T"}</span>
@@ -2999,8 +3026,13 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
               <span className="pi-status-tag">reasoning</span>
             )}
             {compacting && <span className="pi-status-tag" style={{ borderColor: "var(--danger)" }}>compacting</span>}
-            {installedSkills.map((s) => (
-              <span key={s.name} className="pi-skill-badge" title={s.description}>{s.name}</span>
+            {installedSkills.filter((s) => s.default).map((s) => (
+              <span key={s.name} className="pi-skill-badge pi-skill-default" title={
+                s.name === "post" ? 'Say "post about..." to publish to the relay' :
+                s.name === "strudel" ? 'Say "make a strudel pattern" to create music' :
+                s.name === "dance" ? 'Say "dance!" to post a 3D dancing cat' :
+                s.description
+              }>{s.name === "post" ? "📮 post" : s.name === "strudel" ? "🎵 strudel" : s.name === "dance" ? "🐱 dance" : s.name}</span>
             ))}
             <span className="pi-status-skills-wrap">
               <button className="pi-skill-manage-btn" onClick={() => setShowSkills(!showSkills)}>
@@ -3008,19 +3040,34 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
               </button>
               {showSkills && (
                 <div className="pi-skill-panel pi-skill-panel-popover">
-                  <div className="pi-skill-panel-title">Installed</div>
-                  {installedSkills.length === 0 && <div style={{ opacity: 0.5, fontSize: "0.85rem" }}>No skills installed</div>}
-                  {installedSkills.map((s) => (
+                  <div className="pi-skill-panel-title">Default Skills</div>
+                  {installedSkills.filter((s) => s.default).map((s) => (
                     <div key={s.name} className="pi-skill-item">
-                      <span className="pi-skill-badge">{s.name}</span>
-                      <span className="pi-skill-desc">{s.description}</span>
-                      <button
-                        className="pi-skill-remove-btn"
-                        onClick={() => removeSkill(s.name)}
-                        disabled={skillLoading === s.name}
-                      >{skillLoading === s.name ? "..." : "×"}</button>
+                      <span className="pi-skill-badge pi-skill-default">{s.name === "post" ? "📮 post" : s.name === "strudel" ? "🎵 strudel" : s.name === "dance" ? "🐱 dance" : s.name}</span>
+                      <span className="pi-skill-desc">{
+                        s.name === "post" ? 'Say "post about..." to publish to the relay' :
+                        s.name === "strudel" ? 'Say "make a strudel pattern" to create music' :
+                        s.name === "dance" ? 'Say "dance!" to post a 3D dancing cat' :
+                        s.description
+                      }</span>
                     </div>
                   ))}
+                  {installedSkills.filter((s) => !s.default).length > 0 && (
+                    <>
+                      <div className="pi-skill-panel-title" style={{ marginTop: "0.5rem" }}>Installed</div>
+                      {installedSkills.filter((s) => !s.default).map((s) => (
+                        <div key={s.name} className="pi-skill-item">
+                          <span className="pi-skill-badge">{s.name}</span>
+                          <span className="pi-skill-desc">{s.description}</span>
+                          <button
+                            className="pi-skill-remove-btn"
+                            onClick={() => removeSkill(s.name)}
+                            disabled={skillLoading === s.name}
+                          >{skillLoading === s.name ? "..." : "×"}</button>
+                        </div>
+                      ))}
+                    </>
+                  )}
                   {skillTemplates.filter((t) => !installedSkills.find((s) => s.name === t.name)).length > 0 && (
                     <>
                       <div className="pi-skill-panel-title" style={{ marginTop: "0.5rem" }}>Available</div>
@@ -4211,6 +4258,7 @@ export default function App() {
   const [activeCharId, setActiveCharId] = useState(null);
   const [adminAccount, setAdminAccount] = useState(null);
   const [serverAdminPubkey, setServerAdminPubkey] = useState(null);
+  const [isUserWhitelisted, setIsUserWhitelisted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [route, setRoute] = useState("home");
   const [routeKey, setRouteKey] = useState(null);
@@ -4260,6 +4308,21 @@ export default function App() {
     }
     setLoading(false);
   }, []);
+
+  // Check if current user is whitelisted (admin or on the whitelist)
+  useEffect(() => {
+    if (!adminAccount) { setIsUserWhitelisted(false); return; }
+    if (!serverAdminPubkey) { setIsUserWhitelisted(true); return; } // No admin = open
+    if (serverAdminPubkey === adminAccount.pk) { setIsUserWhitelisted(true); return; } // Is admin
+    // Check via API
+    const apiUrl = import.meta.env.VITE_API_URL || "";
+    if (!apiUrl) return;
+    getAuthHeaders(`${apiUrl}/auth/check`, "GET", adminAccount).then((headers) => {
+      fetch(`${apiUrl}/auth/check`, { headers }).then((r) => {
+        setIsUserWhitelisted(r.ok);
+      }).catch(() => setIsUserWhitelisted(false));
+    });
+  }, [adminAccount, serverAdminPubkey]);
 
   useEffect(() => {
     function applyHash() {
@@ -4404,12 +4467,12 @@ export default function App() {
     if (route === "profile" && routeKey) {
       // Admin/user viewing their own profile
       if (adminAccount && routeKey === adminAccount.pk) {
-        return <OwnProfilePage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} allIdentities={allIdentities} activeCharId={activeCharId} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} onDmRead={setDmLastSeen} />;
+        return <OwnProfilePage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} isUserWhitelisted={isUserWhitelisted} allIdentities={allIdentities} activeCharId={activeCharId} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} onDmRead={setDmLastSeen} />;
       }
       const ownedChar = characters.find((c) => c.pk === routeKey) || null;
       if (ownedChar) {
         return (
-          <OwnedCharacterPage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey}
+          <OwnedCharacterPage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} isUserWhitelisted={isUserWhitelisted}
             key={ownedChar.id}
             character={ownedChar}
             account={accountFromSkHex(ownedChar.skHex)}
@@ -4425,7 +4488,7 @@ export default function App() {
       return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} serverAdminPubkey={serverAdminPubkey} allIdentities={allIdentities} />;
     }
     if (route === "thread" && routeKey) {
-      return <ThreadView eventId={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} />;
+      return <ThreadView eventId={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} isUserWhitelisted={isUserWhitelisted} />;
     }
     if (route === "messages" && routeKey) {
       return <MessageView recipientPubkey={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} />;
@@ -4448,7 +4511,7 @@ export default function App() {
       );
     }
     if (adminAccount) {
-      return <OwnProfilePage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} allIdentities={allIdentities} activeCharId={activeCharId} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} />;
+      return <OwnProfilePage adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} isUserWhitelisted={isUserWhitelisted} allIdentities={allIdentities} activeCharId={activeCharId} onUpdateProfile={(acc) => setAdminAccount({ ...acc })} />;
     }
     return <div className="loading">Create a character to get started.</div>;
   }
@@ -4460,6 +4523,7 @@ export default function App() {
         activeCharId={activeCharId}
         serverAdminPubkey={serverAdminPubkey}
         adminPk={adminAccount?.pk}
+        isUserWhitelisted={isUserWhitelisted}
         onSelectIdentity={switchCharacter}
         unreadPks={unreadPks}
       />

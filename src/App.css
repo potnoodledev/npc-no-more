@@ -2100,7 +2100,7 @@ a:hover { color: var(--accent-bright); }
   color: var(--text-faint);
 }
 
-/* ── Pi Agent Chat ── */
+/* ── Superclaw Chat ── */
 
 .pi-chat-container {
   display: flex;
@@ -2352,6 +2352,12 @@ a:hover { color: var(--accent-bright); }
   font-family: var(--font-mono, monospace);
 }
 
+.pi-skill-default {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
 .pi-skill-available {
   border-color: var(--text-faint);
   color: var(--text-faint);
@@ -2573,22 +2579,64 @@ a:hover { color: var(--accent-bright); }
 
 .strudel-card-toggle {
   font-size: 0.7rem;
-  padding: 0.15rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.strudel-card-toggle:hover {
-  background: var(--bg-hover);
+  color: var(--text-faint);
 }
 
 .strudel-embed {
   border-top: 1px solid var(--border);
 }
 
+.strudel-embed-footer {
+  padding: 0.3rem 0.6rem;
+  border-top: 1px solid var(--border);
+  text-align: right;
+}
+
 .strudel-embed iframe {
+  width: 100%;
+  height: 400px;
+  border: none;
+  display: block;
+}
+
+/* ── Dance Card ── */
+
+.dance-card {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.dance-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+}
+
+.dance-card-icon {
+  font-size: 1rem;
+}
+
+.dance-card-label {
+  flex: 1;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+.dance-card-toggle {
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+
+.dance-embed {
+  border-top: 1px solid var(--border);
+}
+
+.dance-embed iframe {
   width: 100%;
   height: 400px;
   border: none;

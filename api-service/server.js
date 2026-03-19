@@ -190,6 +190,13 @@ app.post("/claim-admin", async (req, res) => {
   res.json({ ok: true, adminPubkey: auth.pubkey });
 });
 
+// Auth check — returns 200 if user is admin or whitelisted (no rate limit)
+app.get("/auth/check", (req, res) => {
+  const auth = verifyNostrAuth(req.headers.authorization);
+  if (!auth) return res.status(401).json({ error: "unauthorized" });
+  res.json({ ok: true, pubkey: auth.pubkey, isAdmin: auth.isAdmin });
+});
+
 // Admin-only: whitelist management (requires auth via protectEndpoint pattern)
 // Auth check endpoint — no rate limit (used by pi-bridge for delegation)
 app.get("/admin/auth", (req, res, next) => {

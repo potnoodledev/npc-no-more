@@ -13,3 +13,6 @@
 [submodule "references/strudel"]
 	path = references/strudel
 	url = https://codeberg.org/uzu/strudel.git
+[submodule "references/catacombs"]
+	path = references/catacombs
+	url = https://github.com/urtimus-prime/catacombs

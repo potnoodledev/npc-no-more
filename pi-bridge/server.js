@@ -38,7 +38,7 @@ const API_URL = process.env.API_URL || "http://localhost:3456";
 async function verifyViaApi(authHeaderValue) {
   if (!authHeaderValue) return null;
   try {
-    const res = await fetch(`${API_URL}/admin/auth`, {
+    const res = await fetch(`${API_URL}/auth/check`, {
       headers: { authorization: authHeaderValue },
     });
     if (!res.ok) {
@@ -49,11 +49,7 @@ async function verifyViaApi(authHeaderValue) {
       return null;
     }
     const data = await res.json();
-    // api-service returns { admin, whitelist } — if we got 200, the pubkey is authorized
-    // Extract pubkey from the auth event
-    const base64 = authHeaderValue.slice(6);
-    const event = JSON.parse(atob(base64));
-    return { pubkey: event.pubkey, isAdmin: event.pubkey === data.admin };
+    return { pubkey: data.pubkey, isAdmin: data.isAdmin };
   } catch (err) {
     console.log(`[auth] Delegation error: ${err.message}`);
     return null;
@@ -158,11 +154,20 @@ function getCharDir(pubkeyHex) {
 }
 
 const SKILL_TEMPLATES_DIR = join(__dirname, "skill-templates");
+const DEFAULT_SKILLS = ["post", "strudel", "dance"];
 
 function ensureCharWorkspace(pubkeyHex) {
   const charDir = getCharDir(pubkeyHex);
   mkdirSync(join(charDir, ".pi", "skills"), { recursive: true });
   mkdirSync(join(charDir, ".pi", "prompts"), { recursive: true });
+
+  // Auto-install default skills
+  for (const skill of DEFAULT_SKILLS) {
+    const destDir = join(charDir, ".pi", "skills", skill);
+    if (!existsSync(destDir)) {
+      installSkillFromTemplate(charDir, skill);
+    }
+  }
 
   // Always write identity file so post.sh can find the pubkey
   writeFileSync(join(charDir, ".pi", "identity"), pubkeyHex, "utf-8");
@@ -214,7 +219,7 @@ function getInstalledSkills(charDir) {
       if (existsSync(configPath)) {
         try { config = JSON.parse(readFileSync(configPath, "utf-8")); } catch {}
       }
-      return { name: d.name, description, config };
+      return { name: d.name, description, config, default: DEFAULT_SKILLS.includes(d.name) };
     });
 }
 
@@ -484,8 +489,11 @@ app.get("/characters/:pubkey/skills/:skillName", (req, res) => {
   res.json(result);
 });
 
-// Delete a skill
+// Delete a skill (not allowed for default skills)
 app.delete("/characters/:pubkey/skills/:skillName", (req, res) => {
+  if (DEFAULT_SKILLS.includes(req.params.skillName)) {
+    return res.status(400).json({ error: `"${req.params.skillName}" is a default skill and cannot be removed` });
+  }
   const charDir = getCharDir(req.params.pubkey);
   const skillDir = join(charDir, ".pi", "skills", req.params.skillName);
 
