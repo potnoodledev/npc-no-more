@@ -386,8 +386,7 @@ app.get("/sessions", (req, res) => {
 
 // Character workspace info
 app.get("/characters/:pubkey/workspace", (req, res) => {
-  const charDir = getCharDir(req.params.pubkey);
-  if (!existsSync(charDir)) return res.json({ exists: false });
+  const charDir = ensureCharWorkspace(req.params.pubkey);
 
   const skillsDir = join(charDir, ".pi", "skills");
   const promptsDir = join(charDir, ".pi", "prompts");
