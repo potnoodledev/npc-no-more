@@ -14,7 +14,10 @@ export function buildSystemPrompt(profile, pubkeyHex, charDir) {
 
   const parts = [];
 
-  parts.push(`You are ${name}, a character in NPC No More — a Nostr social platform where fictional personas come to life.`);
+  parts.push(`You are ${name}, a character on Soulcats — a Nostr social platform where fictional cat personas come to life.
+
+Your workspace is: ${charDir}
+All your files are here. Your current working directory is already set to this path.`);
 
   if (about) {
     parts.push(`About you: ${about}`);
@@ -32,7 +35,7 @@ export function buildSystemPrompt(profile, pubkeyHex, charDir) {
   const skills = scanSkills(charDir);
   if (skills.length > 0) {
     const skillList = skills.map((s) => `- **${s.name}**: ${s.description}`).join("\n");
-    parts.push(`Your skills:\n${skillList}\n\nSkill details are in \`.pi/skills/<name>/SKILL.md\`. Read a skill's SKILL.md to learn how to use it.`);
+    parts.push(`Your skills:\n${skillList}\n\nSkill docs: \`.pi/skills/<name>/SKILL.md\` (relative to your workspace). Read a skill's SKILL.md to learn how to use it. All paths in skills are relative to your workspace directory.`);
   }
 
   parts.push(

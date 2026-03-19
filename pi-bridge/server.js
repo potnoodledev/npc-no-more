@@ -10,6 +10,15 @@ import { fileURLToPath } from "url";
 import { homedir } from "os";
 import { fetchProfile, closePool } from "./profile.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure";
+import { SimplePool } from "nostr-tools/pool";
+import WebSocket from "ws";
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  return bytes;
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +62,8 @@ async function verifyViaApi(authHeaderValue) {
 
 app.use(async (req, res, next) => {
   if (req.path === "/health") return next();
+  // Internal endpoints — only accessible from within the container (agent bash)
+  if (req.path.startsWith("/internal/")) return next();
   const auth = await verifyViaApi(req.headers.authorization);
   if (!auth) {
     return res.status(401).json({ error: "unauthorized — valid Nostr signature required" });
@@ -71,8 +82,17 @@ function setupPiConfig() {
   const modelsPath = join(piDir, "models.json");
   const nimModelsRaw = JSON.parse(readFileSync(join(__dirname, "nim-models.json"), "utf-8"));
 
+  // Curated list of large models for the coding agent
+  const PI_AGENT_MODELS = new Set([
+    "deepseek-ai/deepseek-v3.2",
+    "moonshotai/kimi-k2.5",
+    "qwen/qwen3-coder-480b-a35b-instruct",
+    "mistralai/devstral-2-123b-instruct-2512",
+    "mistralai/mistral-large-3-675b-instruct-2512",
+  ]);
+
   const nimModelsAll = nimModelsRaw
-    .filter((m) => m.nim_tool_calling)
+    .filter((m) => m.nim_tool_calling && PI_AGENT_MODELS.has(m.id))
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((m) => {
       const parts = m.id.split("/");
@@ -104,13 +124,20 @@ function setupPiConfig() {
   });
 
   const modelsForPi = nimModels.map(({ _totalParams, _activeParams, _arch, ...rest }) => rest);
+  // Put Kimi K2.5 first so it's the default
+  const sortedModels = [...modelsForPi].sort((a, b) => {
+    if (a.id === "moonshotai/kimi-k2.5") return -1;
+    if (b.id === "moonshotai/kimi-k2.5") return 1;
+    return 0;
+  });
+
   const modelsConfig = {
     providers: {
       "nvidia-nim": {
         baseUrl: "https://integrate.api.nvidia.com/v1",
         apiKey: NVIDIA_NIM_API_KEY,
         api: "openai-completions",
-        models: modelsForPi,
+        models: sortedModels,
       },
     },
   };
@@ -137,6 +164,9 @@ function ensureCharWorkspace(pubkeyHex) {
   mkdirSync(join(charDir, ".pi", "skills"), { recursive: true });
   mkdirSync(join(charDir, ".pi", "prompts"), { recursive: true });
 
+  // Always write identity file so post.sh can find the pubkey
+  writeFileSync(join(charDir, ".pi", "identity"), pubkeyHex, "utf-8");
+
   // Create default CLAUDE.md if it doesn't exist (write-once)
   const claudePath = join(charDir, ".pi", "CLAUDE.md");
   if (!existsSync(claudePath)) {
@@ -147,6 +177,7 @@ This is your personal workspace. The pi agent can read and write files here.
 ## Notes
 - Your skills are in .pi/skills/
 - Your prompt templates are in .pi/prompts/
+- Your pubkey is in .pi/identity
 - This file is yours to edit — it won't be overwritten.
 `);
   }
@@ -236,6 +267,7 @@ class PiRpcProcess {
     }
 
     this.process = spawn(PI_BIN, args, {
+      cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
@@ -487,6 +519,60 @@ app.get("/characters/:pubkey/audio/*", (req, res) => {
   const mimeTypes = { wav: "audio/wav", mp3: "audio/mpeg", ogg: "audio/ogg", flac: "audio/flac" };
   res.setHeader("Content-Type", mimeTypes[ext] || "application/octet-stream");
   createReadStream(filePath).pipe(res);
+});
+
+// ── Nostr Posting (agent-initiated) ──
+
+// Store character secret key (called by frontend when connecting)
+app.post("/characters/:pubkey/register-key", (req, res) => {
+  const { skHex } = req.body;
+  if (!skHex) return res.status(400).json({ error: "skHex required" });
+  const charDir = getCharDir(req.params.pubkey);
+  mkdirSync(charDir, { recursive: true });
+  const keyPath = join(charDir, ".pi", "sk");
+  mkdirSync(join(charDir, ".pi"), { recursive: true });
+  writeFileSync(keyPath, skHex, "utf-8");
+  console.log(`[key] Registered secret key for ${req.params.pubkey.slice(0, 16)}...`);
+  res.json({ ok: true });
+});
+
+// Internal post endpoint — called by the agent's bash via post.sh
+const CLIENT_TAG = ["client", process.env.CLIENT_SLUG || "npc-no-more"];
+const CLIENT_FILTER_TAG = ["l", process.env.CLIENT_SLUG || "npc-no-more"];
+
+app.post("/internal/post", async (req, res) => {
+  const { pubkey, content, model } = req.body;
+  if (!pubkey || !content) return res.status(400).json({ error: "pubkey and content required" });
+
+  const keyPath = join(getCharDir(pubkey), ".pi", "sk");
+  if (!existsSync(keyPath)) {
+    return res.status(400).json({ error: "no secret key registered for this character — reconnect from the frontend" });
+  }
+
+  try {
+    const skHex = readFileSync(keyPath, "utf-8").trim();
+    const sk = hexToBytes(skHex);
+    const tags = [CLIENT_TAG, CLIENT_FILTER_TAG];
+    if (model) tags.push(["model", model]);
+
+    const event = finalizeEvent({
+      kind: 1,
+      created_at: Math.floor(Date.now() / 1000),
+      tags,
+      content,
+    }, sk);
+
+    // Publish to relay
+    const relayUrl = RELAY_URL.replace("ws://", "ws://").replace("wss://", "wss://");
+    const pool = new SimplePool();
+    await Promise.allSettled(pool.publish([relayUrl], event));
+
+    console.log(`[post] Published note ${event.id.slice(0, 16)}... by ${pubkey.slice(0, 16)}...`);
+    res.json({ ok: true, eventId: event.id, content: event.content });
+  } catch (err) {
+    console.error(`[post] Error:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── WebSocket Server ──

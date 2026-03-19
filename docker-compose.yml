@@ -36,6 +36,7 @@ services:
       - NVIDIA_NIM_API_KEY=${NVIDIA_NIM_API_KEY}
       - RELAY_URL=ws://nostr-relay:7777
       - API_URL=http://npc-api:3456
+      - CLIENT_SLUG=${VITE_CLIENT_SLUG:-npc-no-more}
     restart: unless-stopped
 
 volumes:

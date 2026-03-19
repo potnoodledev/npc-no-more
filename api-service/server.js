@@ -105,6 +105,7 @@ if (S3_ENDPOINT && S3_ACCESS_KEY && S3_SECRET_KEY) {
 
 
 // ── NIM Models ──
+// Full model list
 const NIM_MODELS = [
   { id: "meta/llama-3.1-70b-instruct", name: "Llama 3.1 70B", params: 70 },
   { id: "meta/llama-3.3-70b-instruct", name: "Llama 3.3 70B", params: 70 },
@@ -131,6 +132,17 @@ const NIM_MODELS = [
   { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B", params: 20 },
   { id: "z-ai/glm4.7", name: "GLM 4.7", params: 400 },
   { id: "z-ai/glm5", name: "GLM 5", params: 500 },
+  { id: "stepfun-ai/step-3.5-flash", name: "Step 3.5 Flash", params: null },
+];
+
+// Small, fast models for character creation and post generation
+const NIM_MODELS_LIGHT = [
+  { id: "meta/llama-3.1-8b-instruct", name: "Llama 3.1 8B", params: 8 },
+  { id: "qwen/qwen3-next-80b-a3b-instruct", name: "Qwen 3 Next 80B", params: 3 },
+  { id: "qwen/qwen3.5-122b-a10b", name: "Qwen 3.5 122B", params: 10 },
+  { id: "mistralai/ministral-14b-instruct-2512", name: "Ministral 14B", params: 14 },
+  { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B", params: 20 },
+  { id: "mistralai/mistral-small-3.1-24b-instruct-2503", name: "Mistral Small 3.1 24B", params: 24 },
   { id: "stepfun-ai/step-3.5-flash", name: "Step 3.5 Flash", params: null },
 ];
 
@@ -179,7 +191,14 @@ app.post("/claim-admin", async (req, res) => {
 });
 
 // Admin-only: whitelist management (requires auth via protectEndpoint pattern)
-app.get("/admin/auth", protectEndpoint, (req, res) => {
+// Auth check endpoint — no rate limit (used by pi-bridge for delegation)
+app.get("/admin/auth", (req, res, next) => {
+  const auth = verifyNostrAuth(req.headers.authorization);
+  if (!auth) return res.status(401).json({ error: "unauthorized" });
+  req.pubkey = auth.pubkey;
+  req.isAdmin = auth.isAdmin;
+  next();
+}, (req, res) => {
   if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
   res.json(getAuthState());
 });
@@ -266,7 +285,7 @@ app.get("/health", (req, res) => {
 app.post("/nim/generate", protectEndpoint, async (req, res) => {
   if (!NIM_API_KEY) return res.status(503).json({ error: "NIM API key not configured" });
 
-  const model = NIM_MODELS[Math.floor(Math.random() * NIM_MODELS.length)];
+  const model = NIM_MODELS_LIGHT[Math.floor(Math.random() * NIM_MODELS_LIGHT.length)];
 
   const systemPrompt = charGenConfig.systemPrompt;
 
@@ -275,6 +294,90 @@ app.post("/nim/generate", protectEndpoint, async (req, res) => {
     const hint = charGenConfig.hints.values[Math.floor(Math.random() * charGenConfig.hints.values.length)];
     userPrompt += ` Hint: ${hint}`;
   }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  res.write(`data: ${JSON.stringify({ type: "model", model })}\n\n`);
+
+  try {
+    const nimRes = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${NIM_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: model.id,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        max_tokens: 256,
+        temperature: 1.0,
+        top_p: 0.95,
+        stream: true,
+      }),
+    });
+
+    if (!nimRes.ok) {
+      const errBody = await nimRes.text().catch(() => "");
+      res.write(`data: ${JSON.stringify({ type: "error", error: `NIM API error ${nimRes.status}: ${errBody.slice(0, 300)}` })}\n\n`);
+      res.end();
+      return;
+    }
+
+    const reader = nimRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        const data = trimmed.slice(6);
+        if (data === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (delta) {
+            res.write(`data: ${JSON.stringify({ type: "chunk", content: delta })}\n\n`);
+          }
+        } catch {}
+      }
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+    res.end();
+  } catch (err) {
+    res.write(`data: ${JSON.stringify({ type: "error", error: err.message })}\n\n`);
+    res.end();
+  }
+});
+
+// ══════════════════════════════════════
+//  NIM: Post generation (streaming)
+// ══════════════════════════════════════
+
+app.post("/nim/generate-post", protectEndpoint, async (req, res) => {
+  if (!NIM_API_KEY) return res.status(503).json({ error: "NIM API key not configured" });
+
+  const { name, about } = req.body || {};
+  if (!name) return res.status(400).json({ error: "character name required" });
+
+  const model = NIM_MODELS_LIGHT[Math.floor(Math.random() * NIM_MODELS_LIGHT.length)];
+
+  const systemPrompt = `You are ${name}. ${about || ""}\n\nWrite a short social media post in character. Be authentic, creative, and stay true to the personality. Just write the post text — no quotes, no meta-commentary, no hashtags unless they fit the character.`;
+  const userPrompt = "Write a post about what's on your mind right now. Keep it concise — 1-3 sentences.";
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");

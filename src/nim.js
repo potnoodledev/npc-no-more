@@ -165,6 +165,74 @@ export async function generateRandomPersona(onUpdate, account) {
   };
 }
 
+/**
+ * Generate a post in the character's voice via the API service.
+ *
+ * @param {{ name: string, about?: string }} character
+ * @param {function} [onUpdate] - Called with { content, model, done }
+ * @param {object} [account] - Account for auth
+ * @returns {Promise<{ content: string, model: object }>}
+ */
+export async function generatePost(character, onUpdate, account) {
+  if (!API_URL) throw new Error("API service not configured");
+
+  const url = `${API_URL}/nim/generate-post`;
+  const headers = account ? await getAuthHeaders(url, "POST", account) : { "Content-Type": "application/json" };
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ name: character.name, about: character.about }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => "");
+    throw new Error(`API error ${response.status}: ${err.slice(0, 300)}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let accumulated = "";
+  let model = { id: "unknown", name: "Unknown" };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data: ")) continue;
+      const data = trimmed.slice(6);
+
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === "model") model = msg.model;
+        if (msg.type === "chunk") {
+          accumulated += msg.content;
+          if (onUpdate) onUpdate({ content: accumulated, model, done: false });
+        }
+        if (msg.type === "error") throw new Error(msg.error);
+      } catch (e) {
+        if (e.message && !e.message.startsWith("Unexpected")) throw e;
+      }
+    }
+  }
+
+  // Clean up — strip surrounding quotes if the LLM wrapped the post
+  let content = accumulated.trim();
+  if ((content.startsWith('"') && content.endsWith('"')) || (content.startsWith("'") && content.endsWith("'"))) {
+    content = content.slice(1, -1);
+  }
+
+  if (onUpdate) onUpdate({ content, model, done: true });
+  return { content, model };
+}
+
 /** Fun error messages */
 const ERROR_MESSAGES = [
   "That AI had stage fright. Try again!",

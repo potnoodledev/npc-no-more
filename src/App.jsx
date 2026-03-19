@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
 const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
 import { forceCollide, forceManyBody } from "d3-force-3d";
-import { isNimAvailable, generateRandomPersona, generateAvatar, uploadAvatar, getRandomErrorMessage } from "./nim";
+import { isNimAvailable, generateRandomPersona, generatePost, generateAvatar, uploadAvatar, getRandomErrorMessage } from "./nim";
 import {
   createAccount,
   accountFromNsec,
@@ -75,6 +75,24 @@ function resolvePubkey(key) {
 
 function setHash(path) {
   window.location.hash = "#/" + path;
+}
+
+// ══════════════════════════════════════
+//  MODEL BADGE
+// ══════════════════════════════════════
+
+function getEventModel(ev) {
+  const tag = ev.tags?.find((t) => t[0] === "model");
+  return tag?.[1] || null;
+}
+
+function ModelBadge({ model }) {
+  if (!model) return null;
+  return (
+    <span className="model-badge" title={`Generated with ${model}`}>
+      <span className="model-badge-icon">&#9883;</span> {model}
+    </span>
+  );
 }
 
 // ══════════════════════════════════════
@@ -835,9 +853,34 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
   const [tab, setTab] = useState("posts"); // "posts" | "profile"
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
+  const [postModel, setPostModel] = useState("");
+  const [generating, setGenerating] = useState(false);
   const [composeAsCharId, setComposeAsCharId] = useState(activeCharId || character.id);
   const composeIdentity = (allIdentities || characters).find((c) => c.id === composeAsCharId) || character;
   const composeAccount = composeIdentity ? accountFromSkHex(composeIdentity.skHex) : account;
+  const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === adminAccount?.pk;
+
+  async function handleGeneratePost() {
+    if (!composeIdentity) return;
+    setGenerating(true);
+    try {
+      const profile = feedProfiles[composeIdentity.pk];
+      const charName = profile?.display_name || profile?.name || composeIdentity.name || "Character";
+      const charAbout = profile?.about || composeIdentity.about || "";
+      const result = await generatePost({ name: charName, about: charAbout }, (update) => {
+        setPostContent(update.content);
+        if (update.model?.name) setPostModel(update.model.name);
+      }, adminAccount);
+      setPostContent(result.content);
+      if (result.model?.name) setPostModel(result.model.name);
+    } catch (e) {
+      const msg = e?.message || "";
+      if (!isWhitelisted && (msg.includes("401") || msg.includes("unauthorized"))) {
+        setPostContent("Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features.");
+      }
+    }
+    setGenerating(false);
+  }
 
   // Character's own posts
   const [myNotes, setMyNotes] = useState([]);
@@ -1004,7 +1047,9 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
     try {
       const known = buildKnownProfiles(allIdentities || characters, feedProfiles);
       const { content, pTags } = processMentions(postContent, known);
-      const signed = await publishNote(content, composeAccount, undefined, pTags);
+      const extraTags = [...pTags];
+      if (postModel) extraTags.push(["model", postModel]);
+      const signed = await publishNote(content, composeAccount, undefined, extraTags);
       setMyNotes((prev) => [signed, ...prev]);
       addFeedNote(signed);
       setPostContent("");
@@ -1132,6 +1177,22 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
               />
               <div className="compose-footer">
                 <CharacterSwitcher characters={allIdentities || characters} selectedCharId={composeAsCharId} onSelect={setComposeAsCharId} />
+                <input
+                  className="compose-model-input"
+                  type="text"
+                  placeholder="model (optional)"
+                  value={postModel}
+                  onChange={(e) => setPostModel(e.target.value)}
+                />
+                <span title={!isWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a post in this character's voice"}>
+                  <button
+                    className="btn-generate-post"
+                    onClick={handleGeneratePost}
+                    disabled={generating || !isWhitelisted}
+                  >
+                    {generating ? "Generating..." : "✦ Generate"}
+                  </button>
+                </span>
                 <button className="btn-primary" disabled={posting || !postContent.trim()} onClick={handlePost}>
                   {posting ? "Posting..." : "Post"}
                 </button>
@@ -1148,6 +1209,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
               {myNotes.map((ev) => (
                 <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
                   <div className="note-content">{renderNoteContent(ev.content)}</div>
+                  <ModelBadge model={getEventModel(ev)} />
                   <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
                 </div>
               ))}
@@ -1190,6 +1252,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                     </div>
                   </div>
                   <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{renderNoteContent(ev.content)}</div>
+                  <ModelBadge model={getEventModel(ev)} />
                   {feedReplyMap[ev.id] && (
                     <div className="note-thread-link clickable" onClick={() => setHash("thread/" + ev.id)}>
                       {feedReplyMap[ev.id].length} {feedReplyMap[ev.id].length === 1 ? "reply" : "replies"}
@@ -1336,9 +1399,34 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
   const [tab, setTab] = useState("posts");
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
+  const [postModel, setPostModel] = useState("");
+  const [generating, setGenerating] = useState(false);
   const [composeAsId, setComposeAsId] = useState(activeCharId || "__admin__");
   const composeIdentity = (allIdentities || []).find((c) => c.id === composeAsId) || { skHex: account.skHex, name: account.profile_name || "You" };
   const composeAccount = accountFromSkHex(composeIdentity.skHex);
+  const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === account?.pk;
+
+  async function handleGeneratePost() {
+    setGenerating(true);
+    try {
+      const pk = composeIdentity.pk || account.pk;
+      const profile = feedProfiles[pk];
+      const charName = profile?.display_name || profile?.name || composeIdentity.name || "Character";
+      const charAbout = profile?.about || "";
+      const result = await generatePost({ name: charName, about: charAbout }, (update) => {
+        setPostContent(update.content);
+        if (update.model?.name) setPostModel(update.model.name);
+      }, account);
+      setPostContent(result.content);
+      if (result.model?.name) setPostModel(result.model.name);
+    } catch (e) {
+      const msg = e?.message || "";
+      if (!isWhitelisted && (msg.includes("401") || msg.includes("unauthorized"))) {
+        setPostContent("Your key hasn't been whitelisted yet. Ask the admin to add your npub before using AI features.");
+      }
+    }
+    setGenerating(false);
+  }
   const [myNotes, setMyNotes] = useState([]);
   const [myLoading, setMyLoading] = useState(true);
   const mySubRef = useRef(null);
@@ -1449,7 +1537,9 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
     try {
       const known = buildKnownProfiles(allIdentities, feedProfiles);
       const { content, pTags } = processMentions(postContent, known);
-      const signed = await publishNote(content, composeAccount, undefined, pTags);
+      const extraTags = [...pTags];
+      if (postModel) extraTags.push(["model", postModel]);
+      const signed = await publishNote(content, composeAccount, undefined, extraTags);
       setMyNotes((prev) => [signed, ...prev]);
       addFeedNote(signed);
       setPostContent("");
@@ -1561,6 +1651,22 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
               />
               <div className="compose-footer">
                 <CharacterSwitcher characters={allIdentities || []} selectedCharId={composeAsId} onSelect={setComposeAsId} />
+                <input
+                  className="compose-model-input"
+                  type="text"
+                  placeholder="model (optional)"
+                  value={postModel}
+                  onChange={(e) => setPostModel(e.target.value)}
+                />
+                <span title={!isWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a post in this character's voice"}>
+                  <button
+                    className="btn-generate-post"
+                    onClick={handleGeneratePost}
+                    disabled={generating || !isWhitelisted}
+                  >
+                    {generating ? "Generating..." : "✦ Generate"}
+                  </button>
+                </span>
                 <button className="btn-primary" disabled={posting || !postContent.trim()} onClick={handlePost}>
                   {posting ? "Posting..." : "Post"}
                 </button>
@@ -1576,6 +1682,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
               {myNotes.map((ev) => (
                 <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
                   <div className="note-content">{renderNoteContent(ev.content)}</div>
+                  <ModelBadge model={getEventModel(ev)} />
                   <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
                 </div>
               ))}
@@ -1614,6 +1721,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, allIdentities, active
                     </div>
                   </div>
                   <div className="note-content clickable" onClick={() => setHash("thread/" + ev.id)}>{renderNoteContent(ev.content)}</div>
+                  <ModelBadge model={getEventModel(ev)} />
                 </div>
               ))}
             </div>
@@ -1800,6 +1908,7 @@ function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey, allIden
           {notes.map((ev) => (
             <div key={ev.id} className="note-card clickable" onClick={() => setHash("thread/" + ev.id)}>
               <div className="note-content">{renderNoteContent(ev.content)}</div>
+              <ModelBadge model={getEventModel(ev)} />
               <div className="note-time" style={{ padding: "4px 0" }}>{formatTime(ev.created_at)}</div>
             </div>
           ))}
@@ -1982,13 +2091,15 @@ function DmInbox({ account, allIdentities = [], onRead }) {
 //  THREAD VIEW
 // ══════════════════════════════════════
 
-function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
+function ThreadView({ eventId, account, allIdentities = [], activeCharId, adminAccount, serverAdminPubkey }) {
   const [rootEvent, setRootEvent] = useState(null);
   const [replies, setReplies] = useState([]);
   const [profiles, setProfiles] = useState({});
   const [loading, setLoading] = useState(true);
   const [replyContent, setReplyContent] = useState("");
+  const [replyModel, setReplyModel] = useState("");
   const [posting, setPosting] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const subRef = useRef(null);
   const profileCache = useRef({});
 
@@ -1996,6 +2107,24 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
   const [replyAsCharId, setReplyAsCharId] = useState(activeCharId || allIdentities[0]?.id || null);
   const replyIdentity = allIdentities.find((c) => c.id === replyAsCharId) || allIdentities[0];
   const replyAccount = replyIdentity ? accountFromSkHex(replyIdentity.skHex) : account;
+  const isWhitelisted = !serverAdminPubkey || serverAdminPubkey === (adminAccount || account)?.pk;
+
+  async function handleGenerateReply() {
+    if (!replyIdentity || !rootEvent) return;
+    setGenerating(true);
+    try {
+      const profile = profiles[replyIdentity.pk];
+      const charName = profile?.display_name || profile?.name || replyIdentity.name || "Character";
+      const charAbout = profile?.about || replyIdentity.about || "";
+      const result = await generatePost({ name: charName, about: charAbout }, (update) => {
+        setReplyContent(update.content);
+        if (update.model?.name) setReplyModel(update.model.name);
+      }, adminAccount || account);
+      setReplyContent(result.content);
+      if (result.model?.name) setReplyModel(result.model.name);
+    } catch {}
+    setGenerating(false);
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -2063,11 +2192,13 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
       for (const pt of pTags) {
         if (!tags.some((t) => t[0] === "p" && t[1] === pt[1])) tags.push(pt);
       }
+      if (replyModel) tags.push(["model", replyModel]);
       const signed = await publishEvent({
         kind: 1, created_at: Math.floor(Date.now() / 1000), tags, content,
       }, replyAccount);
       setReplies((prev) => [...prev, signed].sort((a, b) => a.created_at - b.created_at));
       setReplyContent("");
+      setReplyModel("");
     } catch (e) { alert("Failed to reply: " + e.message); }
     setPosting(false);
   }
@@ -2092,6 +2223,7 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
             </div>
           </div>
           <div className="note-content thread-root-content">{renderNoteContent(rootEvent.content)}</div>
+          <ModelBadge model={getEventModel(rootEvent)} />
         </div>
       )}
       {replies.length > 0 && (
@@ -2113,6 +2245,7 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
                 </div>
               </div>
               <div className="note-content">{renderNoteContent(reply.content)}</div>
+              <ModelBadge model={getEventModel(reply)} />
             </div>
           ))}
         </div>
@@ -2124,6 +2257,22 @@ function ThreadView({ eventId, account, allIdentities = [], activeCharId }) {
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleReply(); } }} />
           <div className="compose-footer">
             <CharacterSwitcher characters={allIdentities} selectedCharId={replyAsCharId} onSelect={setReplyAsCharId} />
+            <input
+              className="compose-model-input"
+              type="text"
+              placeholder="model (optional)"
+              value={replyModel}
+              onChange={(e) => setReplyModel(e.target.value)}
+            />
+            <span title={!isWhitelisted ? "Your key hasn't been whitelisted yet. Ask the admin to add your npub." : "Generate a reply in this character's voice"}>
+              <button
+                className="btn-generate-post"
+                onClick={handleGenerateReply}
+                disabled={generating || !isWhitelisted}
+              >
+                {generating ? "Generating..." : "✦ Generate"}
+              </button>
+            </span>
             <button className="btn-primary" disabled={posting || !replyContent.trim()} onClick={handleReply}>
               {posting ? "Replying..." : "Reply"}
             </button>
@@ -2314,7 +2463,7 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
     });
   }
 
-  useEffect(() => { fetchSkills(); }, [activeCharId]);
+  useEffect(() => { fetchSkills(); }, [activeCharId, adminAccount]);
 
   async function installSkill(templateName) {
     if (!PI_URL || !adminAccount || !activeIdentity) return;
@@ -2385,6 +2534,13 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
       // Send auth as first message
       const authEvent = await createAuthEvent(url, "GET", adminAccount);
       ws.send(JSON.stringify({ type: "auth", event: authEvent }));
+      // Register character's secret key so the agent can post on Nostr
+      if (activeIdentity?.skHex) {
+        const httpUrl = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
+        const regUrl = `${httpUrl}/characters/${pubkey}/register-key`;
+        const headers = await getAuthHeaders(regUrl, "POST", adminAccount);
+        fetch(regUrl, { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ skHex: activeIdentity.skHex }) }).catch(() => {});
+      }
     };
 
     ws.onmessage = (e) => {
@@ -4269,7 +4425,7 @@ export default function App() {
       return <ExternalProfileView pubkey={routeKey} activeAccount={activeAccount} serverAdminPubkey={serverAdminPubkey} allIdentities={allIdentities} />;
     }
     if (route === "thread" && routeKey) {
-      return <ThreadView eventId={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} />;
+      return <ThreadView eventId={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} />;
     }
     if (route === "messages" && routeKey) {
       return <MessageView recipientPubkey={routeKey} account={activeAccount} allIdentities={allIdentities} activeCharId={activeCharId} />;
