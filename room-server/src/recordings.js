@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const DATA_DIR = process.env.DATA_DIR || "/data/recordings";
+const DATA_DIR = process.env.DATA_DIR || "/tmp/recordings";
 const MAX_RECORDINGS = 100;
 
 // Ensure directory exists
