@@ -58,6 +58,9 @@ function parseHash() {
   if (parts[0] === "profile" && parts[1]) return { route: "profile", key: parts[1] };
   if (parts[0] === "thread" && parts[1]) return { route: "thread", key: parts[1] };
   if (parts[0] === "messages" && parts[1]) return { route: "messages", key: parts[1] };
+  if (parts[0] === "room" && parts[1]) return { route: "room", key: parts[1] };
+  if (parts[0] === "replay" && parts[1]) return { route: "replay", key: parts[1] };
+  if (parts[0] === "explore") return { route: "explore" };
   return { route: "home" };
 }
 
@@ -283,6 +286,17 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
             <span>Superclaw</span>
           </button>
         )}
+        <button className="sidebar-item" onClick={() => {
+          const active = allIdentities.find(c => c.id === activeCharId) || allIdentities[0];
+          if (active?.pk) setHash("room/" + active.pk);
+        }}>
+          <span className="sidebar-icon">&#9738;</span>
+          <span>My Room</span>
+        </button>
+        <button className="sidebar-item" onClick={() => setHash("explore")}>
+          <span className="sidebar-icon">&#9678;</span>
+          <span>Rooms</span>
+        </button>
         <button className="sidebar-item" onClick={() => setHash("network")}>
           <span className="sidebar-icon">&#9673;</span>
           <span>Network</span>
@@ -3295,6 +3309,562 @@ function PiChat({ allIdentities, activeCharId, adminAccount }) {
 }
 
 // ══════════════════════════════════════
+//  ROOMS (Colyseus)
+// ══════════════════════════════════════
+
+const ROOMS_URL = import.meta.env.VITE_ROOMS_URL || "";
+
+let _colyseusClient = null;
+function getColyseusClient() {
+  if (!_colyseusClient && ROOMS_URL) {
+    import("colyseus.js").then((mod) => {
+      _colyseusClient = new mod.Client(ROOMS_URL);
+    });
+  }
+  return _colyseusClient;
+}
+// Eagerly init
+if (ROOMS_URL) getColyseusClient();
+
+function RoomView({ pubkey, adminAccount, allIdentities }) {
+  const [room, setRoom] = useState(null);
+  const [roomState, setRoomState] = useState(null);
+  const [error, setError] = useState(null);
+  const [chatInput, setChatInput] = useState("");
+  const [lookText, setLookText] = useState("");
+  const [summoning, setSummoning] = useState(false);
+  const roomRef = useRef(null);
+
+  const identity = allIdentities.find((c) => c.pk === pubkey) || allIdentities[0];
+
+  function updateState(r) {
+    try {
+      const players = {};
+      if (r.state.players) {
+        r.state.players.forEach((p, key) => {
+          players[key] = { pubkey: p.pubkey, displayName: p.displayName, x: p.x, y: p.y, animation: p.animation, activity: p.activity, isAgent: p.isAgent };
+        });
+      }
+      const objects = {};
+      if (r.state.objects) {
+        r.state.objects.forEach((o, key) => {
+          objects[key] = { id: o.id, type: o.type, name: o.name, description: o.description, x: o.x, y: o.y };
+        });
+      }
+      const chat = [];
+      if (r.state.chat) {
+        r.state.chat.forEach((m) => {
+          chat.push({ sender: m.sender, senderName: m.senderName, content: m.content, timestamp: m.timestamp });
+        });
+      }
+      setRoomState({
+        players, objects, chat,
+        ownerName: r.state.ownerName || "",
+        scene: r.state.scene || "default_studio",
+        width: r.state.width || 12,
+        height: r.state.height || 12,
+      });
+    } catch (e) {
+      console.warn("[room] updateState error:", e);
+    }
+  }
+
+  useEffect(() => {
+    if (!ROOMS_URL || !adminAccount || !identity) return;
+    let cancelled = false;
+
+    async function connect() {
+      try {
+        const { Client } = await import("colyseus.js");
+        if (!_colyseusClient) _colyseusClient = new Client(ROOMS_URL);
+
+        const authEvent = await createAuthEvent(ROOMS_URL, "GET", adminAccount);
+        const profile = await fetchProfile(ALL_RELAYS, identity.pk);
+        const r = await _colyseusClient.joinOrCreate("character_room", {
+          characterPubkey: pubkey,
+          characterName: profile?.display_name || profile?.name || identity.name || "Cat",
+          displayName: profile?.display_name || profile?.name || adminAccount.profile_name || "Visitor",
+          avatar: profile?.picture || "",
+          authEvent,
+        });
+
+        if (cancelled) { r.leave(); return; }
+        roomRef.current = r;
+        setRoom(r);
+
+        // Listen for state changes
+        r.onStateChange((state) => updateState(r));
+
+        // Listen for look results
+        r.onMessage("look_result", (data) => {
+          setLookText(data.text);
+        });
+        r.onMessage("interact_result", (data) => {
+          if (data.error) setLookText(prev => prev + "\n\n⚠ " + data.error);
+          else setLookText(prev => prev + `\n\n🔍 ${data.name}: "${data.description}"`);
+        });
+
+        // Initial look
+        setTimeout(() => { r.send("look"); updateState(r); }, 200);
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    }
+
+    connect();
+    return () => { cancelled = true; if (roomRef.current) roomRef.current.leave(); };
+  }, [pubkey, adminAccount?.pk]);
+
+  function handleSendChat() {
+    if (!room || !chatInput.trim()) return;
+    room.send("chat", { content: chatInput });
+    setChatInput("");
+  }
+
+  function handleCellClick(x, y) {
+    if (!room) return;
+    room.send("move", { x, y });
+    // Force a state read after move since onStateChange may be delayed
+    setTimeout(() => {
+      if (roomRef.current) {
+        updateState(roomRef.current);
+        roomRef.current.send("look");
+      }
+    }, 150);
+  }
+
+  function handleInteract(objectId) {
+    if (!room) return;
+    room.send("interact", { objectId });
+  }
+
+  function handleLook() {
+    if (!room) return;
+    room.send("look");
+  }
+
+  async function handleSummon() {
+    setSummoning(true);
+    try {
+      const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+      const res = await fetch(`${piUrl}/internal/summon`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetRoomPubkey: pubkey }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setLookText(prev => prev + `\n\n🐱 Summoned ${data.name}! They're entering the room...`);
+      } else {
+        setLookText(prev => prev + `\n\n⚠ Summon failed: ${data.error}`);
+      }
+    } catch (e) {
+      setLookText(prev => prev + `\n\n⚠ Summon error: ${e.message}`);
+    }
+    setSummoning(false);
+  }
+
+  if (!ROOMS_URL) return <div className="loading">Rooms not configured. Set VITE_ROOMS_URL.</div>;
+  if (error) return <div className="loading" style={{ color: "var(--danger)" }}>Room error: {error}</div>;
+  if (!roomState) return <div className="loading">Entering room...</div>;
+
+  const mySession = room ? Array.from(Object.entries(roomState.players)).find(([, p]) => p.pubkey === adminAccount?.pk) : null;
+  const myPlayer = mySession?.[1];
+
+  return (
+    <div>
+      <h2 className="page-title">{roomState.ownerName || "Unknown"}'s Room</h2>
+      <div className="room-info">
+        <span className="room-scene-badge">{roomState.scene}</span>
+        <span className="room-player-count">{Object.keys(roomState.players).length} cat{Object.keys(roomState.players).length !== 1 ? "s" : ""} here</span>
+        <button className="btn-small" onClick={handleLook}>Look Around</button>
+        <button className="btn-small" onClick={handleSummon} disabled={summoning}>
+          {summoning ? "Summoning..." : "🐱 Summon Cat"}
+        </button>
+      </div>
+
+      <div className="room-layout">
+        {/* Grid */}
+        <div className="room-grid" style={{ gridTemplateColumns: `repeat(${roomState.width}, 1fr)` }}>
+          {Array.from({ length: roomState.height }, (_, y) =>
+            Array.from({ length: roomState.width }, (_, x) => {
+              const playersHere = Object.values(roomState.players).filter(p => Math.round(p.x) === x && Math.round(p.y) === y);
+              const objectsHere = Object.values(roomState.objects).filter(o => Math.round(o.x) === x && Math.round(o.y) === y);
+              const isMe = myPlayer && Math.round(myPlayer.x) === x && Math.round(myPlayer.y) === y;
+              return (
+                <div
+                  key={`${x}-${y}`}
+                  className={`room-cell ${isMe ? "room-cell-me" : ""} ${playersHere.length > 0 && !isMe ? "room-cell-player" : ""} ${objectsHere.length > 0 ? "room-cell-object" : ""}`}
+                  onClick={() => handleCellClick(x, y)}
+                  title={[
+                    ...playersHere.map(p => p.displayName || "cat"),
+                    ...objectsHere.map(o => o.name),
+                  ].join(", ") || `(${x}, ${y})`}
+                >
+                  {isMe && "🐱"}
+                  {!isMe && playersHere.length > 0 && (playersHere[0].isAgent ? "🤖" : "😺")}
+                  {playersHere.length === 0 && objectsHere.length > 0 && (
+                    objectsHere[0].type === "couch" ? "🛋️" :
+                    objectsHere[0].type === "bookshelf" ? "📚" :
+                    objectsHere[0].type === "computer" ? "🖥️" :
+                    objectsHere[0].type === "plant" ? "🌿" :
+                    objectsHere[0].type === "record_player" ? "🎵" :
+                    objectsHere[0].type === "window" ? "🪟" :
+                    objectsHere[0].type === "scratching_post" ? "🐾" :
+                    objectsHere[0].type === "food_bowl" ? "🍜" :
+                    "📦"
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Sidebar: Look text + objects */}
+        <div className="room-sidebar">
+          {lookText && <pre className="room-look-text">{lookText}</pre>}
+          <div className="room-objects-list">
+            <div className="pi-skill-panel-title" style={{ marginTop: "0.5rem" }}>Objects</div>
+            {Object.values(roomState.objects).map((o) => (
+              <div key={o.id} className="room-object-item clickable" onClick={() => handleInteract(o.id)}>
+                <span className="room-object-name">{o.name}</span>
+                <span className="room-object-pos">({o.x},{o.y})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Chat */}
+      <div className="room-chat">
+        <div className="room-chat-messages">
+          {roomState.chat.slice(-20).map((m, i) => (
+            <div key={i} className="room-chat-msg">
+              <span className="room-chat-sender">{m.senderName}:</span> {m.content}
+            </div>
+          ))}
+        </div>
+        <div className="room-chat-input">
+          <input
+            type="text"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSendChat(); }}
+            placeholder="Say something..."
+          />
+          <button className="btn-primary" onClick={handleSendChat} disabled={!chatInput.trim()}>Chat</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExploreRooms() {
+  const [rooms, setRooms] = useState([]);
+  const [recordings, setRecordings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("live");
+  const lobbyRef = useRef(null);
+
+  useEffect(() => {
+    if (!ROOMS_URL) return;
+    let cancelled = false;
+
+    async function connect() {
+      try {
+        const { Client } = await import("colyseus.js");
+        if (!_colyseusClient) _colyseusClient = new Client(ROOMS_URL);
+        const lobby = await _colyseusClient.joinOrCreate("lobby");
+        if (cancelled) { lobby.leave(); return; }
+        lobbyRef.current = lobby;
+
+        lobby.onMessage("rooms", (allRooms) => { setRooms(allRooms); setLoading(false); });
+        lobby.onMessage("+", ([roomId, room]) => {
+          setRooms(prev => {
+            const idx = prev.findIndex(r => r.roomId === roomId);
+            if (idx !== -1) { const next = [...prev]; next[idx] = room; return next; }
+            return [...prev, room];
+          });
+          setLoading(false);
+        });
+        lobby.onMessage("-", (roomId) => {
+          setRooms(prev => prev.filter(r => r.roomId !== roomId));
+        });
+      } catch (e) {
+        console.error("[explore] lobby error:", e);
+        setLoading(false);
+      }
+    }
+
+    // Fetch recordings
+    const roomsHttp = ROOMS_URL.replace("ws://", "http://").replace("wss://", "https://");
+    fetch(`${roomsHttp}/recordings`).then(r => r.json()).then(data => {
+      if (data.recordings) setRecordings(data.recordings);
+    }).catch(() => {});
+
+    connect();
+    return () => { cancelled = true; if (lobbyRef.current) lobbyRef.current.leave(); };
+  }, []);
+
+  if (!ROOMS_URL) return <div className="loading">Rooms not configured.</div>;
+
+  const liveRooms = rooms.filter(r => r.name === "character_room");
+
+  return (
+    <div>
+      <h2 className="page-title">Explore Rooms</h2>
+      <div className="feed-tabs">
+        <button className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}>Live {liveRooms.length > 0 && `(${liveRooms.length})`}</button>
+        <button className={tab === "recordings" ? "active" : ""} onClick={() => setTab("recordings")}>Recordings {recordings.length > 0 && `(${recordings.length})`}</button>
+      </div>
+
+      {tab === "live" && (
+        <>
+          {loading && <div className="loading">Looking for active rooms...</div>}
+          {!loading && liveRooms.length === 0 && (
+            <div className="loading">No active rooms right now. Visit a character's room to wake it up!</div>
+          )}
+          <div className="room-explore-grid">
+            {liveRooms.map((r) => (
+              <div key={r.roomId} className="room-explore-card room-explore-live clickable" onClick={() => {
+                const pk = r.metadata?.ownerPubkey;
+                if (pk) window.location.hash = `#/room/${pk}`;
+              }}>
+                <div className="room-explore-live-dot" />
+                <div className="room-explore-name">{r.metadata?.ownerName || "Unknown"}'s Room</div>
+                <div className="room-explore-meta">
+                  <span>{r.metadata?.scene || "default"}</span>
+                  <span>{r.clients} cat{r.clients !== 1 ? "s" : ""}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {tab === "recordings" && (
+        <>
+          {recordings.length === 0 && <div className="loading">No recordings yet. Room sessions are recorded automatically.</div>}
+          <div className="room-explore-grid">
+            {recordings.map((r) => (
+              <div key={r.sessionId} className="room-explore-card clickable" onClick={() => {
+                window.location.hash = `#/replay/${r.sessionId}`;
+              }}>
+                <div className="room-explore-name">{r.roomOwnerName || "Unknown"}'s Room</div>
+                <div className="room-explore-meta">
+                  <span>{r.scene}</span>
+                  <span>{r.participantCount} cat{r.participantCount !== 1 ? "s" : ""}</span>
+                </div>
+                <div className="room-explore-meta" style={{ marginTop: "0.3rem" }}>
+                  <span>{new Date(r.startedAt).toLocaleString()}</span>
+                  <span>{Math.round(r.duration / 1000)}s · {r.eventCount} events</span>
+                </div>
+                <div className="room-explore-participants">
+                  {r.participants.map((p, i) => (
+                    <span key={i} className="room-explore-participant">{p.isAgent ? "🤖" : "😺"} {p.name}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  REPLAY VIEWER
+// ══════════════════════════════════════
+
+function ReplayViewer({ sessionId }) {
+  const [recording, setRecording] = useState(null);
+  const [error, setError] = useState(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const animRef = useRef(null);
+  const lastFrameRef = useRef(null);
+
+  useEffect(() => {
+    if (!ROOMS_URL) return;
+    const roomsHttp = ROOMS_URL.replace("ws://", "http://").replace("wss://", "https://");
+    fetch(`${roomsHttp}/recordings/${sessionId}`)
+      .then(r => { if (!r.ok) throw new Error("not found"); return r.json(); })
+      .then(data => setRecording(data))
+      .catch(e => setError(e.message));
+  }, [sessionId]);
+
+  // Playback loop
+  useEffect(() => {
+    if (!playing || !recording) return;
+    lastFrameRef.current = performance.now();
+
+    function tick(now) {
+      const delta = (now - lastFrameRef.current) * speed;
+      lastFrameRef.current = now;
+      setCurrentTime(prev => {
+        const next = prev + delta;
+        if (next >= recording.duration) {
+          setPlaying(false);
+          return recording.duration;
+        }
+        return next;
+      });
+      animRef.current = requestAnimationFrame(tick);
+    }
+    animRef.current = requestAnimationFrame(tick);
+    return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
+  }, [playing, speed, recording]);
+
+  if (error) return <div className="loading" style={{ color: "var(--danger)" }}>Replay error: {error}</div>;
+  if (!recording) return <div className="loading">Loading recording...</div>;
+
+  // Reconstruct state at currentTime by replaying events
+  const players = new Map(); // pubkey -> { name, x, y, animation, activity, isAgent }
+  const chatMessages = [];
+
+  for (const ev of recording.events) {
+    if (ev.t > currentTime) break;
+    switch (ev.type) {
+      case "join":
+        players.set(ev.actor, { name: ev.name, x: ev.data.x, y: ev.data.y, animation: "idle", activity: "", isAgent: ev.data.isAgent });
+        break;
+      case "leave":
+        players.delete(ev.actor);
+        break;
+      case "move":
+        if (players.has(ev.actor)) {
+          const p = players.get(ev.actor);
+          p.x = ev.data.toX;
+          p.y = ev.data.toY;
+        }
+        break;
+      case "chat":
+        chatMessages.push({ sender: ev.actor, senderName: ev.name, content: ev.data.content, t: ev.t });
+        break;
+      case "emote":
+        if (players.has(ev.actor)) players.get(ev.actor).animation = ev.data.animation;
+        break;
+      case "activity":
+        if (players.has(ev.actor)) players.get(ev.actor).activity = ev.data.activity;
+        break;
+      case "interact":
+        chatMessages.push({ sender: ev.actor, senderName: ev.name, content: `interacted with ${ev.data.objectName}`, t: ev.t, isSystem: true });
+        break;
+    }
+  }
+
+  const recentChat = chatMessages.slice(-15);
+  const progress = recording.duration > 0 ? (currentTime / recording.duration) * 100 : 0;
+
+  return (
+    <div>
+      <h2 className="page-title">{recording.roomOwnerName}'s Room — Replay</h2>
+      <div className="room-info">
+        <span className="room-scene-badge">{recording.scene}</span>
+        <span className="room-player-count">{recording.participants.length} cat{recording.participants.length !== 1 ? "s" : ""}</span>
+        <span className="room-player-count">{recording.events.length} events · {Math.round(recording.duration / 1000)}s</span>
+      </div>
+
+      <div className="room-layout">
+        {/* Grid */}
+        <div className="room-grid" style={{ gridTemplateColumns: `repeat(${recording.width}, 1fr)` }}>
+          {Array.from({ length: recording.height }, (_, y) =>
+            Array.from({ length: recording.width }, (_, x) => {
+              const playersHere = [...players.values()].filter(p => Math.round(p.x) === x && Math.round(p.y) === y);
+              const objectsHere = recording.objects.filter(o => Math.round(o.x) === x && Math.round(o.y) === y);
+              return (
+                <div
+                  key={`${x}-${y}`}
+                  className={`room-cell ${playersHere.length > 0 ? "room-cell-player" : ""} ${objectsHere.length > 0 ? "room-cell-object" : ""}`}
+                  title={[
+                    ...playersHere.map(p => p.name),
+                    ...objectsHere.map(o => o.name),
+                  ].join(", ") || `(${x}, ${y})`}
+                >
+                  {playersHere.length > 0 && (playersHere[0].isAgent ? "🤖" : "😺")}
+                  {playersHere.length === 0 && objectsHere.length > 0 && (
+                    objectsHere[0].type === "couch" ? "🛋️" :
+                    objectsHere[0].type === "bookshelf" ? "📚" :
+                    objectsHere[0].type === "computer" ? "🖥️" :
+                    objectsHere[0].type === "plant" ? "🌿" :
+                    objectsHere[0].type === "record_player" ? "🎵" :
+                    objectsHere[0].type === "window" ? "🪟" :
+                    objectsHere[0].type === "scratching_post" ? "🐾" :
+                    objectsHere[0].type === "food_bowl" ? "🍜" :
+                    "📦"
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Chat log */}
+        <div className="room-sidebar">
+          <div className="room-chat-messages" style={{ maxHeight: "300px" }}>
+            {recentChat.map((m, i) => (
+              <div key={i} className={`room-chat-msg ${m.isSystem ? "room-chat-system" : ""}`}>
+                <span className="room-chat-time">[{(m.t / 1000).toFixed(1)}s]</span>
+                {" "}
+                <span className="room-chat-sender">{m.senderName}:</span> {m.content}
+              </div>
+            ))}
+            {recentChat.length === 0 && <div style={{ opacity: 0.4, fontSize: "0.78rem" }}>No activity yet at this point</div>}
+          </div>
+
+          {/* Participant list */}
+          <div style={{ marginTop: "0.5rem", fontSize: "0.78rem" }}>
+            <div className="pi-skill-panel-title">In room at {(currentTime / 1000).toFixed(1)}s</div>
+            {[...players.entries()].map(([pk, p]) => (
+              <div key={pk} style={{ padding: "0.15rem 0", color: "var(--text-dim)" }}>
+                {p.isAgent ? "🤖" : "😺"} {p.name} ({p.x},{p.y}) {p.activity && `— ${p.activity}`}
+              </div>
+            ))}
+            {players.size === 0 && <div style={{ opacity: 0.4 }}>Empty</div>}
+          </div>
+        </div>
+      </div>
+
+      {/* Scrubber */}
+      <div className="replay-controls">
+        <button className="replay-btn" onClick={() => { setCurrentTime(0); setPlaying(false); }}>⏮</button>
+        <button className="replay-btn" onClick={() => setPlaying(!playing)}>{playing ? "⏸" : "▶"}</button>
+        <div className="replay-scrubber-wrap">
+          <input
+            className="replay-scrubber"
+            type="range"
+            min={0}
+            max={recording.duration}
+            value={currentTime}
+            onChange={(e) => { setCurrentTime(Number(e.target.value)); setPlaying(false); }}
+          />
+          <div className="replay-scrubber-markers">
+            {recording.events.filter(e => e.type === "join" || e.type === "leave" || e.type === "chat").map((e, i) => (
+              <div
+                key={i}
+                className={`replay-marker replay-marker-${e.type}`}
+                style={{ left: `${(e.t / recording.duration) * 100}%` }}
+                title={`${e.type}: ${e.name} at ${(e.t / 1000).toFixed(1)}s`}
+              />
+            ))}
+          </div>
+        </div>
+        <span className="replay-time">{(currentTime / 1000).toFixed(1)}s / {(recording.duration / 1000).toFixed(1)}s</span>
+        <select className="replay-speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
+          <option value={0.5}>0.5x</option>
+          <option value={1}>1x</option>
+          <option value={2}>2x</option>
+          <option value={5}>5x</option>
+          <option value={10}>10x</option>
+        </select>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
 //  NETWORK PAGE (Directory sidebar + Graph)
 // ══════════════════════════════════════
 
@@ -4457,6 +5027,15 @@ export default function App() {
   function renderMain() {
     if (route === "pi") {
       return <PiChat allIdentities={allIdentities} activeCharId={activeCharId} adminAccount={adminAccount} />;
+    }
+    if (route === "room" && routeKey) {
+      return <RoomView pubkey={routeKey} adminAccount={adminAccount} allIdentities={allIdentities} />;
+    }
+    if (route === "replay" && routeKey) {
+      return <ReplayViewer sessionId={routeKey} />;
+    }
+    if (route === "explore") {
+      return <ExploreRooms />;
     }
     if (route === "network") {
       return <NetworkPage characters={characters} activeAccount={activeAccount} />;

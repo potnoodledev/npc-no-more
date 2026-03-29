@@ -12,7 +12,7 @@ RUN npm install -g @mariozechner/pi-coding-agent
 COPY package.json package-lock.json* /app/bridge/
 RUN cd /app/bridge && npm install
 
-COPY server.js profile.js prompt-builder.js nostr-auth.js nim-models.json /app/bridge/
+COPY server.js profile.js prompt-builder.js nostr-auth.js nim-models.json room-client.js /app/bridge/
 COPY skill-templates/ /app/bridge/skill-templates/
 
 # Create workspace

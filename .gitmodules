@@ -16,3 +16,6 @@
 [submodule "references/catacombs"]
 	path = references/catacombs
 	url = https://github.com/urtimus-prime/catacombs
+[submodule "references/hubs"]
+	path = references/hubs
+	url = https://github.com/Hubs-Foundation/hubs

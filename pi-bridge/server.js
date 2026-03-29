@@ -154,7 +154,7 @@ function getCharDir(pubkeyHex) {
 }
 
 const SKILL_TEMPLATES_DIR = join(__dirname, "skill-templates");
-const DEFAULT_SKILLS = ["post", "strudel", "dance"];
+const DEFAULT_SKILLS = ["post", "strudel", "dance", "room"];
 
 function ensureCharWorkspace(pubkeyHex) {
   const charDir = getCharDir(pubkeyHex);
@@ -581,6 +581,146 @@ app.post("/internal/post", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── Summon agent into a room ──
+
+app.post("/internal/summon", async (req, res) => {
+  const { targetRoomPubkey, characterPubkey, characterName } = req.body;
+  if (!targetRoomPubkey) return res.status(400).json({ error: "targetRoomPubkey required" });
+
+  try {
+    // Use provided character or pick from available workspaces
+    let pubkey = characterPubkey;
+    let name = characterName || "SummonedCat";
+
+    if (!pubkey) {
+      // Generate a random identity for the summoned cat
+      const { generateSecretKey, getPublicKey } = await import("nostr-tools/pure");
+      const sk = generateSecretKey();
+      const skHex = Buffer.from(sk).toString("hex");
+      pubkey = getPublicKey(sk);
+      name = characterName || `Cat_${pubkey.slice(0, 6)}`;
+
+      // Set up workspace with key
+      const charDir = ensureCharWorkspace(pubkey);
+      writeFileSync(join(charDir, ".pi", "sk"), skHex, "utf-8");
+    } else {
+      ensureCharWorkspace(pubkey);
+    }
+
+    // Start a pi agent session for this character
+    const rpc = await getOrCreateSession(pubkey);
+
+    // Send the agent a prompt to enter the room and explore
+    const prompt = `You just woke up! Enter the room and explore. Here's what to do:
+
+1. First, enter the room: bash .pi/skills/room/scripts/room.sh visit ${targetRoomPubkey}
+2. Look around to see what's there
+3. Move to interesting objects and interact with them
+4. Chat with anyone else in the room
+5. Try different emotes (dance_macarena, dance_hiphop, dance_salsa)
+6. Be creative and stay in character!
+
+Start by entering the room now.`;
+
+    // Wait for the RPC process to be ready, then send the prompt
+    const waitForReady = () => new Promise((resolve) => {
+      if (rpc.ready) return resolve();
+      const check = setInterval(() => {
+        if (rpc.ready) { clearInterval(check); resolve(); }
+      }, 200);
+      setTimeout(() => { clearInterval(check); resolve(); }, 10000);
+    });
+
+    await waitForReady();
+
+    // Send as a user message via the RPC send method
+    try {
+      rpc.send({ type: "prompt", message: prompt });
+      console.log(`[summon] Sent room exploration prompt to ${name}`);
+    } catch (e) {
+      console.log(`[summon] Failed to send prompt: ${e.message}`);
+    }
+
+    res.json({ ok: true, pubkey, name, message: "Agent summoned into room" });
+  } catch (e) {
+    console.error("[summon] Error:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Room interaction (agent-initiated) ──
+
+import * as rc from "./room-client.js";
+{
+
+  app.post("/internal/room/join", async (req, res) => {
+    const { pubkey, targetRoomPubkey, displayName, avatar } = req.body;
+    if (!pubkey || !targetRoomPubkey) return res.status(400).json({ error: "pubkey and targetRoomPubkey required" });
+    try {
+      const result = await rc.joinRoom(pubkey, targetRoomPubkey, displayName || "Agent", avatar);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/internal/room/leave", async (req, res) => {
+    const { pubkey } = req.body;
+    if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+    const result = await rc.leaveRoom(pubkey);
+    res.json(result);
+  });
+
+  app.post("/internal/room/move", (req, res) => {
+    const { pubkey, x, y } = req.body;
+    if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+    res.json(rc.sendMove(pubkey, x, y));
+  });
+
+  app.post("/internal/room/chat", (req, res) => {
+    const { pubkey, content } = req.body;
+    if (!pubkey || !content) return res.status(400).json({ error: "pubkey and content required" });
+    res.json(rc.sendChat(pubkey, content));
+  });
+
+  app.post("/internal/room/emote", (req, res) => {
+    const { pubkey, animation } = req.body;
+    if (!pubkey || !animation) return res.status(400).json({ error: "pubkey and animation required" });
+    res.json(rc.sendEmote(pubkey, animation));
+  });
+
+  app.post("/internal/room/interact", (req, res) => {
+    const { pubkey, objectId } = req.body;
+    if (!pubkey || !objectId) return res.status(400).json({ error: "pubkey and objectId required" });
+    res.json(rc.sendInteract(pubkey, objectId));
+  });
+
+  app.get("/internal/room/look", async (req, res) => {
+    const pubkey = req.query.pubkey;
+    if (!pubkey) return res.status(400).json({ error: "pubkey query param required" });
+    rc.sendLook(pubkey);
+    // Wait briefly for the look_result message
+    await new Promise(r => setTimeout(r, 500));
+    const msgs = rc.drainMessages(pubkey);
+    const lookMsg = msgs.find(m => m.type === "look");
+    res.json({ text: lookMsg?.text || "No response from room.", messages: msgs });
+  });
+
+  app.get("/internal/room/status", (req, res) => {
+    const pubkey = req.query.pubkey;
+    if (!pubkey) return res.status(400).json({ error: "pubkey query param required" });
+    res.json(rc.getConnectionStatus(pubkey));
+  });
+
+  app.get("/internal/room/messages", (req, res) => {
+    const pubkey = req.query.pubkey;
+    if (!pubkey) return res.status(400).json({ error: "pubkey query param required" });
+    res.json({ messages: rc.drainMessages(pubkey) });
+  });
+
+  console.log("[room-client] Room interaction endpoints registered");
+}
 
 // ── WebSocket Server ──
 

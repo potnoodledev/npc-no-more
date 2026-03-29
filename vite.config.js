@@ -12,6 +12,7 @@ export default defineConfig({
     ...(process.env.VITE_PI_URL ? { 'import.meta.env.VITE_PI_URL': JSON.stringify(process.env.VITE_PI_URL) } : {}),
     ...(process.env.VITE_APP_TITLE ? { 'import.meta.env.VITE_APP_TITLE': JSON.stringify(process.env.VITE_APP_TITLE) } : {}),
     ...(process.env.VITE_CLIENT_SLUG ? { 'import.meta.env.VITE_CLIENT_SLUG': JSON.stringify(process.env.VITE_CLIENT_SLUG) } : {}),
+    ...(process.env.VITE_ROOMS_URL ? { 'import.meta.env.VITE_ROOMS_URL': JSON.stringify(process.env.VITE_ROOMS_URL) } : {}),
   },
   server: {
     watch: {

@@ -37,8 +37,21 @@ services:
       - RELAY_URL=ws://nostr-relay:7777
       - API_URL=http://npc-api:3456
       - CLIENT_SLUG=${VITE_CLIENT_SLUG:-npc-no-more}
+      - ROOMS_URL=ws://npc-rooms:2567
+    restart: unless-stopped
+
+  rooms:
+    build: ./room-server
+    container_name: npc-rooms
+    ports:
+      - "2567:2567"
+    volumes:
+      - room-recordings:/data/recordings
+    environment:
+      - API_URL=http://npc-api:3456
     restart: unless-stopped
 
 volumes:
   relay-data:
   pi-workspace:
+  room-recordings:
