@@ -3333,6 +3333,11 @@ function RoomView({ pubkey, adminAccount, allIdentities }) {
   const [chatInput, setChatInput] = useState("");
   const [lookText, setLookText] = useState("");
   const [summoning, setSummoning] = useState(false);
+  const [summonedCats, setSummonedCats] = useState([]); // [{pubkey, name}]
+  const [observingCat, setObservingCat] = useState(null); // pubkey of cat being observed
+  const [agentMessages, setAgentMessages] = useState([]);
+  const agentStreamRef = useRef(null);
+  const agentMsgEndRef = useRef(null);
   const roomRef = useRef(null);
 
   const identity = allIdentities.find((c) => c.pk === pubkey) || allIdentities[0];
@@ -3412,6 +3417,17 @@ function RoomView({ pubkey, adminAccount, allIdentities }) {
     }
 
     connect();
+
+    // Fetch existing summoned agents for this room
+    const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+    if (piUrl) {
+      fetch(`${piUrl}/internal/summoned?room=${pubkey}`).then(r => r.json()).then(data => {
+        if (data.agents?.length > 0) {
+          setSummonedCats(data.agents.map(a => ({ pubkey: a.pubkey, name: a.name })));
+        }
+      }).catch(() => {});
+    }
+
     return () => { cancelled = true; if (roomRef.current) roomRef.current.leave(); };
   }, [pubkey, adminAccount?.pk]);
 
@@ -3454,6 +3470,7 @@ function RoomView({ pubkey, adminAccount, allIdentities }) {
       });
       const data = await res.json();
       if (data.ok) {
+        setSummonedCats(prev => [...prev, { pubkey: data.pubkey, name: data.name }]);
         setLookText(prev => prev + `\n\n🐱 Summoned ${data.name}! They're entering the room...`);
       } else {
         setLookText(prev => prev + `\n\n⚠ Summon failed: ${data.error}`);
@@ -3463,6 +3480,133 @@ function RoomView({ pubkey, adminAccount, allIdentities }) {
     }
     setSummoning(false);
   }
+
+  async function handleDismiss(catPubkey, catName) {
+    try {
+      const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+      await fetch(`${piUrl}/internal/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pubkey: catPubkey }),
+      });
+      setSummonedCats(prev => prev.filter(c => c.pubkey !== catPubkey));
+      setLookText(prev => prev + `\n\n👋 ${catName} dismissed.`);
+    } catch (e) {
+      setLookText(prev => prev + `\n\n⚠ Dismiss error: ${e.message}`);
+    }
+  }
+
+  // SSE stream for observing a summoned agent — uses same event types as Superclaw
+  const agentTextRef = useRef("");
+  const agentThinkingRef = useRef("");
+
+  useEffect(() => {
+    if (!observingCat) { setAgentMessages([]); return; }
+    const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+    const es = new EventSource(`${piUrl}/internal/agent-stream/${observingCat}`);
+    agentStreamRef.current = es;
+    setAgentMessages([]);
+    agentTextRef.current = "";
+    agentThinkingRef.current = "";
+
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+
+        // Skip lifecycle/state events
+        if (["connected", "response", "auth_ok", "state", "agent_start", "turn_start", "turn_end", "message_start", "auto_retry_start", "auto_retry_end", "auto_compaction_start", "auto_compaction_end"].includes(msg.type)) {
+          if (msg.type === "agent_start") { agentTextRef.current = ""; agentThinkingRef.current = ""; }
+          return;
+        }
+
+        if (msg.type === "agent_end") {
+          setAgentMessages(prev => prev.map(m => ({ ...m, streaming: false })));
+          return;
+        }
+
+        // Assistant message (text + thinking)
+        if (msg.type === "message_update" && msg.assistantMessageEvent) {
+          const ev = msg.assistantMessageEvent;
+          if (ev.type === "text_delta") {
+            agentTextRef.current += ev.delta;
+            setAgentMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.type === "content" && last.streaming) {
+                return [...prev.slice(0, -1), { ...last, content: agentTextRef.current }];
+              }
+              return [...prev, { type: "content", content: agentTextRef.current, thinking: agentThinkingRef.current, streaming: true }];
+            });
+          }
+          if (ev.type === "thinking_delta") {
+            agentThinkingRef.current += ev.delta;
+            setAgentMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.type === "content" && last.streaming) {
+                return [...prev.slice(0, -1), { ...last, thinking: agentThinkingRef.current }];
+              }
+              return [...prev, { type: "content", content: "", thinking: agentThinkingRef.current, streaming: true }];
+            });
+          }
+          if (ev.type === "done") {
+            agentTextRef.current = "";
+            agentThinkingRef.current = "";
+          }
+          setTimeout(() => agentMsgEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+          return;
+        }
+
+        if (msg.type === "message_end") {
+          setAgentMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last?.type === "content") return [...prev.slice(0, -1), { ...last, streaming: false }];
+            return prev;
+          });
+          return;
+        }
+
+        // Tool execution
+        if (msg.type === "tool_execution_start") {
+          setAgentMessages(prev => [...prev, {
+            type: "tool", tool: msg.toolName || "unknown", toolCallId: msg.toolCallId,
+            args: msg.args || {}, content: "", streaming: true,
+          }]);
+          setTimeout(() => agentMsgEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+          return;
+        }
+
+        if (msg.type === "tool_execution_update") {
+          setAgentMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last?.type === "tool" && last.toolCallId === msg.toolCallId) {
+              return [...prev.slice(0, -1), { ...last, content: msg.partialResult?.output || last.content }];
+            }
+            return prev;
+          });
+          return;
+        }
+
+        if (msg.type === "tool_execution_end") {
+          const text = msg.result?.content?.map(c => c.text || "").join("") || JSON.stringify(msg.result || "");
+          setAgentMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last?.type === "tool" && last.toolCallId === msg.toolCallId) {
+              return [...prev.slice(0, -1), { ...last, content: text, streaming: false, isError: !!msg.isError }];
+            }
+            return prev;
+          });
+          setTimeout(() => agentMsgEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+          return;
+        }
+      } catch {}
+    };
+
+    es.onerror = () => {
+      setAgentMessages(prev => [...prev, { type: "system", content: "Stream disconnected." }]);
+      es.close();
+    };
+
+    return () => es.close();
+  }, [observingCat]);
 
   if (!ROOMS_URL) return <div className="loading">Rooms not configured. Set VITE_ROOMS_URL.</div>;
   if (error) return <div className="loading" style={{ color: "var(--danger)" }}>Room error: {error}</div>;
@@ -3482,6 +3626,64 @@ function RoomView({ pubkey, adminAccount, allIdentities }) {
           {summoning ? "Summoning..." : "🐱 Summon Cat"}
         </button>
       </div>
+
+      {summonedCats.length > 0 && (
+        <div className="room-summoned">
+          {summonedCats.map((cat) => (
+            <span
+              key={cat.pubkey}
+              className={`room-summoned-cat ${observingCat === cat.pubkey ? "room-summoned-active" : ""}`}
+              onClick={() => setObservingCat(observingCat === cat.pubkey ? null : cat.pubkey)}
+            >
+              🤖 {cat.name}
+              <button className="room-dismiss-btn" onClick={(e) => { e.stopPropagation(); handleDismiss(cat.pubkey, cat.name); if (observingCat === cat.pubkey) setObservingCat(null); }}>✕</button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Agent observer panel */}
+      {observingCat && (
+        <div className="agent-observer">
+          <div className="agent-observer-header">
+            <span>🤖 {summonedCats.find(c => c.pubkey === observingCat)?.name || "Agent"} — Live</span>
+            <button className="room-dismiss-btn" onClick={() => setObservingCat(null)}>✕</button>
+          </div>
+          <div className="agent-observer-messages">
+            {agentMessages.length === 0 && <div style={{ opacity: 0.4, fontSize: "0.78rem", padding: "0.5rem" }}>Waiting for agent activity...</div>}
+            {agentMessages.map((msg, i) => (
+              <div key={i} className={`agent-msg agent-msg-${msg.type}`}>
+                {msg.type === "content" && (
+                  <>
+                    {msg.thinking && (
+                      <details className="agent-thinking" open={msg.streaming}>
+                        <summary>Thinking{msg.streaming && <span className="streaming-dot" />}</summary>
+                        <div className="agent-thinking-text">{msg.thinking}</div>
+                      </details>
+                    )}
+                    <div className="agent-content">{msg.content}{msg.streaming && <span className="streaming-dot" />}</div>
+                  </>
+                )}
+                {msg.type === "tool" && (
+                  <div className="agent-tool">
+                    <span className="agent-tool-icon">{msg.tool === "bash" ? "$" : msg.tool === "read" ? "R" : msg.tool === "write" ? "W" : "T"}</span>
+                    <span className="agent-tool-name">{msg.tool}</span>
+                    <span className="agent-tool-args">{msg.tool === "bash" ? msg.args?.command : msg.args?.path || ""}</span>
+                    {msg.streaming && <span className="streaming-dot" />}
+                  </div>
+                )}
+                {msg.type === "tool_result" && (
+                  <pre className="agent-tool-output">{msg.content}</pre>
+                )}
+                {msg.type === "system" && (
+                  <div style={{ opacity: 0.4, fontSize: "0.72rem" }}>{msg.content}</div>
+                )}
+              </div>
+            ))}
+            <div ref={agentMsgEndRef} />
+          </div>
+        </div>
+      )}
 
       <div className="room-layout">
         {/* Grid */}

@@ -582,6 +582,9 @@ app.post("/internal/post", async (req, res) => {
   }
 });
 
+// ── Summoned agents tracking ──
+const summonedAgents = new Map(); // pubkey -> { name, targetRoomPubkey, summonedAt }
+
 // ── Summon agent into a room ──
 
 app.post("/internal/summon", async (req, res) => {
@@ -593,33 +596,77 @@ app.post("/internal/summon", async (req, res) => {
     let pubkey = characterPubkey;
     let name = characterName || "SummonedCat";
 
+    // Random cat names
+    const CAT_PREFIXES = ["Whisker", "Shadow", "Pixel", "Neon", "Velvet", "Mochi", "Glitch", "Luna", "Byte", "Sable", "Fizz", "Dusk", "Ember", "Nimbus", "Cosmo", "Ziggy", "Patches", "Binx", "Tofu", "Sage"];
+    const CAT_SUFFIXES = ["paws", "tail", "fang", "claw", "purr", "bean", "fluff", "stripe", "sonic", "byte", "wave", "spark", "frost", "bloom", "dream", "wish", "star", "moon", "cloud", "storm"];
+
     if (!pubkey) {
-      // Generate a random identity for the summoned cat
       const { generateSecretKey, getPublicKey } = await import("nostr-tools/pure");
       const sk = generateSecretKey();
       const skHex = Buffer.from(sk).toString("hex");
       pubkey = getPublicKey(sk);
-      name = characterName || `Cat_${pubkey.slice(0, 6)}`;
 
-      // Set up workspace with key
+      // Generate a fun cat name
+      const prefix = CAT_PREFIXES[Math.floor(Math.random() * CAT_PREFIXES.length)];
+      const suffix = CAT_SUFFIXES[Math.floor(Math.random() * CAT_SUFFIXES.length)];
+      const num = Math.floor(Math.random() * 100);
+      name = characterName || `${prefix}${suffix}${num}`;
+
       const charDir = ensureCharWorkspace(pubkey);
       writeFileSync(join(charDir, ".pi", "sk"), skHex, "utf-8");
     } else {
       ensureCharWorkspace(pubkey);
     }
 
-    // Start a pi agent session for this character
+    // Register the cat on the relay so it shows up on the network
+    const keyPath = join(getCharDir(pubkey), ".pi", "sk");
+    const skHex = readFileSync(keyPath, "utf-8").trim();
+    const sk = hexToBytes(skHex);
+
+    // Publish a kind:0 profile event
+    const profileEvent = finalizeEvent({
+      kind: 0,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [CLIENT_TAG, CLIENT_FILTER_TAG],
+      content: JSON.stringify({
+        name: name,
+        display_name: name,
+        about: `A summoned cat exploring the Soulcats universe. 🐱`,
+      }),
+    }, sk);
+
+    const relayUrl = RELAY_URL;
+    try {
+      const pool = new SimplePool();
+      await Promise.allSettled(pool.publish([relayUrl], profileEvent));
+      console.log(`[summon] Published profile for ${name} (${pubkey.slice(0, 12)}...)`);
+    } catch (e) {
+      console.log(`[summon] Profile publish failed: ${e.message}`);
+    }
+
+    // Also register on the relay whitelist so they can post
+    const apiUrl = API_URL || "http://localhost:3456";
+    try {
+      await fetch(`${apiUrl}/register-pubkey`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pubkey }),
+      });
+    } catch {}
+
+    // Start a pi agent session
     const rpc = await getOrCreateSession(pubkey);
 
-    // Send the agent a prompt to enter the room and explore
-    const prompt = `You just woke up! Enter the room and explore. Here's what to do:
+    const prompt = `Your name is ${name}. You just arrived in the Soulcats world! Here's what to do:
 
 1. First, enter the room: bash .pi/skills/room/scripts/room.sh visit ${targetRoomPubkey}
 2. Look around to see what's there
 3. Move to interesting objects and interact with them
-4. Chat with anyone else in the room
-5. Try different emotes (dance_macarena, dance_hiphop, dance_salsa)
-6. Be creative and stay in character!
+4. If you see other cats, chat with them — be friendly and in character
+5. Try an emote (dance_macarena, dance_hiphop, dance_salsa)
+6. Post something about your experience using: bash .pi/skills/post/scripts/post.sh "your message"
+
+You are ${name}, a curious cat exploring the digital world. Be creative, playful, and stay in character!
 
 Start by entering the room now.`;
 
@@ -642,11 +689,81 @@ Start by entering the room now.`;
       console.log(`[summon] Failed to send prompt: ${e.message}`);
     }
 
+    summonedAgents.set(pubkey, { name, targetRoomPubkey, summonedAt: Date.now() });
     res.json({ ok: true, pubkey, name, message: "Agent summoned into room" });
   } catch (e) {
     console.error("[summon] Error:", e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Dismiss a summoned agent — leave room and kill session
+app.post("/internal/dismiss", async (req, res) => {
+  const { pubkey } = req.body;
+  if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+
+  try {
+    // Leave room if connected
+    const rc = await import("./room-client.js");
+    await rc.leaveRoom(pubkey);
+
+    // Kill the pi session
+    const sessionId = pubkey.slice(0, 16);
+    const rpc = sessions.get(sessionId);
+    if (rpc) {
+      rpc.kill();
+      sessions.delete(sessionId);
+      console.log(`[dismiss] Killed session for ${pubkey.slice(0, 12)}...`);
+    }
+
+    summonedAgents.delete(pubkey);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List summoned agents (optionally filtered by room)
+app.get("/internal/summoned", (req, res) => {
+  const room = req.query.room;
+  const agents = [];
+  for (const [pk, info] of summonedAgents) {
+    if (!room || info.targetRoomPubkey === room) {
+      agents.push({ pubkey: pk, name: info.name, targetRoomPubkey: info.targetRoomPubkey, summonedAt: info.summonedAt });
+    }
+  }
+  res.json({ agents });
+});
+
+// Stream a summoned agent's output via SSE
+app.get("/internal/agent-stream/:pubkey", (req, res) => {
+  const pubkey = req.params.pubkey;
+  const sessionId = pubkey.slice(0, 16);
+  const rpc = sessions.get(sessionId);
+
+  if (!rpc) {
+    return res.status(404).json({ error: "No active session for this agent" });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  // Send current state
+  res.write(`data: ${JSON.stringify({ type: "connected", pubkey, sessionId })}\n\n`);
+
+  const listener = (msg) => {
+    try {
+      res.write(`data: ${JSON.stringify(msg)}\n\n`);
+    } catch {}
+  };
+
+  rpc.addListener(listener);
+
+  req.on("close", () => {
+    rpc.removeListener(listener);
+  });
 });
 
 // ── Room interaction (agent-initiated) ──

@@ -34,10 +34,18 @@ fi
 PUBKEY=$(cat "$IDENTITY_FILE")
 PI_URL="http://localhost:3457"
 
+# Try to read display name from profile cache
+DISPLAY_NAME="Cat_${PUBKEY:0:6}"
+PROFILE_CACHE="$WORKSPACE_ROOT/profile-cache.json"
+if [ -f "$PROFILE_CACHE" ]; then
+  CACHED_NAME=$(jq -r '.display_name // .name // empty' "$PROFILE_CACHE" 2>/dev/null)
+  if [ -n "$CACHED_NAME" ]; then DISPLAY_NAME="$CACHED_NAME"; fi
+fi
+
 case "$CMD" in
   home)
     TMPFILE=$(mktemp)
-    jq -n --arg p "$PUBKEY" --arg t "$PUBKEY" --arg n "Agent" \
+    jq -n --arg p "$PUBKEY" --arg t "$PUBKEY" --arg n "$DISPLAY_NAME" \
       '{pubkey: $p, targetRoomPubkey: $t, displayName: $n}' > "$TMPFILE"
     RESULT=$(curl -s -X POST "$PI_URL/internal/room/join" -H "Content-Type: application/json" -d @"$TMPFILE")
     rm -f "$TMPFILE"
@@ -57,7 +65,7 @@ case "$CMD" in
     TARGET="$1"
     if [ -z "$TARGET" ]; then echo "Error: visit requires a pubkey"; exit 1; fi
     TMPFILE=$(mktemp)
-    jq -n --arg p "$PUBKEY" --arg t "$TARGET" --arg n "Agent" \
+    jq -n --arg p "$PUBKEY" --arg t "$TARGET" --arg n "$DISPLAY_NAME" \
       '{pubkey: $p, targetRoomPubkey: $t, displayName: $n}' > "$TMPFILE"
     RESULT=$(curl -s -X POST "$PI_URL/internal/room/join" -H "Content-Type: application/json" -d @"$TMPFILE")
     rm -f "$TMPFILE"
