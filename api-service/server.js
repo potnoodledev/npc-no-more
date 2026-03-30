@@ -239,6 +239,39 @@ app.delete("/admin/nip05/:name", protectEndpoint, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Relay Info (proxy to relay admin config) ──
+const relayHttpUrl = RELAY_URL ? RELAY_URL.replace("ws://", "http://").replace("wss://", "https://") : "";
+
+app.get("/admin/relay-info", protectEndpoint, async (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  if (!relayHttpUrl) return res.status(503).json({ error: "relay not configured" });
+  try {
+    const r = await fetch(`${relayHttpUrl}/admin/config`, {
+      headers: { Authorization: `Bearer ${RELAY_ADMIN_SECRET}` },
+    });
+    const config = await r.json();
+    res.json(config.relay_info || {});
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/admin/relay-info", protectEndpoint, async (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  if (!relayHttpUrl) return res.status(503).json({ error: "relay not configured" });
+  try {
+    const r = await fetch(`${relayHttpUrl}/admin/config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${RELAY_ADMIN_SECRET}` },
+      body: JSON.stringify({ relay_info: req.body }),
+    });
+    const result = await r.json();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Health ──
 app.get("/setup-status", (req, res) => {
   const state = getAuthState();

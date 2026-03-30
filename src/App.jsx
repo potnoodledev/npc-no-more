@@ -1265,7 +1265,8 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
       if (editFields.lud16) metadata.lud16 = editFields.lud16;
       if (editFields.website) metadata.website = editFields.website;
 
-      await publishProfile(metadata, account);
+      const relays = character.publishPublic ? ALL_RELAYS : DEFAULT_RELAYS;
+      await publishProfile(metadata, account, relays);
 
       // Update local character name to keep sidebar in sync
       onUpdateChar({
@@ -1516,6 +1517,13 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                   <input type="text" value={editFields.lud16} onChange={(e) => updateField("lud16", e.target.value)} placeholder="name@walletofsatoshi.com" /></label>
                 <label><span>Website</span>
                   <input type="url" value={editFields.website} onChange={(e) => updateField("website", e.target.value)} placeholder="https://..." /></label>
+                <label style={{ flexDirection: "row", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!character.publishPublic} onChange={(e) => {
+                    onUpdateChar({ ...character, publishPublic: e.target.checked });
+                    setDirty(true);
+                  }} />
+                  <span>Publish profile to public relays</span>
+                </label>
               </div>
 
               <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
@@ -1751,7 +1759,8 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, al
       if (editFields.lud16) metadata.lud16 = editFields.lud16;
       if (editFields.website) metadata.website = editFields.website;
 
-      await publishProfile(metadata, account);
+      const relays = account.publishPublic ? ALL_RELAYS : DEFAULT_RELAYS;
+      await publishProfile(metadata, account, relays);
 
       // Update local admin account data
       account.profile_name = editFields.display_name || editFields.name || "";
@@ -1954,6 +1963,15 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, al
               <input type="text" value={editFields.lud16} onChange={(e) => updateField("lud16", e.target.value)} placeholder="name@walletofsatoshi.com" /></label>
             <label><span>Website</span>
               <input type="url" value={editFields.website} onChange={(e) => updateField("website", e.target.value)} placeholder="https://..." /></label>
+            <label style={{ flexDirection: "row", alignItems: "center", gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!account.publishPublic} onChange={(e) => {
+                account.publishPublic = e.target.checked;
+                saveAdminAccount(account);
+                if (onUpdateProfile) onUpdateProfile(account);
+                setDirty(true);
+              }} />
+              <span>Publish profile to public relays</span>
+            </label>
           </div>
 
           <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
@@ -4998,6 +5016,70 @@ function AdminWhitelist({ adminAccount }) {
   );
 }
 
+function RelayInfoEditor({ adminAccount }) {
+  const [info, setInfo] = useState({ name: "", description: "", pubkey: "", contact: "" });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const apiUrl = import.meta.env.VITE_API_URL || "";
+
+  useEffect(() => {
+    if (!apiUrl || !adminAccount) return;
+    getAuthHeaders(`${apiUrl}/admin/relay-info`, "GET", adminAccount).then(headers => {
+      fetch(`${apiUrl}/admin/relay-info`, { headers }).then(r => r.json()).then(data => {
+        if (data && !data.error) setInfo({ name: "", description: "", pubkey: "", contact: "", ...data });
+        setLoading(false);
+      }).catch(() => setLoading(false));
+    });
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const headers = await getAuthHeaders(`${apiUrl}/admin/relay-info`, "PUT", adminAccount);
+      await fetch(`${apiUrl}/admin/relay-info`, {
+        method: "PUT",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(info),
+      });
+      setSaved(true);
+    } catch (e) {
+      alert("Failed to save: " + e.message);
+    }
+    setSaving(false);
+  }
+
+  if (loading) return <div className="loading" style={{ fontSize: "0.8rem" }}>Loading relay info...</div>;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <h4 style={{ margin: "0 0 8px 0", fontSize: "0.85rem" }}>Relay Info (NIP-11)</h4>
+      <div className="edit-fields">
+        <label><span>Name</span>
+          <input type="text" value={info.name} onChange={(e) => setInfo({ ...info, name: e.target.value })} placeholder="Soulcats Relay" /></label>
+        <label><span>Description</span>
+          <input type="text" value={info.description} onChange={(e) => setInfo({ ...info, description: e.target.value })} placeholder="A relay for..." /></label>
+        <label><span>Admin Pubkey (hex)</span>
+          <input type="text" value={info.pubkey} onChange={(e) => setInfo({ ...info, pubkey: e.target.value })} placeholder={adminAccount?.pk || "64-char hex pubkey"} /></label>
+        <label><span>Contact</span>
+          <input type="text" value={info.contact} onChange={(e) => setInfo({ ...info, contact: e.target.value })} placeholder="admin@soulcats.xyz" /></label>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button className="btn-primary" onClick={handleSave} disabled={saving}>
+          {saving ? "Saving..." : "Save Relay Info"}
+        </button>
+        {!info.pubkey && adminAccount?.pk && (
+          <button className="btn-small" onClick={() => setInfo({ ...info, pubkey: adminAccount.pk })}>
+            Use my pubkey
+          </button>
+        )}
+      </div>
+      {saved && <p className="success" style={{ marginTop: 4, fontSize: "0.8rem" }}>Relay info updated.</p>}
+    </div>
+  );
+}
+
 function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) {
   const [exported, setExported] = useState(false);
 
@@ -5093,6 +5175,7 @@ function SettingsPage({ characters, onReset, adminAccount, serverAdminPubkey }) 
             <p style={{ color: "var(--text-faint)", fontSize: "0.75rem", marginTop: 12 }}>
               Private relay for {APP_TITLE}. All posts are published here first.
             </p>
+            {isAdmin && <RelayInfoEditor adminAccount={adminAccount} />}
           </div>
         ) : (
           <p style={{ color: "var(--text-dim)", fontSize: "0.82rem" }}>

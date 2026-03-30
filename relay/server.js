@@ -511,14 +511,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // NIP-11: Relay information
-  if (req.method === "GET" && req.headers.accept === "application/nostr+json") {
+  // NIP-11: Relay information (reads from config DB, falls back to defaults)
+  if (req.method === "GET" && (req.headers.accept === "application/nostr+json" || req.url === "/nip11")) {
+    const relayConfig = {};
+    try {
+      const row = stmts.getConfig.get("relay_info");
+      if (row) Object.assign(relayConfig, JSON.parse(row.value));
+    } catch {}
     res.writeHead(200, { "Content-Type": "application/nostr+json" });
     res.end(JSON.stringify({
-      name: "NPC No More Relay",
-      description: "Private relay with pubkey whitelist",
+      name: relayConfig.name || "Soulcats Relay",
+      description: relayConfig.description || "Nostr relay for Soulcats",
+      pubkey: relayConfig.pubkey || "",
+      contact: relayConfig.contact || "",
       supported_nips: [1, 2, 9, 11],
-      software: "npc-relay",
+      software: "soulcats-relay",
       version: "1.0.0",
       limitation: {
         max_message_length: MAX_EVENT_SIZE,
@@ -533,7 +540,7 @@ const server = http.createServer((req, res) => {
 
   // Default response
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("NPC No More Relay — connect via WebSocket");
+  res.end("Soulcats Relay — connect via WebSocket");
 });
 
 // ── WebSocket server ──
@@ -575,7 +582,7 @@ server.listen(PORT, () => {
   const allowed = getAllowedPubkeys();
   console.log(`
 ╔══════════════════════════════════════════╗
-║         NPC No More Relay v1.0          ║
+║         Soulcats Relay v1.0             ║
 ╠══════════════════════════════════════════╣
 ║  Port:          ${String(PORT).padEnd(23)}║
 ║  Data dir:      ${DATA_DIR.padEnd(23)}║
