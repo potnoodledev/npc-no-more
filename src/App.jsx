@@ -5309,6 +5309,11 @@ export default function App() {
 
   if (loading) return null;
 
+  // Public profile view — allow even without identity setup
+  if (!adminAccount && route === "profile" && routeKey) {
+    return <ExternalProfileView pubkey={routeKey} activeAccount={null} serverAdminPubkey={serverAdminPubkey} allIdentities={[]} />;
+  }
+
   // Key setup — first time visiting the site
   const pendingInvitePk = route === "invite" ? routeKey : null;
   if (!adminAccount) {
