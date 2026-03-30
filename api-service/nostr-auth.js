@@ -11,14 +11,14 @@ import { writeFileSync, readFileSync, existsSync } from "fs";
 const MAX_AGE_SECONDS = 120;
 const AUTH_FILE = process.env.AUTH_FILE || "/tmp/auth.json";
 
-// State: admin pubkey + whitelist + invite keys
-let authState = { admin: "", whitelist: [], inviteKeys: [] };
+// State: admin pubkey + whitelist + invite keys + NIP-05 names
+let authState = { admin: "", whitelist: [], inviteKeys: [], nip05Names: {} };
 
 // Load persisted state
 if (existsSync(AUTH_FILE)) {
   try {
     const loaded = JSON.parse(readFileSync(AUTH_FILE, "utf-8"));
-    authState = { admin: "", whitelist: [], inviteKeys: [], ...loaded };
+    authState = { admin: "", whitelist: [], inviteKeys: [], nip05Names: {}, ...loaded };
   } catch {}
 }
 if (process.env.ADMIN_PUBKEY && !authState.admin) {
@@ -126,7 +126,64 @@ export function claimInvite(pk) {
 }
 
 export function resetAuth() {
-  authState = { admin: "", whitelist: [], inviteKeys: [] };
+  authState = { admin: "", whitelist: [], inviteKeys: [], nip05Names: {} };
   saveState();
   console.log("[auth] Auth state reset");
+}
+
+// ── NIP-05 Name Management ──
+
+const RESERVED_NAMES = new Set([
+  "www", "affine", "ethglobal", "mirror",
+  "api", "admin", "relay", "mail", "ns1", "ns2",
+  "ftp", "smtp", "app", "id", "dev", "staging", "test",
+]);
+const NAME_REGEX = /^[a-z0-9_-]{2,30}$/;
+const MAX_NAMES_PER_PUBKEY = 5;
+
+export function claimNip05Name(name, pubkey) {
+  if (!NAME_REGEX.test(name)) return { error: "invalid name (2-30 chars, lowercase alphanumeric, hyphens, underscores)" };
+  if (RESERVED_NAMES.has(name)) return { error: "name is reserved" };
+
+  const existing = authState.nip05Names[name];
+  if (existing && existing !== pubkey) return { error: "name already claimed" };
+  if (existing === pubkey) return { ok: true, name };
+
+  const owned = Object.values(authState.nip05Names).filter(pk => pk === pubkey).length;
+  if (owned >= MAX_NAMES_PER_PUBKEY) return { error: `max ${MAX_NAMES_PER_PUBKEY} names per identity` };
+
+  authState.nip05Names[name] = pubkey;
+  saveState();
+  console.log(`[nip05] claimed: ${name} -> ${pubkey.slice(0, 16)}...`);
+  return { ok: true, name };
+}
+
+export function releaseNip05Name(name, pubkey) {
+  if (authState.nip05Names[name] !== pubkey) return { error: "name not owned by you" };
+  delete authState.nip05Names[name];
+  saveState();
+  console.log(`[nip05] released: ${name}`);
+  return { ok: true };
+}
+
+export function lookupNip05(name) {
+  return authState.nip05Names[name] || null;
+}
+
+export function getNip05ByPubkey(pubkey) {
+  return Object.entries(authState.nip05Names)
+    .filter(([, pk]) => pk === pubkey)
+    .map(([name]) => name);
+}
+
+export function getAllNip05Names() {
+  return { ...authState.nip05Names };
+}
+
+export function adminRemoveNip05(name) {
+  if (!authState.nip05Names[name]) return { error: "name not found" };
+  delete authState.nip05Names[name];
+  saveState();
+  console.log(`[nip05] admin removed: ${name}`);
+  return { ok: true };
 }

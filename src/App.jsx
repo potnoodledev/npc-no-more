@@ -38,6 +38,7 @@ import {
   getAuthHeaders,
 } from "./nostr";
 import { npubEncode, decode as nip19decode } from "nostr-tools/nip19";
+import { claimName as nip05ClaimName, releaseName as nip05ReleaseName, getMyNames as nip05GetMyNames } from "./nip05";
 import "./App.css";
 
 const APP_TITLE = import.meta.env.VITE_APP_TITLE || "NPC No More";
@@ -886,6 +887,116 @@ function CharacterSwitcher({ characters, selectedCharId, onSelect }) {
 }
 
 // ══════════════════════════════════════
+//  NIP-05 SUBDOMAIN CLAIM WIDGET
+// ══════════════════════════════════════
+
+const NIP05_DOMAIN = import.meta.env.VITE_NIP05_DOMAIN || "soulcats.xyz";
+
+function Nip05ClaimWidget({ editFields, updateField, account, isUserWhitelisted }) {
+  const [claiming, setClaiming] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+  const [claimInput, setClaimInput] = useState("");
+  const [showClaim, setShowClaim] = useState(false);
+  const [error, setError] = useState("");
+
+  const currentNip05 = editFields.nip05 || "";
+  const isSoulcatNip05 = currentNip05.startsWith("_@") && currentNip05.endsWith("." + NIP05_DOMAIN);
+  const claimedName = isSoulcatNip05 ? currentNip05.slice(2, -(NIP05_DOMAIN.length + 1)) : null;
+
+  function suggestName() {
+    const name = (editFields.display_name || editFields.name || "").toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 30);
+    return name.length >= 2 ? name : "";
+  }
+
+  async function handleClaim() {
+    const name = claimInput.trim().toLowerCase();
+    if (!name) return;
+    setClaiming(true);
+    setError("");
+    try {
+      const result = await nip05ClaimName(name, account);
+      if (result.error) {
+        setError(result.error);
+      } else {
+        updateField("nip05", result.nip05);
+        setShowClaim(false);
+        setError("");
+      }
+    } catch (e) {
+      setError(e.message);
+    }
+    setClaiming(false);
+  }
+
+  async function handleRelease() {
+    if (!claimedName || !window.confirm(`Release ${claimedName}.${NIP05_DOMAIN}?`)) return;
+    setReleasing(true);
+    try {
+      const result = await nip05ReleaseName(claimedName, account);
+      if (result.ok) {
+        updateField("nip05", "");
+      } else {
+        setError(result.error || "Failed to release");
+      }
+    } catch (e) {
+      setError(e.message);
+    }
+    setReleasing(false);
+  }
+
+  if (!isUserWhitelisted) {
+    return (
+      <label><span>NIP-05 (Nostr Address)</span>
+        <input type="text" value={editFields.nip05} onChange={(e) => updateField("nip05", e.target.value)} placeholder="name@domain.com" />
+      </label>
+    );
+  }
+
+  return (
+    <label><span>NIP-05 (Nostr Address)</span>
+      {isSoulcatNip05 ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="text" value={editFields.nip05} readOnly style={{ flex: 1, opacity: 0.8 }} />
+          <button className="btn-back" onClick={handleRelease} disabled={releasing} style={{ whiteSpace: "nowrap" }}>
+            {releasing ? "..." : "Release"}
+          </button>
+        </div>
+      ) : showClaim ? (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="text"
+              value={claimInput}
+              onChange={(e) => { setClaimInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "")); setError(""); }}
+              placeholder="yourname"
+              style={{ flex: 1 }}
+              maxLength={30}
+            />
+            <span style={{ opacity: 0.6 }}>.{NIP05_DOMAIN}</span>
+          </div>
+          {error && <div style={{ color: "#e74c3c", fontSize: "0.85em", marginTop: 4 }}>{error}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button className="btn-primary" onClick={handleClaim} disabled={claiming || claimInput.length < 2}>
+              {claiming ? "Claiming..." : "Claim"}
+            </button>
+            <button className="btn-back" onClick={() => { setShowClaim(false); setError(""); }}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input type="text" value={editFields.nip05} onChange={(e) => updateField("nip05", e.target.value)} placeholder="name@domain.com" style={{ flex: 1 }} />
+            <button className="btn-primary" onClick={() => { setClaimInput(suggestName()); setShowClaim(true); setError(""); }} style={{ whiteSpace: "nowrap" }}>
+              Claim .{NIP05_DOMAIN}
+            </button>
+          </div>
+        </div>
+      )}
+    </label>
+  );
+}
+
+// ══════════════════════════════════════
 //  OWNED CHARACTER PAGE (tabs: Posts / Profile)
 // ══════════════════════════════════════
 
@@ -1400,8 +1511,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                 </label>
                 <label><span>Banner URL</span>
                   <input type="url" value={editFields.banner} onChange={(e) => updateField("banner", e.target.value)} placeholder="https://..." /></label>
-                <label><span>NIP-05 (Nostr Address)</span>
-                  <input type="text" value={editFields.nip05} onChange={(e) => updateField("nip05", e.target.value)} placeholder="name@domain.com" /></label>
+                <Nip05ClaimWidget editFields={editFields} updateField={updateField} account={account} isUserWhitelisted={isUserWhitelisted} />
                 <label><span>Lightning Address (LUD-16)</span>
                   <input type="text" value={editFields.lud16} onChange={(e) => updateField("lud16", e.target.value)} placeholder="name@walletofsatoshi.com" /></label>
                 <label><span>Website</span>
@@ -1839,8 +1949,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, al
             </label>
             <label><span>Banner URL</span>
               <input type="url" value={editFields.banner} onChange={(e) => updateField("banner", e.target.value)} placeholder="https://..." /></label>
-            <label><span>NIP-05 (Nostr Address)</span>
-              <input type="text" value={editFields.nip05} onChange={(e) => updateField("nip05", e.target.value)} placeholder="name@domain.com" /></label>
+            <Nip05ClaimWidget editFields={editFields} updateField={updateField} account={account} isUserWhitelisted={isUserWhitelisted} />
             <label><span>Lightning Address (LUD-16)</span>
               <input type="text" value={editFields.lud16} onChange={(e) => updateField("lud16", e.target.value)} placeholder="name@walletofsatoshi.com" /></label>
             <label><span>Website</span>

@@ -15,8 +15,9 @@ app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 3456;
 
-import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist, resetAuth, createInvite, getInvites, deleteInvite, claimInvite } from "./nostr-auth.js";
+import { verifyNostrAuth, claimAdmin, getAuthState, addToWhitelist, removeFromWhitelist, resetAuth, createInvite, getInvites, deleteInvite, claimInvite, claimNip05Name, releaseNip05Name, lookupNip05, getNip05ByPubkey, getAllNip05Names, adminRemoveNip05 } from "./nostr-auth.js";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
+import { npubEncode } from "nostr-tools/nip19";
 
 // ── API Keys ──
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
@@ -164,6 +165,79 @@ async function addToRelayWhitelist(pubkey, label = "") {
     console.error(`[relay] failed to whitelist: ${e.message}`);
   }
 }
+
+// ── NIP-05 Subdomain Detection & Routes ──
+const NIP05_DOMAIN = process.env.NIP05_DOMAIN || "soulcats.xyz";
+const NIP05_FRONTEND_URL = process.env.NIP05_FRONTEND_URL || "https://soulcats.xyz";
+
+// Subdomain detection: must come before all other routes
+app.use((req, res, next) => {
+  const host = req.hostname; // e.g. "alice.soulcats.xyz"
+  if (host && host.endsWith("." + NIP05_DOMAIN)) {
+    req.subdomain = host.slice(0, -(NIP05_DOMAIN.length + 1));
+    if (req.subdomain && !req.subdomain.includes(".")) {
+      return next(); // valid single-level subdomain
+    }
+  }
+  req.subdomain = null;
+  next();
+});
+
+// Subdomain: NIP-05 well-known
+app.get("/.well-known/nostr.json", (req, res) => {
+  if (!req.subdomain) return res.status(404).json({ error: "not found" });
+  const pubkey = lookupNip05(req.subdomain);
+  if (!pubkey) return res.json({ names: {} });
+  res.json({
+    names: { _: pubkey },
+    relays: { [pubkey]: [RELAY_URL.replace("http://", "ws://").replace("https://", "wss://")].filter(Boolean) },
+  });
+});
+
+// Subdomain: redirect everything else to profile
+app.use((req, res, next) => {
+  if (!req.subdomain) return next();
+  const pubkey = lookupNip05(req.subdomain);
+  if (pubkey) {
+    const npub = npubEncode(pubkey);
+    return res.redirect(302, `${NIP05_FRONTEND_URL}/#/profile/${npub}`);
+  }
+  res.redirect(302, NIP05_FRONTEND_URL);
+});
+
+// ── NIP-05 API Routes ──
+app.post("/nip05/claim", protectEndpoint, (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
+  const result = claimNip05Name(name.toLowerCase(), req.pubkey);
+  if (result.error) return res.status(400).json(result);
+  res.json({ ok: true, name: result.name, nip05: `_@${result.name}.${NIP05_DOMAIN}` });
+});
+
+app.delete("/nip05/claim", protectEndpoint, (req, res) => {
+  const { name } = req.body;
+  if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
+  const result = releaseNip05Name(name.toLowerCase(), req.pubkey);
+  if (result.error) return res.status(400).json(result);
+  res.json({ ok: true });
+});
+
+app.get("/nip05/my-names", protectEndpoint, (req, res) => {
+  const names = getNip05ByPubkey(req.pubkey);
+  res.json({ names, domain: NIP05_DOMAIN });
+});
+
+app.get("/admin/nip05/names", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  res.json({ names: getAllNip05Names(), domain: NIP05_DOMAIN });
+});
+
+app.delete("/admin/nip05/:name", protectEndpoint, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: "admin only" });
+  const result = adminRemoveNip05(req.params.name);
+  if (result.error) return res.status(404).json(result);
+  res.json({ ok: true });
+});
 
 // ── Health ──
 app.get("/setup-status", (req, res) => {
