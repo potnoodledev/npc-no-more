@@ -5112,9 +5112,18 @@ function RelayInfoEditor({ adminAccount }) {
             </div>
           )}
         </label>
-        <label><span>Admin Pubkey (hex)</span>
+        <label><span>Admin Pubkey (npub)</span>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="text" value={info.pubkey} onChange={(e) => setInfo({ ...info, pubkey: e.target.value })} placeholder={adminAccount?.pk || "64-char hex pubkey"} style={{ flex: 1 }} />
+            <input type="text" value={info.pubkey ? npubEncode(info.pubkey) : ""} onChange={(e) => {
+              const val = e.target.value.trim();
+              if (val.startsWith("npub1")) {
+                try { const { type, data } = nip19decode(val); if (type === "npub") setInfo({ ...info, pubkey: data }); } catch {}
+              } else if (/^[0-9a-f]{64}$/i.test(val)) {
+                setInfo({ ...info, pubkey: val });
+              } else if (!val) {
+                setInfo({ ...info, pubkey: "" });
+              }
+            }} placeholder={adminAccount?.npub || "npub1..."} style={{ flex: 1 }} />
             {!info.pubkey && adminAccount?.pk && (
               <button type="button" className="btn-small" onClick={() => setInfo({ ...info, pubkey: adminAccount.pk })} style={{ whiteSpace: "nowrap" }}>
                 Use mine
