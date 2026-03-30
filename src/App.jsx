@@ -5017,17 +5017,19 @@ function AdminWhitelist({ adminAccount }) {
 }
 
 function RelayInfoEditor({ adminAccount }) {
-  const [info, setInfo] = useState({ name: "", description: "", pubkey: "", contact: "" });
+  const [info, setInfo] = useState({ name: "", description: "", pubkey: "", contact: "", icon: "" });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [generatingIcon, setGeneratingIcon] = useState(false);
+  const iconFileRef = useRef(null);
   const apiUrl = import.meta.env.VITE_API_URL || "";
 
   useEffect(() => {
     if (!apiUrl || !adminAccount) return;
     getAuthHeaders(`${apiUrl}/admin/relay-info`, "GET", adminAccount).then(headers => {
       fetch(`${apiUrl}/admin/relay-info`, { headers }).then(r => r.json()).then(data => {
-        if (data && !data.error) setInfo({ name: "", description: "", pubkey: "", contact: "", ...data });
+        if (data && !data.error) setInfo({ name: "", description: "", pubkey: "", contact: "", icon: "", ...data });
         setLoading(false);
       }).catch(() => setLoading(false));
     });
@@ -5050,32 +5052,85 @@ function RelayInfoEditor({ adminAccount }) {
     setSaving(false);
   }
 
+  async function handleGenerateIcon() {
+    setGeneratingIcon(true);
+    try {
+      const result = await generateAvatar({
+        name: info.name || "Soulcats Relay",
+        personality: info.description || "A Nostr relay",
+        world: "digital",
+      }, adminAccount);
+      setInfo({ ...info, icon: result.url });
+    } catch (e) {
+      alert("Icon generation failed: " + e.message);
+    }
+    setGeneratingIcon(false);
+  }
+
+  async function handleUploadIcon(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const result = await uploadAvatar(file, adminAccount);
+      setInfo({ ...info, icon: result.url });
+    } catch (err) {
+      alert("Upload failed: " + err.message);
+    }
+  }
+
   if (loading) return <div className="loading" style={{ fontSize: "0.8rem" }}>Loading relay info...</div>;
 
   return (
-    <div style={{ marginTop: 12 }}>
-      <h4 style={{ margin: "0 0 8px 0", fontSize: "0.85rem" }}>Relay Info (NIP-11)</h4>
-      <div className="edit-fields">
+    <div style={{ marginTop: 16 }}>
+      <h4 style={{ margin: "0 0 12px 0", fontSize: "0.85rem", color: "var(--cream)" }}>Relay Info (NIP-11)</h4>
+      <div className="edit-form">
         <label><span>Name</span>
           <input type="text" value={info.name} onChange={(e) => setInfo({ ...info, name: e.target.value })} placeholder="Soulcats Relay" /></label>
         <label><span>Description</span>
-          <input type="text" value={info.description} onChange={(e) => setInfo({ ...info, description: e.target.value })} placeholder="A relay for..." /></label>
+          <textarea value={info.description} onChange={(e) => setInfo({ ...info, description: e.target.value })} rows={2} placeholder="A relay for..." /></label>
+        <label>
+          <div className="avatar-gen-header">
+            <span>Icon</span>
+            {isNimAvailable() && (
+              <button type="button" className="btn-small" onClick={handleGenerateIcon} disabled={generatingIcon} style={{ marginLeft: "auto" }}>
+                {generatingIcon ? "Generating..." : "Generate"}
+              </button>
+            )}
+            <button type="button" className="btn-small" onClick={() => iconFileRef.current?.click()}>Upload</button>
+            <input ref={iconFileRef} type="file" accept="image/*" onChange={handleUploadIcon} style={{ display: "none" }} />
+          </div>
+          <input type="url" value={info.icon} onChange={(e) => setInfo({ ...info, icon: e.target.value })} placeholder="https://... (square image URL)" />
+          {generatingIcon && (
+            <div className="avatar-gen-loading">
+              <span className="streaming-dot" />
+              <span>Generating icon...</span>
+            </div>
+          )}
+          {info.icon && !generatingIcon && (
+            <div className="avatar-gen-preview">
+              <img src={info.icon} alt="relay icon" onError={(e) => { e.target.style.display = "none"; }} />
+            </div>
+          )}
+        </label>
         <label><span>Admin Pubkey (hex)</span>
-          <input type="text" value={info.pubkey} onChange={(e) => setInfo({ ...info, pubkey: e.target.value })} placeholder={adminAccount?.pk || "64-char hex pubkey"} /></label>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="text" value={info.pubkey} onChange={(e) => setInfo({ ...info, pubkey: e.target.value })} placeholder={adminAccount?.pk || "64-char hex pubkey"} style={{ flex: 1 }} />
+            {!info.pubkey && adminAccount?.pk && (
+              <button type="button" className="btn-small" onClick={() => setInfo({ ...info, pubkey: adminAccount.pk })} style={{ whiteSpace: "nowrap" }}>
+                Use mine
+              </button>
+            )}
+          </div>
+        </label>
         <label><span>Contact</span>
           <input type="text" value={info.contact} onChange={(e) => setInfo({ ...info, contact: e.target.value })} placeholder="admin@soulcats.xyz" /></label>
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button className="btn-primary" onClick={handleSave} disabled={saving}>
           {saving ? "Saving..." : "Save Relay Info"}
         </button>
-        {!info.pubkey && adminAccount?.pk && (
-          <button className="btn-small" onClick={() => setInfo({ ...info, pubkey: adminAccount.pk })}>
-            Use my pubkey
-          </button>
-        )}
       </div>
-      {saved && <p className="success" style={{ marginTop: 4, fontSize: "0.8rem" }}>Relay info updated.</p>}
+      {saved && <p className="success" style={{ marginTop: 6, fontSize: "0.8rem" }}>Relay info updated.</p>}
     </div>
   );
 }

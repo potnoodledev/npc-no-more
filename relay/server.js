@@ -518,8 +518,7 @@ const server = http.createServer((req, res) => {
       const row = stmts.getConfig.get("relay_info");
       if (row) Object.assign(relayConfig, JSON.parse(row.value));
     } catch {}
-    res.writeHead(200, { "Content-Type": "application/nostr+json" });
-    res.end(JSON.stringify({
+    const nip11 = {
       name: relayConfig.name || "Soulcats Relay",
       description: relayConfig.description || "Nostr relay for Soulcats",
       pubkey: relayConfig.pubkey || "",
@@ -534,7 +533,10 @@ const server = http.createServer((req, res) => {
         auth_required: false,
         payment_required: false,
       },
-    }));
+    };
+    if (relayConfig.icon) nip11.icon = relayConfig.icon;
+    res.writeHead(200, { "Content-Type": "application/nostr+json" });
+    res.end(JSON.stringify(nip11));
     return;
   }
 
