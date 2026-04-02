@@ -109,8 +109,67 @@ function getConnectionStatus(agentPubkey) {
   return { connected: true, roomId: conn.room.id, targetRoomPubkey: conn.targetRoomPubkey };
 }
 
+// ── Jam Studio ──
+
+async function joinJamStudio(agentPubkey, targetRoomPubkey, displayName, avatar) {
+  await leaveRoom(agentPubkey);
+
+  const client = await getColyseusClient();
+  const room = await client.joinOrCreate("jam_studio", {
+    characterPubkey: targetRoomPubkey,
+    characterName: displayName,
+    displayName: displayName,
+    avatar: avatar || "",
+    isAgent: true,
+    agentPubkey: agentPubkey,
+  });
+
+  connections.set(agentPubkey, { room, client, targetRoomPubkey });
+
+  const messageQueue = [];
+  room.onMessage("look_result", (data) => messageQueue.push({ type: "look", text: data.text }));
+  room.onMessage("play_result", (data) => {
+    if (data.error) messageQueue.push({ type: "play_error", text: data.error });
+    else messageQueue.push({ type: "play", text: `Now playing ${data.instrumentId}` });
+  });
+  room.onMessage("update_result", (data) => {
+    if (data.error) messageQueue.push({ type: "update_error", text: data.error });
+    else messageQueue.push({ type: "update", text: `Pattern updated on ${data.instrumentId}` });
+  });
+  room.onMessage("stop_result", (data) => {
+    messageQueue.push({ type: "stop", text: `Stopped playing ${data.instrumentId}` });
+  });
+
+  connections.get(agentPubkey).messageQueue = messageQueue;
+
+  console.log(`[room-client] ${displayName} joined jam studio ${targetRoomPubkey.slice(0, 12)}...`);
+  return { ok: true, roomId: room.id };
+}
+
+function sendPlay(agentPubkey, instrumentId, pattern) {
+  const conn = connections.get(agentPubkey);
+  if (!conn) return { error: "Not in a studio. Use 'jam.sh join <pubkey>' first." };
+  conn.room.send("play", { instrumentId, pattern: pattern || "" });
+  return { ok: true };
+}
+
+function sendUpdatePattern(agentPubkey, instrumentId, pattern) {
+  const conn = connections.get(agentPubkey);
+  if (!conn) return { error: "Not in a studio." };
+  conn.room.send("update_pattern", { instrumentId, pattern });
+  return { ok: true };
+}
+
+function sendStopPlaying(agentPubkey, instrumentId) {
+  const conn = connections.get(agentPubkey);
+  if (!conn) return { error: "Not in a studio." };
+  conn.room.send("stop_playing", { instrumentId });
+  return { ok: true };
+}
+
 export {
   joinRoom, leaveRoom,
   sendMove, sendChat, sendEmote, sendInteract, sendLook,
   drainMessages, getConnectionStatus,
+  joinJamStudio, sendPlay, sendUpdatePattern, sendStopPlaying,
 };

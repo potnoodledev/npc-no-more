@@ -19,3 +19,9 @@
 [submodule "references/hubs"]
 	path = references/hubs
 	url = https://github.com/Hubs-Foundation/hubs
+[submodule "reference/pixel-agents"]
+	path = reference/pixel-agents
+	url = https://github.com/pablodelucca/pixel-agents.git
+[submodule "reference/musicats"]
+	path = reference/musicats
+	url = https://github.com/polats/musicats.git

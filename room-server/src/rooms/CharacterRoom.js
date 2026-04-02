@@ -1,10 +1,10 @@
 const { Room } = require("colyseus");
 const { RoomState, PlayerState, ChatMessage, ObjectState } = require("../schema/RoomState.js");
 const { saveRecording } = require("../recordings.js");
+const { verifyNostrAuth } = require("../nostr-auth.js");
 
 const MAX_CHAT = 50;
 const INTERACT_DISTANCE = 2;
-const API_URL = process.env.API_URL || "http://localhost:3456";
 
 const DEFAULT_OBJECTS = [
   { type: "couch", name: "Cozy Couch", description: "A worn-out couch covered in cat hair. Perfect for napping.", x: 2, y: 2 },
@@ -232,23 +232,15 @@ class CharacterRoom extends Room {
       };
     }
     if (!options.authEvent) throw new Error("authEvent required");
-    const authHeader = "Nostr " + btoa(JSON.stringify(options.authEvent));
-    try {
-      const res = await fetch(`${API_URL}/auth/check`, {
-        headers: { authorization: authHeader },
-      });
-      if (!res.ok) throw new Error("unauthorized");
-      const data = await res.json();
-      return {
-        pubkey: data.pubkey,
-        isAdmin: data.isAdmin,
-        displayName: options.displayName || "",
-        avatar: options.avatar || "",
-        isAgent: options.isAgent || false,
-      };
-    } catch {
-      throw new Error("auth failed");
-    }
+    const auth = verifyNostrAuth(options.authEvent);
+    if (!auth) throw new Error("invalid signature");
+    return {
+      pubkey: auth.pubkey,
+      isAdmin: false,
+      displayName: options.displayName || "",
+      avatar: options.avatar || "",
+      isAgent: options.isAgent || false,
+    };
   }
 
   onJoin(client, options, auth) {

@@ -51,7 +51,19 @@ services:
       - API_URL=http://npc-api:3456
     restart: unless-stopped
 
+  game:
+    build: ./game-service
+    container_name: npc-game
+    ports:
+      - "3458:3458"
+    volumes:
+      - game-data:/data
+    environment:
+      - API_URL=http://npc-api:3456
+    restart: unless-stopped
+
 volumes:
   relay-data:
   pi-workspace:
   room-recordings:
+  game-data:

@@ -154,7 +154,7 @@ function getCharDir(pubkeyHex) {
 }
 
 const SKILL_TEMPLATES_DIR = join(__dirname, "skill-templates");
-const DEFAULT_SKILLS = ["post", "strudel", "dance", "room"];
+const DEFAULT_SKILLS = ["post", "strudel", "dance", "room", "jam"];
 
 function ensureCharWorkspace(pubkeyHex) {
   const charDir = getCharDir(pubkeyHex);
@@ -837,6 +837,64 @@ import * as rc from "./room-client.js";
   });
 
   console.log("[room-client] Room interaction endpoints registered");
+}
+
+// ── Jam Studio Endpoints ──
+{
+  app.post("/internal/jam/join", async (req, res) => {
+    const { pubkey, targetRoomPubkey, displayName, avatar } = req.body;
+    if (!pubkey || !targetRoomPubkey) return res.status(400).json({ error: "pubkey and targetRoomPubkey required" });
+    try {
+      const result = await rc.joinJamStudio(pubkey, targetRoomPubkey, displayName || "Agent", avatar);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/internal/jam/leave", async (req, res) => {
+    const { pubkey } = req.body;
+    if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+    const result = await rc.leaveRoom(pubkey); // reuse leaveRoom — same connection map
+    res.json(result);
+  });
+
+  app.post("/internal/jam/play", (req, res) => {
+    const { pubkey, instrumentId, pattern } = req.body;
+    if (!pubkey || !instrumentId) return res.status(400).json({ error: "pubkey and instrumentId required" });
+    res.json(rc.sendPlay(pubkey, instrumentId, pattern || ""));
+  });
+
+  app.post("/internal/jam/update", (req, res) => {
+    const { pubkey, instrumentId, pattern } = req.body;
+    if (!pubkey || !instrumentId) return res.status(400).json({ error: "pubkey and instrumentId required" });
+    res.json(rc.sendUpdatePattern(pubkey, instrumentId, pattern || ""));
+  });
+
+  app.post("/internal/jam/stop", (req, res) => {
+    const { pubkey, instrumentId } = req.body;
+    if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+    // If no instrumentId, agent can figure it out from look
+    res.json(rc.sendStopPlaying(pubkey, instrumentId || ""));
+  });
+
+  app.get("/internal/jam/look", async (req, res) => {
+    const pubkey = req.query.pubkey;
+    if (!pubkey) return res.status(400).json({ error: "pubkey query param required" });
+    rc.sendLook(pubkey);
+    await new Promise(r => setTimeout(r, 500));
+    const msgs = rc.drainMessages(pubkey);
+    const lookMsg = msgs.find(m => m.type === "look");
+    res.json({ text: lookMsg?.text || "No response from studio.", messages: msgs });
+  });
+
+  app.get("/internal/jam/messages", (req, res) => {
+    const pubkey = req.query.pubkey;
+    if (!pubkey) return res.status(400).json({ error: "pubkey query param required" });
+    res.json({ messages: rc.drainMessages(pubkey) });
+  });
+
+  console.log("[jam-client] Jam studio endpoints registered");
 }
 
 // ── WebSocket Server ──

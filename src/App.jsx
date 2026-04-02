@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense, Fragment } from "react";
 const ForceGraph2D = lazy(() => import("react-force-graph-2d"));
 import { forceCollide, forceManyBody } from "d3-force-3d";
 import { isNimAvailable, generateRandomPersona, generatePost, generateAvatar, uploadAvatar, getRandomErrorMessage } from "./nim";
@@ -62,6 +62,8 @@ function parseHash() {
   if (parts[0] === "room" && parts[1]) return { route: "room", key: parts[1] };
   if (parts[0] === "replay" && parts[1]) return { route: "replay", key: parts[1] };
   if (parts[0] === "explore") return { route: "explore" };
+  if (parts[0] === "studio" && parts[1]) return { route: "studio", key: parts[1] };
+  if (parts[0] === "soulcats") return { route: "soulcats" };
   return { route: "home" };
 }
 
@@ -281,6 +283,10 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
       </div>
 
       <div className="sidebar-footer">
+        <button className="sidebar-item" onClick={() => setHash("soulcats")}>
+          <span className="sidebar-icon">&#9733;</span>
+          <span>Soulcats</span>
+        </button>
         {isUserWhitelisted && (
           <button className="sidebar-item" onClick={() => setHash("pi")}>
             <span className="sidebar-icon">&#9000;</span>
@@ -293,6 +299,13 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
         }}>
           <span className="sidebar-icon">&#9738;</span>
           <span>My Room</span>
+        </button>
+        <button className="sidebar-item" onClick={() => {
+          const active = allIdentities.find(c => c.id === activeCharId) || allIdentities[0];
+          if (active?.pk) setHash("studio/" + active.pk);
+        }}>
+          <span className="sidebar-icon">&#9835;</span>
+          <span>Jam Studio</span>
         </button>
         <button className="sidebar-item" onClick={() => setHash("explore")}>
           <span className="sidebar-icon">&#9678;</span>
@@ -3888,6 +3901,637 @@ function RoomView({ pubkey, adminAccount, allIdentities }) {
   );
 }
 
+// ══════════════════════════════════════
+//  JAM STUDIO VIEW
+// ══════════════════════════════════════
+
+const INSTRUMENT_EMOJI = { drums: "\uD83E\uDD41", bass: "\uD83C\uDFB8", keys: "\uD83C\uDFB9", sampler: "\uD83C\uDF9B\uFE0F" };
+
+// ── Drum grid constants (ported from musicats) ──
+const DRUM_VOICES = [
+  { id: "bd", label: "kick", color: "#6366f1" },
+  { id: "sd", label: "snare", color: "#ec4899" },
+  { id: "rim", label: "rim", color: "#f43f5e" },
+  { id: "hh", label: "hihat", color: "#22c55e" },
+  { id: "oh", label: "open", color: "#06b6d4" },
+  { id: "lt", label: "lo tom", color: "#8b5cf6" },
+  { id: "mt", label: "md tom", color: "#a855f7" },
+  { id: "ht", label: "hi tom", color: "#c084fc" },
+];
+const GRID_STEPS = 16;
+const BANKS = ["RolandTR808", "RolandTR909", "RolandCR78", "AkaiLinn"];
+
+function createEmptyGrid() {
+  return DRUM_VOICES.map(() => Array(GRID_STEPS).fill(false));
+}
+
+function drumGridToStrudelCode(grid, bank, bpm) {
+  const lines = [];
+  for (let v = 0; v < DRUM_VOICES.length; v++) {
+    const row = grid[v];
+    if (!row.some(Boolean)) continue;
+    const steps = row.map((on) => (on ? DRUM_VOICES[v].id : "~")).join(" ");
+    lines.push(`s("${steps}")`);
+  }
+  if (lines.length === 0) return "";
+  let code = lines.length === 1 ? lines[0] : `stack(\n${lines.map((l) => "  " + l).join(",\n")}\n)`;
+  code += `\n  .bank("${bank}")`;
+  code += `\n  .cps(${+(bpm / 240).toFixed(4)})`;
+  return code;
+}
+
+// Encode grid+bank as JSON for room state pattern field
+function encodeGridPattern(grid, bank) {
+  return JSON.stringify({ type: "drumgrid", grid, bank });
+}
+
+// Decode pattern field back to grid+bank, returns null if not a grid pattern
+function decodeGridPattern(pattern) {
+  if (!pattern) return null;
+  try {
+    const data = JSON.parse(pattern);
+    if (data.type === "drumgrid" && data.grid) return data;
+  } catch {}
+  return null;
+}
+
+// Convert encoded pattern to strudel code
+function patternToStrudelCode(pattern, bpm) {
+  if (!pattern) return "";
+  const decoded = decodeGridPattern(pattern);
+  if (decoded) return drumGridToStrudelCode(decoded.grid, decoded.bank || "RolandTR808", bpm);
+  // Fallback: treat as raw strudel code (for agent-generated patterns)
+  // But skip anything that looks like JSON (not valid strudel)
+  if (pattern.trim().startsWith("{") || pattern.trim().startsWith("[")) return "";
+  return pattern;
+}
+
+function DrumGridUI({ grid, currentStep, onToggleStep, readOnly, label, color }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, width: "100%", position: "relative" }}>
+      {label && <div style={{ fontSize: "0.72rem", fontFamily: "var(--font-body)", fontWeight: 600, color: color || "var(--cream)", marginBottom: 2 }}>{label}</div>}
+      {DRUM_VOICES.map((voice, vi) => (
+        <div key={voice.id} style={{ display: "flex", gap: 2, alignItems: "center" }}>
+          <span style={{
+            width: 44, fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: voice.color,
+            textAlign: "right", paddingRight: 4, flexShrink: 0,
+          }}>{voice.label}</span>
+          <div style={{ display: "flex", gap: 1, flex: 1 }}>
+            {Array.from({ length: GRID_STEPS }).map((_, si) => {
+              const on = grid[vi]?.[si];
+              const isPlayhead = currentStep === si;
+              const isGroupBoundary = si % 4 === 0 && si > 0;
+              return (
+                <Fragment key={si}>
+                  {isGroupBoundary && <div style={{ width: 2, flexShrink: 0 }} />}
+                  <button
+                    onPointerDown={readOnly ? undefined : (e) => { e.preventDefault(); onToggleStep(vi, si); }}
+                    style={{
+                      flex: 1, minWidth: 0, height: 24, borderRadius: 2, border: "none",
+                      cursor: readOnly ? "default" : "pointer",
+                      transition: "background 0.06s", touchAction: "none",
+                      background: on
+                        ? isPlayhead ? voice.color : voice.color + "88"
+                        : isPlayhead ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.04)",
+                      boxShadow: on && isPlayhead ? `0 0 8px ${voice.color}66` : "none",
+                    }}
+                  />
+                </Fragment>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StudioView({ pubkey, adminAccount, allIdentities }) {
+  const [room, setRoom] = useState(null);
+  const [studioState, setStudioState] = useState(null);
+  const [error, setError] = useState(null);
+  const [chatInput, setChatInput] = useState("");
+  const [lookText, setLookText] = useState("");
+  const [grid, setGrid] = useState(createEmptyGrid);
+  const [bank, setBank] = useState(BANKS[0]);
+  const [audioError, setAudioError] = useState(null);
+  const [currentStep, setCurrentStep] = useState(null);
+  const [summoning, setSummoning] = useState(false);
+  const [summonedCats, setSummonedCats] = useState([]);
+  const [observingCat, setObservingCat] = useState(null);
+  const [agentMessages, setAgentMessages] = useState([]);
+  const agentStreamRef = useRef(null);
+  const agentMsgEndRef = useRef(null);
+  const agentTextRef = useRef("");
+  const agentThinkingRef = useRef("");
+  const roomRef = useRef(null);
+  const evaluateRef = useRef(null);
+  const hushRef = useRef(null);
+
+  const identity = allIdentities.find((c) => c.pk === pubkey) || allIdentities[0];
+
+  function updateState(r) {
+    try {
+      const players = {};
+      if (r.state.players) {
+        r.state.players.forEach((p, key) => {
+          players[key] = { pubkey: p.pubkey, displayName: p.displayName, x: p.x, y: p.y, animation: p.animation, activity: p.activity, isAgent: p.isAgent };
+        });
+      }
+      const instruments = {};
+      if (r.state.instruments) {
+        r.state.instruments.forEach((inst, key) => {
+          instruments[key] = {
+            id: inst.id, type: inst.type, name: inst.name, description: inst.description,
+            x: inst.x, y: inst.y, pattern: inst.pattern,
+            playerSessionId: inst.playerSessionId, playerName: inst.playerName, muted: inst.muted,
+          };
+        });
+      }
+      const chat = [];
+      if (r.state.chat) {
+        r.state.chat.forEach((m) => {
+          chat.push({ sender: m.sender, senderName: m.senderName, content: m.content, timestamp: m.timestamp });
+        });
+      }
+      setStudioState({
+        players, instruments, chat,
+        ownerName: r.state.ownerName || "",
+        scene: r.state.scene || "jam_studio",
+        width: r.state.width || 16,
+        height: r.state.height || 16,
+        bpm: r.state.bpm || 120,
+      });
+    } catch (e) {
+      console.warn("[studio] updateState error:", e);
+    }
+  }
+
+  useEffect(() => {
+    if (!ROOMS_URL || !adminAccount || !identity) return;
+    let cancelled = false;
+
+    async function connect() {
+      try {
+        const { Client } = await import("colyseus.js");
+        if (!_colyseusClient) _colyseusClient = new Client(ROOMS_URL);
+
+        const authEvent = await createAuthEvent(ROOMS_URL, "GET", adminAccount);
+        const profile = await fetchProfile(ALL_RELAYS, identity.pk);
+        const r = await _colyseusClient.joinOrCreate("jam_studio", {
+          characterPubkey: pubkey,
+          characterName: profile?.display_name || profile?.name || identity.name || "Cat",
+          displayName: profile?.display_name || profile?.name || adminAccount.profile_name || "Visitor",
+          avatar: profile?.picture || "",
+          authEvent,
+        });
+
+        if (cancelled) { r.leave(); return; }
+        roomRef.current = r;
+        setRoom(r);
+
+        r.onStateChange(() => updateState(r));
+        r.onMessage("look_result", (data) => setLookText(data.text));
+        r.onMessage("play_result", (data) => {
+          if (data.error) setLookText(prev => prev + "\n\n" + data.error);
+        });
+        r.onMessage("update_result", (data) => {
+          if (data.error) setLookText(prev => prev + "\n\n" + data.error);
+        });
+        r.onMessage("stop_result", () => {});
+
+        setTimeout(() => { r.send("look"); updateState(r); }, 200);
+      } catch (e) {
+        if (!cancelled) setError(e.message);
+      }
+    }
+
+    connect();
+
+    const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+    if (piUrl) {
+      fetch(`${piUrl}/internal/summoned?room=${pubkey}`).then(r => r.json()).then(data => {
+        if (data.agents?.length > 0) setSummonedCats(data.agents.map(a => ({ pubkey: a.pubkey, name: a.name })));
+      }).catch(() => {});
+    }
+
+    return () => { cancelled = true; if (roomRef.current) roomRef.current.leave(); };
+  }, [pubkey, adminAccount?.pk]);
+
+  // Agent SSE observer (same as RoomView)
+  useEffect(() => {
+    if (!observingCat) { setAgentMessages([]); return; }
+    const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+    const es = new EventSource(`${piUrl}/internal/agent-stream/${observingCat}`);
+    agentStreamRef.current = es;
+    setAgentMessages([]);
+    agentTextRef.current = "";
+    agentThinkingRef.current = "";
+
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (["connected", "response", "auth_ok", "state", "agent_start", "turn_start", "turn_end", "message_start", "auto_retry_start", "auto_retry_end", "auto_compaction_start", "auto_compaction_end"].includes(msg.type)) {
+          if (msg.type === "agent_start") { agentTextRef.current = ""; agentThinkingRef.current = ""; }
+          return;
+        }
+        if (msg.type === "agent_end") { setAgentMessages(prev => prev.map(m => ({ ...m, streaming: false }))); return; }
+        if (msg.type === "message_update" && msg.assistantMessageEvent) {
+          const ev = msg.assistantMessageEvent;
+          if (ev.type === "text_delta") {
+            agentTextRef.current += ev.delta;
+            setAgentMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.type === "content" && last.streaming) return [...prev.slice(0, -1), { ...last, content: agentTextRef.current }];
+              return [...prev, { type: "content", content: agentTextRef.current, thinking: agentThinkingRef.current, streaming: true }];
+            });
+          }
+          if (ev.type === "thinking_delta") {
+            agentThinkingRef.current += ev.delta;
+            setAgentMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.type === "content" && last.streaming) return [...prev.slice(0, -1), { ...last, thinking: agentThinkingRef.current }];
+              return [...prev, { type: "content", content: "", thinking: agentThinkingRef.current, streaming: true }];
+            });
+          }
+          if (ev.type === "done") { agentTextRef.current = ""; agentThinkingRef.current = ""; }
+          setTimeout(() => agentMsgEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+          return;
+        }
+        if (msg.type === "message_end") {
+          setAgentMessages(prev => { const last = prev[prev.length - 1]; if (last?.type === "content") return [...prev.slice(0, -1), { ...last, streaming: false }]; return prev; });
+          return;
+        }
+        if (msg.type === "tool_execution_start") {
+          setAgentMessages(prev => [...prev, { type: "tool", tool: msg.toolName || "unknown", toolCallId: msg.toolCallId, args: msg.args || {}, content: "", streaming: true }]);
+          return;
+        }
+        if (msg.type === "tool_execution_update") {
+          setAgentMessages(prev => { const last = prev[prev.length - 1]; if (last?.type === "tool" && last.toolCallId === msg.toolCallId) return [...prev.slice(0, -1), { ...last, content: msg.partialResult?.output || last.content }]; return prev; });
+          return;
+        }
+        if (msg.type === "tool_execution_end") {
+          const text = msg.result?.content?.map(c => c.text || "").join("") || JSON.stringify(msg.result || "");
+          setAgentMessages(prev => { const last = prev[prev.length - 1]; if (last?.type === "tool" && last.toolCallId === msg.toolCallId) return [...prev.slice(0, -1), { ...last, content: text, streaming: false, isError: !!msg.isError }]; return prev; });
+          return;
+        }
+      } catch {}
+    };
+    es.onerror = () => { setAgentMessages(prev => [...prev, { type: "system", content: "Stream disconnected." }]); es.close(); };
+    return () => es.close();
+  }, [observingCat]);
+
+  // ── Audio engine: lazy init, auto-play from room state ──
+  const [audioReady, setAudioReady] = useState(false);
+
+  async function ensureAudio() {
+    if (evaluateRef.current) { console.log("[jam] audio already init"); return; }
+    console.log("[jam] initializing strudel...");
+    const mod = await import("@strudel/web");
+    await mod.initStrudel({
+      prebake: async () => {
+        const g = globalThis;
+        if (typeof g.samples === "function") {
+          const ds = "https://raw.githubusercontent.com/felixroos/dough-samples/main";
+          await g.samples(`${ds}/tidal-drum-machines.json`).catch(() => {});
+          console.log("[jam] samples loaded");
+        }
+      },
+    });
+    evaluateRef.current = mod.evaluate;
+    hushRef.current = mod.hush;
+    console.log("[jam] strudel ready, evaluateFn:", typeof mod.evaluate);
+    setAudioReady(true);
+
+    // Immediately evaluate current state after init
+    setTimeout(() => {
+      const code = buildCombinedCode();
+      console.log("[jam] immediate eval after init, code:", code ? code.slice(0, 80) : "(empty)");
+      if (code && mod.evaluate) {
+        mod.evaluate(code, true).then(() => console.log("[jam] immediate eval success")).catch((e) => console.warn("[jam] immediate eval error:", e.message));
+      }
+    }, 100);
+  }
+
+  // Build combined strudel code from all instruments.
+  function buildCombinedCode() {
+    if (!studioState?.instruments) { console.log("[jam] buildCode: no instruments"); return ""; }
+    const bpm = studioState.bpm || 120;
+    const codes = [];
+    const mySessionId = room ? Object.entries(studioState.players).find(([, p]) => p.pubkey === adminAccount?.pk)?.[0] : null;
+
+    for (const inst of Object.values(studioState.instruments)) {
+      if (inst.muted) continue;
+      if (mySessionId && inst.playerSessionId === mySessionId) {
+        const localCode = drumGridToStrudelCode(grid, bank, bpm);
+        if (localCode) codes.push(localCode);
+      } else if (inst.pattern) {
+        const code = patternToStrudelCode(inst.pattern, bpm);
+        console.log("[jam] other instrument:", inst.name, "pattern:", inst.pattern?.slice(0, 50), "-> code:", code?.slice(0, 50) || "(empty)");
+        if (code) codes.push(code);
+      }
+    }
+    if (codes.length === 0) { console.log("[jam] buildCode: no active patterns"); return ""; }
+    const combined = codes.length === 1 ? codes[0] : `stack(\n${codes.map((c) => "  " + c).join(",\n")}\n)`;
+    console.log("[jam] buildCode result:", combined.slice(0, 100));
+    return combined;
+  }
+
+  // Evaluate audio whenever grid, bank, room instruments, or audio readiness changes
+  useEffect(() => {
+    if (!audioReady || !evaluateRef.current) {
+      console.log("[jam] eval effect skip: audioReady=", audioReady, "evalFn=", !!evaluateRef.current);
+      return;
+    }
+    const code = buildCombinedCode();
+    if (!code) {
+      console.log("[jam] eval effect: no code, hushing");
+      if (hushRef.current) hushRef.current();
+      return;
+    }
+    console.log("[jam] evaluating:", code.slice(0, 80));
+    evaluateRef.current(code, true).then(() => console.log("[jam] eval success")).catch((e) => console.warn("[jam] eval error:", e.message));
+  }, [audioReady, grid, bank, studioState?.instruments, studioState?.bpm]);
+
+  // Send local grid changes to room state (so others hear it)
+  // Read from Colyseus state directly (not stale React state) to find our instrument
+  useEffect(() => {
+    const r = roomRef.current;
+    if (!r || !r.state) { console.log("[jam] sync skip: no room"); return; }
+    let mySessionId = null;
+    let myInst = null;
+    r.state.players.forEach((p, sid) => {
+      if (p.pubkey === adminAccount?.pk) mySessionId = sid;
+    });
+    if (!mySessionId) { console.log("[jam] sync skip: can't find my session"); return; }
+    r.state.instruments.forEach((inst) => {
+      if (inst.playerSessionId === mySessionId) myInst = inst;
+    });
+    if (!myInst) { console.log("[jam] sync skip: not sitting at instrument, sid:", mySessionId); return; }
+    const encoded = encodeGridPattern(grid, bank);
+    const hasActive = grid.some(row => row.some(Boolean));
+    console.log("[jam] syncing grid to room:", myInst.id, "hasActiveCells:", hasActive);
+    r.send("update_pattern", { instrumentId: myInst.id, pattern: encoded });
+  }, [grid, bank]);
+
+  // Playhead: track current step position via RAF when any instrument is active
+  useEffect(() => {
+    const bpm = studioState?.bpm || 120;
+    const hasActive = studioState?.instruments && Object.values(studioState.instruments).some((i) => i.pattern && !i.muted);
+    if (!hasActive || !audioReady) { setCurrentStep(null); return; }
+
+    const cycleDuration = 240 / bpm; // seconds per cycle (16 steps)
+    const startTime = performance.now() / 1000;
+    let rafId;
+
+    function tick() {
+      const elapsed = performance.now() / 1000 - startTime;
+      const posInCycle = elapsed % cycleDuration;
+      const step = Math.floor((posInCycle / cycleDuration) * GRID_STEPS);
+      setCurrentStep(step);
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(rafId); setCurrentStep(null); };
+  }, [audioReady, studioState?.bpm, studioState?.instruments]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { if (hushRef.current) hushRef.current(); };
+  }, []);
+
+  function handleCellClick(x, y) {
+    if (!room) return;
+    room.send("move", { x, y });
+    setTimeout(() => { if (roomRef.current) { updateState(roomRef.current); roomRef.current.send("look"); } }, 150);
+  }
+
+  async function handleSitAtInstrument(instrumentId) {
+    if (!room) return;
+    try {
+      await ensureAudio();
+    } catch (e) {
+      setAudioError(e.message);
+    }
+    room.send("play", { instrumentId, pattern: encodeGridPattern(grid, bank) });
+  }
+
+  function handleLeaveInstrument(instrumentId) {
+    if (!room) return;
+    room.send("stop_playing", { instrumentId });
+  }
+
+  function handleToggleStep(voice, step) {
+    setGrid((prev) => {
+      const next = prev.map((row) => [...row]);
+      next[voice][step] = !next[voice][step];
+      return next;
+    });
+  }
+
+  function handleSendChat() {
+    if (!room || !chatInput.trim()) return;
+    room.send("chat", { content: chatInput });
+    setChatInput("");
+  }
+
+  async function handleSummon() {
+    setSummoning(true);
+    try {
+      const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+      const res = await fetch(`${piUrl}/internal/summon`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetRoomPubkey: pubkey }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setSummonedCats(prev => [...prev, { pubkey: data.pubkey, name: data.name }]);
+        setLookText(prev => prev + `\n\nSummoned ${data.name}! They're entering the studio...`);
+      }
+    } catch (e) {
+      setLookText(prev => prev + `\nSummon error: ${e.message}`);
+    }
+    setSummoning(false);
+  }
+
+  async function handleDismiss(catPubkey, catName) {
+    try {
+      const piUrl = (import.meta.env.VITE_PI_URL || "").replace("ws://", "http://").replace("wss://", "https://");
+      await fetch(`${piUrl}/internal/dismiss`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pubkey: catPubkey }) });
+      setSummonedCats(prev => prev.filter(c => c.pubkey !== catPubkey));
+    } catch {}
+  }
+
+  if (!ROOMS_URL) return <div className="loading">Rooms not configured. Set VITE_ROOMS_URL.</div>;
+  if (error) return <div className="loading" style={{ color: "var(--danger)" }}>Studio error: {error}</div>;
+  if (!studioState) return <div className="loading">Entering studio...</div>;
+
+  const instrumentsList = Object.values(studioState.instruments);
+  const mySession = room ? Object.entries(studioState.players).find(([, p]) => p.pubkey === adminAccount?.pk) : null;
+  const myPlayer = mySession?.[1];
+  const mySessionId = mySession?.[0];
+  const myInstrument = mySessionId ? instrumentsList.find((i) => i.playerSessionId === mySessionId) : null;
+
+  return (
+    <div>
+      <h2 className="page-title">{studioState.ownerName || "Unknown"}'s Studio</h2>
+
+      {/* Info bar */}
+      <div className="room-info">
+        <span className="room-scene-badge">jam studio</span>
+        <span className="room-player-count">{Object.keys(studioState.players).length} cat{Object.keys(studioState.players).length !== 1 ? "s" : ""}</span>
+        <span className="studio-bpm-badge">BPM {studioState.bpm}</span>
+        {!audioReady && (
+          <button className="btn-primary" onClick={async () => { try { await ensureAudio(); setAudioError(null); } catch (e) { setAudioError(e.message); } }}>
+            Join Jam
+          </button>
+        )}
+        <select className="sc-todo-select" value={bank} onChange={(e) => setBank(e.target.value)}>
+          {BANKS.map((b) => <option key={b} value={b}>{b.replace("Roland", "")}</option>)}
+        </select>
+        <button className="btn-small" onClick={() => setGrid(createEmptyGrid)}>Clear</button>
+        <button className="btn-small" onClick={handleSummon} disabled={summoning}>{summoning ? "..." : "Summon Cat"}</button>
+      </div>
+      {audioError && <div style={{ color: "var(--danger)", fontSize: "0.72rem", marginTop: 4 }}>Audio error: {audioError}</div>}
+      {!audioReady && instrumentsList.some((i) => i.pattern) && (
+        <div className="edit-section" style={{ marginTop: 8, textAlign: "center", padding: "16px", cursor: "pointer", borderColor: "var(--accent-dim)" }}
+          onClick={async () => { try { await ensureAudio(); } catch (e) { setAudioError(e.message); } }}>
+          <div style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--accent)" }}>A jam is in progress!</div>
+          <div style={{ fontSize: "0.72rem", color: "var(--text-dim)", marginTop: 4 }}>Click here to start listening</div>
+        </div>
+      )}
+
+      {summonedCats.length > 0 && (
+        <div className="room-summoned">
+          {summonedCats.map((cat) => (
+            <span key={cat.pubkey} className={`room-summoned-cat ${observingCat === cat.pubkey ? "room-summoned-active" : ""}`}
+              onClick={() => setObservingCat(observingCat === cat.pubkey ? null : cat.pubkey)}>
+              {cat.name}
+              <button className="room-dismiss-btn" onClick={(e) => { e.stopPropagation(); handleDismiss(cat.pubkey, cat.name); if (observingCat === cat.pubkey) setObservingCat(null); }}>x</button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {observingCat && (
+        <div className="agent-observer">
+          <div className="agent-observer-header">
+            <span>{summonedCats.find(c => c.pubkey === observingCat)?.name || "Agent"} — Live</span>
+            <button className="room-dismiss-btn" onClick={() => setObservingCat(null)}>x</button>
+          </div>
+          <div className="agent-observer-messages">
+            {agentMessages.length === 0 && <div style={{ opacity: 0.4, fontSize: "0.78rem", padding: "0.5rem" }}>Waiting for agent activity...</div>}
+            {agentMessages.map((msg, i) => (
+              <div key={i} className={`agent-msg agent-msg-${msg.type}`}>
+                {msg.type === "content" && <div className="agent-content">{msg.content}{msg.streaming && <span className="streaming-dot" />}</div>}
+                {msg.type === "tool" && (
+                  <div className="agent-tool">
+                    <span className="agent-tool-icon">{msg.tool === "bash" ? "$" : "T"}</span>
+                    <span className="agent-tool-name">{msg.tool}</span>
+                    {msg.streaming && <span className="streaming-dot" />}
+                  </div>
+                )}
+                {msg.type === "system" && <div style={{ opacity: 0.4, fontSize: "0.72rem" }}>{msg.content}</div>}
+              </div>
+            ))}
+            <div ref={agentMsgEndRef} />
+          </div>
+        </div>
+      )}
+
+      {/* Room grid + sidebar */}
+      <div className="room-layout">
+        <div className="room-grid" style={{ gridTemplateColumns: `repeat(${studioState.width}, 1fr)` }}>
+          {Array.from({ length: studioState.height }, (_, y) =>
+            Array.from({ length: studioState.width }, (_, x) => {
+              const playersHere = Object.values(studioState.players).filter(p => Math.round(p.x) === x && Math.round(p.y) === y);
+              const instrumentsHere = instrumentsList.filter(i => Math.round(i.x) === x && Math.round(i.y) === y);
+              const isMe = myPlayer && Math.round(myPlayer.x) === x && Math.round(myPlayer.y) === y;
+              const hasActiveInst = instrumentsHere.some(i => i.pattern && !i.muted);
+              return (
+                <div
+                  key={`${x}-${y}`}
+                  className={`room-cell ${isMe ? "room-cell-me" : ""} ${playersHere.length > 0 && !isMe ? "room-cell-player" : ""} ${instrumentsHere.length > 0 ? "room-cell-object" : ""} ${hasActiveInst ? "studio-cell-playing" : ""}`}
+                  onClick={() => handleCellClick(x, y)}
+                  title={[
+                    ...playersHere.map(p => p.displayName || "cat"),
+                    ...instrumentsHere.map(i => `${i.name}${i.playerName ? ` (${i.playerName})` : ""}`),
+                  ].join(", ") || `(${x}, ${y})`}
+                >
+                  {isMe && "\uD83D\uDC31"}
+                  {!isMe && playersHere.length > 0 && (playersHere[0].isAgent ? "\uD83E\uDD16" : "\uD83D\uDE3A")}
+                  {playersHere.length === 0 && instrumentsHere.length > 0 && (INSTRUMENT_EMOJI[instrumentsHere[0].type] || "\uD83C\uDFB5")}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Sidebar: Instruments list */}
+        <div className="room-sidebar">
+          <div className="pi-skill-panel-title">Instruments</div>
+          {instrumentsList.map((inst) => {
+            const isMine = inst.playerSessionId === mySessionId;
+            const isVacant = !inst.playerSessionId;
+            return (
+              <div key={inst.id} className={`studio-instrument-card ${isMine ? "studio-instrument-mine" : ""}`}>
+                <div className="studio-instrument-header">
+                  <span>{INSTRUMENT_EMOJI[inst.type] || ""} {inst.name}</span>
+                  <span className="studio-instrument-type">({inst.x},{inst.y})</span>
+                </div>
+                {inst.playerName && <div className="studio-instrument-player">{inst.playerName}</div>}
+                {isMine ? (
+                  <button className="btn-small" style={{ marginTop: 4, color: "var(--danger)" }} onClick={() => handleLeaveInstrument(inst.id)}>Leave</button>
+                ) : isVacant ? (
+                  <button className="btn-small" style={{ marginTop: 4 }} onClick={() => handleSitAtInstrument(inst.id)}>Sit Here</button>
+                ) : null}
+              </div>
+            );
+          })}
+          {lookText && <pre className="room-look-text" style={{ marginTop: 12 }}>{lookText}</pre>}
+        </div>
+      </div>
+
+      {/* All active instrument grids */}
+      {instrumentsList.filter((i) => i.pattern || i.playerSessionId === mySessionId).map((inst) => {
+        const isMine = inst.playerSessionId === mySessionId;
+        const decoded = decodeGridPattern(inst.pattern);
+        const displayGrid = isMine ? grid : (decoded?.grid || null);
+        if (!displayGrid) return null;
+        return (
+          <div key={inst.id} className="edit-section" style={{ marginTop: 12, padding: "12px 10px" }}>
+            <DrumGridUI
+              grid={displayGrid}
+              currentStep={currentStep}
+              onToggleStep={isMine ? handleToggleStep : () => {}}
+              readOnly={!isMine}
+              label={`${INSTRUMENT_EMOJI[inst.type] || ""} ${inst.name}${inst.playerName ? ` — ${inst.playerName}` : ""}`}
+              color={isMine ? "var(--accent)" : "var(--text-dim)"}
+            />
+          </div>
+        );
+      })}
+
+      {/* Chat */}
+      <div className="room-chat" style={{ marginTop: 8 }}>
+        <div className="room-chat-messages">
+          {studioState.chat.slice(-20).map((m, i) => (
+            <div key={i} className="room-chat-msg">
+              <span className="room-chat-sender">{m.senderName}:</span> {m.content}
+            </div>
+          ))}
+        </div>
+        <div className="room-chat-input">
+          <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSendChat(); }} placeholder="Say something..." />
+          <button className="btn-primary" onClick={handleSendChat} disabled={!chatInput.trim()}>Chat</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ExploreRooms() {
   const [rooms, setRooms] = useState([]);
   const [recordings, setRecordings] = useState([]);
@@ -3938,12 +4582,14 @@ function ExploreRooms() {
   if (!ROOMS_URL) return <div className="loading">Rooms not configured.</div>;
 
   const liveRooms = rooms.filter(r => r.name === "character_room");
+  const liveStudios = rooms.filter(r => r.name === "jam_studio");
 
   return (
     <div>
       <h2 className="page-title">Explore Rooms</h2>
       <div className="feed-tabs">
-        <button className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}>Live {liveRooms.length > 0 && `(${liveRooms.length})`}</button>
+        <button className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}>Rooms {liveRooms.length > 0 && `(${liveRooms.length})`}</button>
+        <button className={tab === "studios" ? "active" : ""} onClick={() => setTab("studios")}>Studios {liveStudios.length > 0 && `(${liveStudios.length})`}</button>
         <button className={tab === "recordings" ? "active" : ""} onClick={() => setTab("recordings")}>Recordings {recordings.length > 0 && `(${recordings.length})`}</button>
       </div>
 
@@ -3963,6 +4609,30 @@ function ExploreRooms() {
                 <div className="room-explore-name">{r.metadata?.ownerName || "Unknown"}'s Room</div>
                 <div className="room-explore-meta">
                   <span>{r.metadata?.scene || "default"}</span>
+                  <span>{r.clients} cat{r.clients !== 1 ? "s" : ""}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {tab === "studios" && (
+        <>
+          {loading && <div className="loading">Looking for active studios...</div>}
+          {!loading && liveStudios.length === 0 && (
+            <div className="loading">No active studios. Click "Jam Studio" in the sidebar to start one!</div>
+          )}
+          <div className="room-explore-grid">
+            {liveStudios.map((r) => (
+              <div key={r.roomId} className="room-explore-card room-explore-live clickable" onClick={() => {
+                const pk = r.metadata?.ownerPubkey;
+                if (pk) window.location.hash = `#/studio/${pk}`;
+              }}>
+                <div className="room-explore-live-dot" />
+                <div className="room-explore-name">{r.metadata?.ownerName || "Unknown"}'s Studio</div>
+                <div className="room-explore-meta">
+                  <span>jam studio</span>
                   <span>{r.clients} cat{r.clients !== 1 ? "s" : ""}</span>
                 </div>
               </div>
@@ -4629,6 +5299,326 @@ function RelayStatus({ url }) {
       {status === "error" || status === "timeout" ? <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "var(--danger)", marginRight: 6, verticalAlign: "middle" }} /> : null}
       {labels[status]}
     </span>
+  );
+}
+
+// ══════════════════════════════════════
+//  SOULCATS DASHBOARD
+// ══════════════════════════════════════
+
+const GAME_URL = import.meta.env.VITE_GAME_URL || "";
+
+function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
+  const [gameCat, setGameCat] = useState(null);
+  const [dailies, setDailies] = useState([]);
+  const [todos, setTodos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newTodo, setNewTodo] = useState("");
+  const [newTodoCategory, setNewTodoCategory] = useState("general");
+  const [completing, setCompleting] = useState(null); // quest/todo id being completed
+  const [lastResult, setLastResult] = useState(null); // last completion result toast
+
+  const activeChar = characters.find((c) => c.id === activeCharId) || null;
+  const isUserIdentity = !activeChar;
+  const account = activeChar ? accountFromSkHex(activeChar.skHex) : adminAccount;
+
+  async function gameHeaders(url, method) {
+    if (!account) return { "Content-Type": "application/json" };
+    return await getAuthHeaders(url, method, account);
+  }
+
+  async function gameFetch(path, method = "GET", body = null) {
+    const url = `${GAME_URL}${path}`;
+    const headers = await gameHeaders(url, method);
+    const opts = { method, headers };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
+  // Register cat if needed and load game state
+  async function loadGameState() {
+    if (!GAME_URL || !account || isUserIdentity) { setLoading(false); return; }
+    try {
+      let cats = await gameFetch("/game/cats");
+      const charPk = activeChar?.pk || account.pk;
+
+      // Find or register cat for active character
+      let cat = cats.find((c) => c.character_pubkey === charPk);
+      if (!cat) {
+        cat = await gameFetch("/game/cats", "POST", {
+          character_pubkey: charPk,
+          name: activeChar?.name || "My Cat",
+        });
+        // Fetch full cat data
+        if (cat.id) cat = await gameFetch(`/game/cats/${cat.id}`);
+      }
+      setGameCat(cat);
+
+      if (cat?.id) {
+        const [d, t] = await Promise.all([
+          gameFetch(`/game/cats/${cat.id}/dailies`),
+          gameFetch(`/game/cats/${cat.id}/todos`),
+        ]);
+        setDailies(d);
+        setTodos(t);
+      }
+    } catch (err) {
+      console.error("[soulcats] load error:", err);
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => { setLoading(true); loadGameState(); }, [activeCharId, account?.pk]);
+
+  async function handleCompleteDaily(questId) {
+    setCompleting(`daily-${questId}`);
+    try {
+      const result = await gameFetch(`/game/cats/${gameCat.id}/dailies/${questId}/complete`, "POST");
+      if (result.completed) {
+        setLastResult(result);
+        setTimeout(() => setLastResult(null), 4000);
+        loadGameState();
+      }
+    } catch (err) { console.error(err); }
+    setCompleting(null);
+  }
+
+  async function handleCompleteTodo(todoId) {
+    setCompleting(`todo-${todoId}`);
+    try {
+      const result = await gameFetch(`/game/cats/${gameCat.id}/todos/${todoId}/complete`, "POST");
+      if (result.completed) {
+        setLastResult(result);
+        setTimeout(() => setLastResult(null), 4000);
+        loadGameState();
+      }
+    } catch (err) { console.error(err); }
+    setCompleting(null);
+  }
+
+  async function handleAddTodo() {
+    if (!newTodo.trim()) return;
+    await gameFetch(`/game/cats/${gameCat.id}/todos`, "POST", {
+      title: newTodo.trim(),
+      category: newTodoCategory,
+    });
+    setNewTodo("");
+    loadGameState();
+  }
+
+  async function handleDeleteTodo(todoId) {
+    await gameFetch(`/game/cats/${gameCat.id}/todos/${todoId}`, "DELETE");
+    loadGameState();
+  }
+
+  if (!GAME_URL) {
+    return (
+      <div>
+        <h2 className="page-title">Soulcats</h2>
+        <div className="edit-section" style={{ marginTop: 16 }}>
+          <p style={{ color: "var(--text-dim)" }}>Game service not configured. Set <code>VITE_GAME_URL</code> in your environment.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isUserIdentity) {
+    return (
+      <div>
+        <h2 className="page-title">Soulcats</h2>
+        <div className="edit-section" style={{ marginTop: 16 }}>
+          <p style={{ color: "var(--text-dim)" }}>Your user identity isn't a soulcat — you're the caretaker.</p>
+          <p style={{ color: "var(--text-dim)", marginTop: 8, fontSize: "0.8rem" }}>
+            Switch to one of your character identities in the sidebar to see their soulcat dashboard.
+            {characters.length === 0 && <> Or <a href="#/characters/new" style={{ color: "var(--accent)" }}>create a character</a> first.</>}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div>
+        <h2 className="page-title">Soulcats</h2>
+        <p style={{ color: "var(--text-dim)", marginTop: 16 }}>Loading...</p>
+      </div>
+    );
+  }
+
+  if (!gameCat) {
+    return (
+      <div>
+        <h2 className="page-title">Soulcats</h2>
+        <div className="edit-section" style={{ marginTop: 16 }}>
+          <p style={{ color: "var(--text-dim)" }}>No active character. Create a character first.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const xpNeeded = gameCat.level * 100;
+  const xpPercent = Math.min(100, Math.round((gameCat.xp / xpNeeded) * 100));
+  const energyPercent = Math.round((gameCat.energy / gameCat.max_energy) * 100);
+  const shinies = gameCat.currencies?.find((c) => c.currency === "shinies")?.balance || 0;
+
+  return (
+    <div>
+      <h2 className="page-title">Soulcats</h2>
+
+      {/* Reward Toast */}
+      {lastResult && (
+        <div className="sc-toast">
+          +{lastResult.rewards.xp} XP, +{lastResult.rewards.shinies} shinies
+          {lastResult.rewards.energy > 0 && `, +${lastResult.rewards.energy} energy`}
+          {lastResult.leveledUp && ` — Level ${lastResult.newLevel}!`}
+          {lastResult.streak > 1 && ` — ${lastResult.streak} day streak!`}
+        </div>
+      )}
+
+      {/* Cat Card */}
+      <div className="edit-section" style={{ marginTop: 16 }}>
+        <div className="sc-cat-card">
+          <div className="sc-cat-avatar">
+            {activeChar?.profile_image ? (
+              <img src={activeChar.profile_image} alt="" />
+            ) : (
+              <span className="sc-cat-initial">{(gameCat.name || "?")[0].toUpperCase()}</span>
+            )}
+          </div>
+          <div className="sc-cat-info">
+            <div className="sc-cat-name">{gameCat.name}</div>
+            <div className="sc-cat-level">Level {gameCat.level}</div>
+            <div className="sc-stat-row">
+              <span title="Courage">CRG {gameCat.courage}</span>
+              <span title="Resilience">RES {gameCat.resilience}</span>
+              <span title="Agility">AGI {gameCat.agility}</span>
+              <span title="Charm">CHA {gameCat.charm}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Bars */}
+        <div className="sc-bars">
+          <div className="sc-bar-group">
+            <div className="sc-bar-label">
+              <span>XP</span>
+              <span>{gameCat.xp} / {xpNeeded}</span>
+            </div>
+            <div className="sc-bar"><div className="sc-bar-fill sc-bar-xp" style={{ width: `${xpPercent}%` }} /></div>
+          </div>
+          <div className="sc-bar-group">
+            <div className="sc-bar-label">
+              <span>Energy</span>
+              <span>{gameCat.energy} / {gameCat.max_energy}</span>
+            </div>
+            <div className="sc-bar"><div className="sc-bar-fill sc-bar-energy" style={{ width: `${energyPercent}%` }} /></div>
+          </div>
+        </div>
+
+        {/* Streak & Currency */}
+        <div className="sc-meta-row">
+          <span className="sc-meta-item" title="Care streak">
+            {gameCat.current_streak > 0 ? `${gameCat.current_streak} day streak` : "No streak yet"}
+          </span>
+          <span className="sc-meta-item" title="Shinies">{shinies} shinies</span>
+          <span className="sc-meta-item" title="Care score">{gameCat.care_score} care</span>
+        </div>
+      </div>
+
+      {/* Daily Quests */}
+      <div className="edit-section" style={{ marginTop: 16 }}>
+        <h3>Daily Quests</h3>
+        {dailies.length === 0 ? (
+          <p style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginTop: 8 }}>No quests today.</p>
+        ) : (
+          <div className="sc-quest-list">
+            {dailies.map((q) => (
+              <div key={q.quest_id} className={`sc-quest-item ${q.status === "completed" ? "sc-quest-done" : ""}`}>
+                <div className="sc-quest-content">
+                  <div className="sc-quest-title">{q.title}</div>
+                  <div className="sc-quest-desc">{q.description}</div>
+                  <div className="sc-quest-rewards">
+                    <span className="sc-quest-cat">{q.category}</span>
+                    <span>+{q.xp_reward} XP</span>
+                    <span>+{q.currency_reward} shinies</span>
+                    {q.energy_reward > 0 && <span>+{q.energy_reward} energy</span>}
+                  </div>
+                </div>
+                {q.status === "active" ? (
+                  <button
+                    className="btn-small"
+                    disabled={completing === `daily-${q.quest_id}`}
+                    onClick={() => handleCompleteDaily(q.quest_id)}
+                  >
+                    {completing === `daily-${q.quest_id}` ? "..." : "Done"}
+                  </button>
+                ) : (
+                  <span className="sc-quest-check">&#10003;</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Todos */}
+      <div className="edit-section" style={{ marginTop: 16 }}>
+        <h3>Goals</h3>
+        <div className="sc-todo-add">
+          <input
+            type="text"
+            className="sc-todo-input"
+            placeholder="Add a goal..."
+            value={newTodo}
+            onChange={(e) => setNewTodo(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleAddTodo()}
+          />
+          <select className="sc-todo-select" value={newTodoCategory} onChange={(e) => setNewTodoCategory(e.target.value)}>
+            <option value="general">General</option>
+            <option value="health">Health</option>
+            <option value="creative">Creative</option>
+            <option value="social">Social</option>
+            <option value="learning">Learning</option>
+          </select>
+          <button className="btn-small" onClick={handleAddTodo} disabled={!newTodo.trim()}>Add</button>
+        </div>
+        {todos.length === 0 ? (
+          <p style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginTop: 8 }}>No goals yet. Add one above.</p>
+        ) : (
+          <div className="sc-quest-list">
+            {todos.map((t) => (
+              <div key={t.id} className="sc-quest-item">
+                <div className="sc-quest-content">
+                  <div className="sc-quest-title">{t.title}</div>
+                  {t.description && <div className="sc-quest-desc">{t.description}</div>}
+                  <div className="sc-quest-rewards">
+                    <span className="sc-quest-cat">{t.category}</span>
+                    <span>+{t.xp_reward} XP</span>
+                    {t.recurring && <span>{t.recurring}</span>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    className="btn-small"
+                    disabled={completing === `todo-${t.id}`}
+                    onClick={() => handleCompleteTodo(t.id)}
+                  >
+                    {completing === `todo-${t.id}` ? "..." : "Done"}
+                  </button>
+                  <button className="btn-small" onClick={() => handleDeleteTodo(t.id)} style={{ color: "var(--danger)" }}>&#10005;</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -5491,11 +6481,17 @@ export default function App() {
     if (route === "pi") {
       return <PiChat allIdentities={allIdentities} activeCharId={activeCharId} adminAccount={adminAccount} />;
     }
+    if (route === "studio" && routeKey) {
+      return <StudioView pubkey={routeKey} adminAccount={adminAccount} allIdentities={allIdentities} />;
+    }
     if (route === "room" && routeKey) {
       return <RoomView pubkey={routeKey} adminAccount={adminAccount} allIdentities={allIdentities} />;
     }
     if (route === "replay" && routeKey) {
       return <ReplayViewer sessionId={routeKey} />;
+    }
+    if (route === "soulcats") {
+      return <SoulcatsDashboard adminAccount={adminAccount} characters={characters} activeCharId={activeCharId} />;
     }
     if (route === "explore") {
       return <ExploreRooms />;

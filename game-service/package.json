@@ -1,15 +1,14 @@
 {
-  "name": "soulcats-room-server",
+  "name": "npc-game-service",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "start": "node server.js"
   },
   "dependencies": {
-    "@colyseus/ws-transport": "^0.16.0",
     "@noble/hashes": "^2.0.1",
-    "colyseus": "^0.16.0",
+    "better-sqlite3": "^11.7.0",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "nostr-tools": "^2.23.3"
