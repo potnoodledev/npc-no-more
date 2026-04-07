@@ -254,7 +254,7 @@ function DanceCard({ url }) {
 //  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
-function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUserWhitelisted, onSelectIdentity, unreadPks }) {
+function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUserWhitelisted, onSelectIdentity, unreadPks, superclawPks, onToggleSuperclaw }) {
   const isAdmin = !!serverAdminPubkey && serverAdminPubkey === adminPk;
   return (
     <aside className="sidebar">
@@ -264,26 +264,41 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
 
       <div className="sidebar-section-label">Identities</div>
       <div className="sidebar-characters">
-        {allIdentities.map((c) => (
-          <button
-            key={c.id}
-            className={`sidebar-char ${c.id === activeCharId ? "active-char" : ""}`}
-            onClick={() => { onSelectIdentity(c.id); setHash("profile/" + c.npub); }}
-          >
-            {unreadPks?.has(c.pk) && <span className="sidebar-acting-dot" />}
-            <span className="sidebar-char-avatar">
-              {c.profile_image ? (
-                <img src={c.profile_image} alt="" />
-              ) : (
-                (c.name || "U").charAt(0).toUpperCase()
+        {allIdentities.map((c) => {
+          const isActive = c.id === activeCharId;
+          const isRunning = superclawPks?.has(c.pk);
+          return (
+            <div key={c.id} className={`sidebar-char ${isActive ? "active-char" : ""}`}>
+              <button
+                className="sidebar-char-btn"
+                onClick={() => { onSelectIdentity(c.id); setHash("profile/" + c.npub); }}
+              >
+                {unreadPks?.has(c.pk) && <span className="sidebar-acting-dot" />}
+                {isRunning && <span className="sidebar-superclaw-dot" />}
+                <span className="sidebar-char-avatar">
+                  {c.profile_image ? (
+                    <img src={c.profile_image} alt="" />
+                  ) : (
+                    (c.name || "U").charAt(0).toUpperCase()
+                  )}
+                </span>
+                <span className="sidebar-char-name" style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+                  <span>{c.name}</span>
+                  {c.isAdminIdentity && <span style={{ fontSize: "0.55rem", color: "var(--accent)" }}>{isAdmin ? "ADMIN" : "USER"}</span>}
+                </span>
+              </button>
+              {(isActive || isRunning) && !c.isAdminIdentity && (
+                <button
+                  className={`sidebar-brain-btn ${isRunning ? "sidebar-brain-active" : ""}`}
+                  onClick={(e) => { e.stopPropagation(); onToggleSuperclaw(c.pk); }}
+                  title={isRunning ? "Stop Superclaw" : "Start Superclaw"}
+                >
+                  {isRunning ? "■" : "🦞"}
+                </button>
               )}
-            </span>
-            <span className="sidebar-char-name" style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
-              <span>{c.name}</span>
-              {c.isAdminIdentity && <span style={{ fontSize: "0.55rem", color: "var(--accent)" }}>{isAdmin ? "ADMIN" : "USER"}</span>}
-            </span>
-          </button>
-        ))}
+            </div>
+          );
+        })}
         <button className="sidebar-item sidebar-add" onClick={() => setHash("characters/new")}>
           <span className="sidebar-icon">+</span>
           <span>New {CREATURE_TYPE.charAt(0).toUpperCase() + CREATURE_TYPE.slice(1)}</span>
@@ -1156,8 +1171,8 @@ function Nip05ClaimWidget({ editFields, updateField, account, isUserWhitelisted 
 //  ACTIVITIES PANEL (Rooms / Studios)
 // ══════════════════════════════════════
 
-function ActivitiesPanel({ characterPk, characterName }) {
-  const [subTab, setSubTab] = useState("rooms");
+function ActivitiesPanel({ characterPk, characterName, superclawRunning }) {
+  const [subTab, setSubTab] = useState(superclawRunning ? "superclaw" : "rooms");
   const [rooms, setRooms] = useState([]);
   const [recordings, setRecordings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1207,6 +1222,9 @@ function ActivitiesPanel({ characterPk, characterName }) {
   return (
     <div>
       <div className="feed-tabs" style={{ marginTop: 8 }}>
+        <button className={subTab === "superclaw" ? "active" : ""} onClick={() => setSubTab("superclaw")}>
+          Superclaw {superclawRunning && <span style={{ color: "var(--accent)" }}>●</span>}
+        </button>
         <button className={subTab === "rooms" ? "active" : ""} onClick={() => setSubTab("rooms")}>
           Rooms {liveRooms.length > 0 && `(${liveRooms.length})`}
         </button>
@@ -1297,6 +1315,151 @@ function ActivitiesPanel({ characterPk, characterName }) {
           </div>
         </div>
       )}
+
+      {subTab === "superclaw" && (
+        <SuperclawStream characterPk={characterPk} running={superclawRunning} />
+      )}
+    </div>
+  );
+}
+
+function SuperclawStream({ characterPk, running }) {
+  const [messages, setMessages] = useState([]);
+  const [connected, setConnected] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const scrollRef = useRef(null);
+  const textRef = useRef("");
+  const thinkingRef = useRef("");
+  const PI_URL_LOCAL = import.meta.env.VITE_PI_URL || "";
+  const PI_HTTP = PI_URL_LOCAL.replace("ws://", "http://").replace("wss://", "https://");
+
+  useEffect(() => {
+    if (!running || !PI_HTTP || !characterPk) {
+      setConnected(false);
+      return;
+    }
+
+    setMessages([]);
+    textRef.current = "";
+    thinkingRef.current = "";
+
+    const es = new EventSource(`${PI_HTTP}/internal/agent-stream/${characterPk}`);
+    es.onopen = () => setConnected(true);
+    es.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "connected") return;
+
+        // Agent lifecycle
+        if (msg.type === "agent_start") {
+          textRef.current = "";
+          thinkingRef.current = "";
+          setStreaming(true);
+          setMessages(prev => [...prev, { type: "meta", text: "Agent thinking..." }]);
+          return;
+        }
+        if (msg.type === "agent_end") {
+          setStreaming(false);
+          // Finalize current text/thinking into a message
+          if (textRef.current || thinkingRef.current) {
+            setMessages(prev => [...prev, {
+              type: "assistant",
+              content: textRef.current,
+              thinking: thinkingRef.current,
+            }]);
+            textRef.current = "";
+            thinkingRef.current = "";
+          }
+          return;
+        }
+
+        // Text streaming
+        if (msg.type === "message_update" && msg.assistantMessageEvent) {
+          const ev = msg.assistantMessageEvent;
+          if (ev.type === "text_delta" && ev.delta) {
+            textRef.current += ev.delta;
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.type === "streaming") {
+                return [...prev.slice(0, -1), { type: "streaming", content: textRef.current, thinking: thinkingRef.current }];
+              }
+              return [...prev, { type: "streaming", content: textRef.current, thinking: thinkingRef.current }];
+            });
+          }
+          if (ev.type === "thinking_delta" && ev.delta) {
+            thinkingRef.current += ev.delta;
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.type === "streaming") {
+                return [...prev.slice(0, -1), { type: "streaming", content: textRef.current, thinking: thinkingRef.current }];
+              }
+              return [...prev, { type: "streaming", content: textRef.current, thinking: thinkingRef.current }];
+            });
+          }
+          return;
+        }
+
+        // Tool execution
+        if (msg.type === "tool_execution_start") {
+          const tool = msg.toolName || msg.data?.tool || "tool";
+          const args = msg.args?.command || msg.args?.path || JSON.stringify(msg.args || {}).slice(0, 120);
+          setMessages(prev => [...prev, { type: "tool-start", tool, args, toolCallId: msg.toolCallId }]);
+          return;
+        }
+        if (msg.type === "tool_execution_end") {
+          const output = msg.result?.content?.[0]?.text || msg.result?.output || "";
+          setMessages(prev => [...prev, { type: "tool-end", output: output.slice(0, 500), isError: msg.isError, toolCallId: msg.toolCallId }]);
+          return;
+        }
+      } catch {}
+    };
+    es.onerror = () => setConnected(false);
+
+    return () => es.close();
+  }, [running, characterPk]);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
+
+  if (!running) {
+    return (
+      <div style={{ padding: "16px 0" }}>
+        <p style={{ color: "var(--text-dim)", fontSize: "0.82rem" }}>Superclaw is not running.</p>
+        <p style={{ color: "var(--text-faint)", fontSize: "0.72rem", marginTop: 4 }}>Click the 🦞 button on the sidebar identity to start.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span className={`sc-stream-dot ${connected ? "sc-stream-connected" : ""}`} />
+        <span style={{ fontSize: "0.72rem", color: "var(--text-dim)" }}>
+          {connected ? (streaming ? "Agent working..." : "Connected — waiting") : "Connecting..."}
+        </span>
+      </div>
+      <div className="sc-stream-log" ref={scrollRef}>
+        {messages.length === 0 && <div style={{ color: "var(--text-faint)", fontSize: "0.75rem", padding: 8 }}>Waiting for agent activity...</div>}
+        {messages.map((msg, i) => {
+          if (msg.type === "meta") return <div key={i} className="sc-stream-entry sc-stream-meta">{msg.text}</div>;
+          if (msg.type === "streaming") return (
+            <div key={i} className="sc-stream-entry">
+              {msg.thinking && <div className="sc-stream-thinking">{msg.thinking}<span className="streaming-dot" /></div>}
+              {msg.content && <div className="sc-stream-text">{msg.content}<span className="streaming-dot" /></div>}
+            </div>
+          );
+          if (msg.type === "assistant") return (
+            <div key={i} className="sc-stream-entry">
+              {msg.thinking && <details className="sc-stream-thinking-block"><summary>Thinking</summary><div>{msg.thinking}</div></details>}
+              {msg.content && <div className="sc-stream-text">{msg.content}</div>}
+            </div>
+          );
+          if (msg.type === "tool-start") return <div key={i} className="sc-stream-entry sc-stream-tool">▶ {msg.tool}: {msg.args}</div>;
+          if (msg.type === "tool-end") return <div key={i} className={`sc-stream-entry ${msg.isError ? "sc-stream-tool-error" : "sc-stream-tool-result"}`}>◀ {msg.output}</div>;
+          return null;
+        })}
+      </div>
     </div>
   );
 }
@@ -1305,7 +1468,7 @@ function ActivitiesPanel({ characterPk, characterName }) {
 //  OWNED CHARACTER PAGE
 // ══════════════════════════════════════
 
-function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead }) {
+function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead, superclawPks }) {
   const [tab, setTab] = useState("activities");
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
@@ -1617,7 +1780,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
 
       {/* Activities tab */}
       {tab === "activities" && (
-        <ActivitiesPanel characterPk={character.pk} characterName={character.name} />
+        <ActivitiesPanel characterPk={character.pk} characterName={character.name} superclawRunning={superclawPks?.has(character.pk)} />
       )}
 
       {/* Feed tab */}
@@ -6731,6 +6894,33 @@ export default function App() {
   const [routeKey, setRouteKey] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [unreadPks, setUnreadPks] = useState(new Set());
+  const [superclawPks, setSuperclawPks] = useState(new Set());
+
+  const PI_URL = import.meta.env.VITE_PI_URL || "";
+  const PI_HTTP = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
+
+  async function toggleSuperclaw(pk) {
+    if (!PI_HTTP) return;
+    const isRunning = superclawPks.has(pk);
+    try {
+      if (isRunning) {
+        await fetch(`${PI_HTTP}/internal/superclaw/stop`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pubkey: pk }),
+        });
+        setSuperclawPks(prev => { const next = new Set(prev); next.delete(pk); return next; });
+      } else {
+        const char = characters.find(c => c.pk === pk);
+        await fetch(`${PI_HTTP}/internal/superclaw/start`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pubkey: pk, skHex: char?.skHex }),
+        });
+        setSuperclawPks(prev => new Set([...prev, pk]));
+      }
+    } catch (e) {
+      console.error("[superclaw] toggle error:", e);
+    }
+  }
 
   const ADMIN_ID = "__admin__";
   const adminAsIdentity = adminAccount ? {
@@ -6963,6 +7153,7 @@ export default function App() {
             onUpdateChar={handleUpdateCharacter}
             onDeleteChar={handleDeleteCharacter}
             onDmRead={setDmLastSeen}
+            superclawPks={superclawPks}
           />
         );
       }
@@ -6988,6 +7179,7 @@ export default function App() {
           onUpdateChar={handleUpdateCharacter}
           onDeleteChar={handleDeleteCharacter}
           onDmRead={setDmLastSeen}
+          superclawPks={superclawPks}
         />
       );
     }
@@ -7007,6 +7199,8 @@ export default function App() {
         isUserWhitelisted={isUserWhitelisted}
         onSelectIdentity={switchCharacter}
         unreadPks={unreadPks}
+        superclawPks={superclawPks}
+        onToggleSuperclaw={toggleSuperclaw}
       />
 
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
@@ -7018,6 +7212,8 @@ export default function App() {
           adminPk={adminAccount?.pk}
           onSelectIdentity={switchCharacter}
           unreadPks={unreadPks}
+          superclawPks={superclawPks}
+          onToggleSuperclaw={toggleSuperclaw}
         />
       </div>
 
