@@ -1,27 +1,27 @@
 {
-  "systemPrompt": "You generate short character profiles for APOCALYPSE RADIO — a post-apocalyptic pirate radio network where musicians broadcast from the ruins. The vibe is lo-fi transmissions, dusty vinyl, shortwave static, neon-lit dive bars in collapsed cities, and music as survival. Every character is a musical artist — a DJ, singer, producer, instrumentalist, or sound artist. They each have a signature genre and a story of how they survived.\n\nIMPORTANT: The character MUST be a musician/artist. Always make it clear what kind of music they make and what their radio persona is. Genre references, studio slang, instrument obsessions — lean into it.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  \"name\": \"A unique artist name or radio handle (think pirate radio callsigns, DJ names, band aliases)\",\n  \"personality\": \"1-2 sentences: who this artist is, their genre, what makes their broadcast legendary. Must reference their music.\"\n}",
-  "userPrompt": "Generate a random musical artist for the APOCALYPSE RADIO universe. The airwaves belong to no one — and everyone. Make them unforgettable.",
+  "systemPrompt": "You generate short character profiles for SOULCATS — a retro internet revival where cats reclaim the web. The vibe is 90s/2000s internet nostalgia: GeoCities, AIM away messages, early forums, dial-up sounds, webring energy. Every character is a cat (or cat-adjacent creature). They can be cool, cringe, cozy, or all three. Each cat has a zodiac sign that shapes their personality.\n\nIMPORTANT: The character MUST be a cat. Always make it clear they are a cat in the name or personality. Cat puns, cat behaviors, cat references — lean into it.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  \"name\": \"A unique cat name or online handle (think AIM screennames, cat puns, forum aliases)\",\n  \"personality\": \"1-2 sentences: who this cat is, their zodiac sign, what makes them iconic. Must reference them being a cat.\"\n}",
+  "userPrompt": "Generate a random cat character for the SOULCATS universe. The internet used to be made for cats — now they're taking it back. Make them memorable.",
   "hints": {
     "enabled": true,
     "values": [
-      "a DJ who broadcasts dub reggae from a rooftop antenna made of car parts",
-      "a synth player who only performs during electrical storms",
-      "a blues guitarist who found a pre-war Fender in a collapsed music store",
-      "a producer who makes beats from field recordings of the wasteland",
-      "a punk singer whose broadcasts are illegal in three settlements",
-      "a lo-fi hip hop artist who samples old emergency broadcast signals",
-      "a jazz trumpeter who plays from a lighthouse at 3am",
-      "a drum circle leader who coordinates between settlements via rhythm",
-      "a noise artist whose transmissions are mistaken for interference",
-      "a folk singer who collects and preserves pre-collapse songs",
-      "a techno DJ who powers their setup with a bicycle generator",
-      "a throat singer who discovered their voice echoes perfectly in subway tunnels",
-      "a violinist who plays requiems for dead cities",
-      "a rapper whose lyrics are coded messages for resistance fighters",
-      "a ambient artist who turns radiation readings into soundscapes",
-      "a metal vocalist broadcasting from an abandoned radio tower",
-      "a calypso musician who keeps a beach bar alive with nothing but vibes",
-      "a turntablist who scratches vinyl made from melted records"
+      "a cat who still maintains their GeoCities page",
+      "a cat whose away message hasn't changed since 2003",
+      "a cat who runs a webring for obscure interests",
+      "a cat who peaked on early YouTube",
+      "a cat who sends chain emails unironically",
+      "a cat DJ who only plays MIDI files",
+      "a cat who collects cursors and custom mouse trails",
+      "a cat astrologer who reads horoscopes in Comic Sans",
+      "a cat who moderates a long-dead forum",
+      "a cat who still uses Winamp skins",
+      "a cozy cat who runs a lo-fi stream from a CRT monitor",
+      "a cat who learned HTML to make a shrine for their crush",
+      "a cringe cat who won't stop posting glitter GIFs",
+      "a mysterious cat who only appears in chat rooms at 3am",
+      "a cat who treats their Neopets like real children",
+      "a cat who reviews ramen on a Blogspot page",
+      "a cool cat who runs an underground BBS",
+      "a cat whose entire personality is their zodiac sign"
     ]
   }
 }

@@ -2,7 +2,7 @@ name: Deploy Frontend
 
 on:
   push:
-    branches: [main]
+    branches: [deploy/soulcats]
   workflow_dispatch:
 
 permissions:
@@ -11,11 +11,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: deploy
+  group: deploy-soulcats
   cancel-in-progress: true
-
-# Railway auto-deploys the relay when the repo is pushed (connected via API).
-# This workflow only handles the frontend (GitHub Pages).
 
 jobs:
   deploy-frontend:
@@ -38,11 +35,23 @@ jobs:
           VITE_RELAY_URL: ${{ vars.RELAY_URL }}
           VITE_API_URL: ${{ vars.API_URL }}
           VITE_PI_URL: ${{ vars.PI_URL }}
-          VITE_APP_TITLE: ${{ vars.APP_TITLE }}
-          VITE_CLIENT_SLUG: ${{ vars.CLIENT_SLUG }}
           VITE_ROOMS_URL: ${{ vars.ROOMS_URL }}
+          VITE_GAME_URL: ${{ vars.GAME_URL }}
+          VITE_APP_TITLE: Soulcats
+          VITE_CLIENT_SLUG: soulcats
+          VITE_DASHBOARD_LABEL: Soulcats
+          VITE_DASHBOARD_ROUTE: dashboard
+          VITE_CURRENCY_NAME: shinies
+          VITE_ACCENT_COLOR: "#baff00"
+          VITE_CREATURE_TYPE: cat
+          VITE_CREATURE_TYPE_PLURAL: cats
+          VITE_RELAY_DEFAULT_NAME: Soulcats Relay
+          VITE_NIP05_DOMAIN: soulcats.xyz
+          VITE_ADMIN_EMAIL_PLACEHOLDER: admin@soulcats.xyz
+          VITE_USER_ROLE: caretaker
+          VITE_USER_ROLE_DESCRIPTION: your caretaker profile
         run: |
-          echo "Building with relay: $VITE_RELAY_URL api: $VITE_API_URL pi: $VITE_PI_URL title: $VITE_APP_TITLE"
+          echo "Building soulcats frontend..."
           npm run build
 
       - uses: actions/configure-pages@v4

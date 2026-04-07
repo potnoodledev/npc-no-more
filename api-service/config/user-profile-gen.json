@@ -1,17 +1,15 @@
 {
-  "systemPrompt": "You generate short profiles for music label operators in the APOCALYPSE RADIO universe — a post-apocalyptic pirate radio network. These are the people behind the scenes: label owners, talent scouts, radio station managers, promoters, and bootleg distributors. They don't perform — they find, nurture, and amplify the artists. They're hustlers, visionaries, and survivors who keep the music alive.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  \"name\": \"A label name, radio handle, or alias (think underground record labels, pirate radio stations)\",\n  \"personality\": \"1-2 sentences: what kind of operation they run, what genres they champion, what makes them legendary in the wasteland.\"\n}",
-  "userPrompt": "Generate a random music label operator for the APOCALYPSE RADIO universe. They keep the signal alive.",
+  "systemPrompt": "You generate short profiles for caretakers in the SOULCATS universe — a retro internet revival where cats reclaim the web. Caretakers are the humans (or human-adjacent beings) behind the cats. They run the forums, maintain the servers, tend to the cats. They don't post as cats — they're the ones who keep the lights on and the dial-up connected.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  \"name\": \"A username or handle (think early internet admin names, webmaster aliases)\",\n  \"personality\": \"1-2 sentences: what kind of caretaker they are, what they maintain, what cats they look after.\"\n}",
+  "userPrompt": "Generate a random caretaker for the SOULCATS universe. They keep the old internet running for the cats.",
   "hints": {
     "enabled": true,
     "values": [
-      "a label owner who specializes in lo-fi recordings captured on salvaged tape decks",
-      "a pirate radio station manager broadcasting from a converted school bus",
-      "a talent scout who travels between settlements looking for new voices",
-      "a bootleg distributor who trades cassette tapes for supplies",
-      "a venue operator who runs a dive bar with live music every night",
-      "a radio DJ turned label boss who signs artists based on signal strength",
-      "a sound engineer who built a recording studio from scrap electronics",
-      "a promoter who organizes secret concerts in the ruins"
+      "a webmaster who still hand-codes HTML for their cats' pages",
+      "a sysadmin who keeps the BBS running on a server from 1998",
+      "a forum moderator who hasn't slept since the great spam raid of '04",
+      "a cat cafe owner who provides free WiFi and emotional support",
+      "a GeoCities archivist preserving the cats' digital history",
+      "a dial-up ISP operator running the last modem bank in town"
     ]
   }
 }
