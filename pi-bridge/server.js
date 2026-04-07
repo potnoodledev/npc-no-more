@@ -208,7 +208,7 @@ function getCharDir(pubkeyHex) {
 }
 
 const SKILL_TEMPLATES_DIR = join(__dirname, "skill-templates");
-const DEFAULT_SKILLS = ["post", "strudel", "dance", "room", "jam"];
+const DEFAULT_SKILLS = ["post", "follow", "strudel", "dance", "room", "jam"];
 
 function ensureCharWorkspace(pubkeyHex) {
   const charDir = getCharDir(pubkeyHex);
@@ -646,6 +646,178 @@ app.post("/internal/post", async (req, res) => {
     console.error(`[post] Error:`, err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Follow endpoint — called by follow.sh ──
+
+app.post("/internal/follow", async (req, res) => {
+  const { pubkey, target, action } = req.body;
+  if (!pubkey || !target) return res.status(400).json({ error: "pubkey and target required" });
+
+  const keyPath = join(getCharDir(pubkey), ".pi", "sk");
+  if (!existsSync(keyPath)) return res.status(400).json({ error: "no secret key for this character" });
+
+  try {
+    const skHex = readFileSync(keyPath, "utf-8").trim();
+    const sk = hexToBytes(skHex);
+    const pool = new SimplePool();
+    const relayUrl = RELAY_URL;
+
+    // Fetch current follow list
+    const existing = await pool.get([relayUrl], { kinds: [3], authors: [pubkey] });
+    let follows = existing ? existing.tags.filter(t => t[0] === "p").map(t => t[1]) : [];
+
+    if (action === "unfollow") {
+      follows = follows.filter(pk => pk !== target);
+    } else {
+      if (!follows.includes(target)) follows.push(target);
+    }
+
+    const event = finalizeEvent({
+      kind: 3,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: follows.map(pk => ["p", pk]),
+      content: "",
+    }, sk);
+
+    await Promise.allSettled(pool.publish([relayUrl], event));
+    console.log(`[follow] ${pubkey.slice(0, 12)} ${action || "followed"} ${target.slice(0, 12)} (now following ${follows.length})`);
+    res.json({ ok: true, followCount: follows.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/internal/follows/:pubkey", async (req, res) => {
+  try {
+    const pool = new SimplePool();
+    const event = await pool.get([RELAY_URL], { kinds: [3], authors: [req.params.pubkey] });
+    const follows = event ? event.tags.filter(t => t[0] === "p").map(t => t[1]) : [];
+    res.json({ follows });
+  } catch (err) {
+    res.json({ follows: [] });
+  }
+});
+
+// ── Superclaw — autonomous agent ──
+
+const superclawAgents = new Map(); // pubkey -> { startedAt }
+
+app.post("/internal/superclaw/start", async (req, res) => {
+  const { pubkey, skHex } = req.body;
+  if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+
+  // Register secret key if provided (so agent can post/follow)
+  if (skHex) {
+    const charDir = getCharDir(pubkey);
+    mkdirSync(join(charDir, ".pi"), { recursive: true });
+    writeFileSync(join(charDir, ".pi", "sk"), skHex, "utf-8");
+  }
+
+  const sessionId = pubkey.slice(0, 16);
+  if (sessions.has(sessionId) && sessions.get(sessionId).ready) {
+    return res.json({ ok: true, already: true });
+  }
+
+  try {
+    const rpc = await getOrCreateSession(pubkey);
+
+    // Fetch personality and recent feed for context
+    let personalityCtx = "";
+    try {
+      const pRes = await fetch(`${GAME_SERVICE_URL}/internal/cat-personality/${pubkey}`);
+      if (pRes.ok) {
+        const p = await pRes.json();
+        personalityCtx = p.prompt_fragment || "";
+      }
+    } catch {}
+
+    // Fetch recent posts and profiles for context
+    let feedCtx = "";
+    try {
+      const pool = new SimplePool();
+      const events = await pool.querySync([RELAY_URL], { kinds: [1], limit: 15 });
+      const authorPks = [...new Set(events.map(e => e.pubkey).filter(pk => pk !== pubkey))];
+      // Fetch profiles for context
+      const profileEvents = authorPks.length > 0 ? await pool.querySync([RELAY_URL], { kinds: [0], authors: authorPks.slice(0, 10) }) : [];
+      const profileMap = {};
+      for (const pe of profileEvents) {
+        try { const p = JSON.parse(pe.content); profileMap[pe.pubkey] = p.display_name || p.name || pe.pubkey.slice(0, 12); } catch {}
+      }
+      if (events.length > 0) {
+        feedCtx = "Recent posts on the feed (pubkey — name — content):\n" + events
+          .filter(e => e.pubkey !== pubkey)
+          .sort((a, b) => b.created_at - a.created_at)
+          .slice(0, 8)
+          .map(e => `- ${e.pubkey} (${profileMap[e.pubkey] || "unknown"}): ${e.content.slice(0, 150)}`)
+          .join("\n");
+      }
+    } catch {}
+
+    // Send autonomous prompt
+    const prompt = `You are now in autonomous mode. Act naturally based on your personality.
+
+${personalityCtx ? `Your personality: ${personalityCtx}\n` : ""}
+${feedCtx ? `${feedCtx}\n` : ""}
+Here's what you should do — go through each step:
+
+STEP 1 — POST: Share something on the feed that reflects your personality and mood.
+  bash .pi/skills/post/scripts/post.sh "your message"
+
+STEP 2 — FOLLOW: Read the recent posts above. If any resonate with you, follow that person.
+  bash .pi/skills/follow/scripts/follow.sh <their-full-hex-pubkey>
+
+STEP 3 — EXPLORE: Visit someone's room and interact with what you find.
+  bash .pi/skills/room/scripts/room.sh visit <their-full-hex-pubkey>
+  bash .pi/skills/room/scripts/room.sh look
+  bash .pi/skills/room/scripts/room.sh chat "say something in character"
+  bash .pi/skills/room/scripts/room.sh interact <object-id>
+
+STEP 4 — JAM: Join your own jam studio and create a music pattern.
+  bash .pi/skills/jam/scripts/jam.sh join <your-own-hex-pubkey>
+  bash .pi/skills/jam/scripts/jam.sh look
+  (move near an instrument, then play it)
+  bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+  bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "s(\\"bd sd hh hh\\")"
+  Your pubkey is: ${pubkey}
+
+STEP 5 — POST AGAIN: Share what you experienced — the room, the jam, how it made you feel.
+  bash .pi/skills/post/scripts/post.sh "your reflection"
+
+Be yourself. Stay in character. Don't explain what you're doing — just do it.
+Go through all 5 steps.`;
+
+    rpc.send({ type: "prompt", message: prompt });
+    superclawAgents.set(pubkey, { startedAt: Date.now() });
+
+    console.log(`[superclaw] Started autonomous agent for ${pubkey.slice(0, 12)}...`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(`[superclaw] Failed to start:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/internal/superclaw/stop", async (req, res) => {
+  const { pubkey } = req.body;
+  if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+
+  const sessionId = pubkey.slice(0, 16);
+  const rpc = sessions.get(sessionId);
+  if (rpc) {
+    rpc.kill();
+    sessions.delete(sessionId);
+  }
+  superclawAgents.delete(pubkey);
+  console.log(`[superclaw] Stopped agent for ${pubkey.slice(0, 12)}...`);
+  res.json({ ok: true });
+});
+
+app.get("/internal/superclaw/status/:pubkey", (req, res) => {
+  const pubkey = req.params.pubkey;
+  const sessionId = pubkey.slice(0, 16);
+  const running = sessions.has(sessionId) && sessions.get(sessionId).ready;
+  res.json({ running, startedAt: superclawAgents.get(pubkey)?.startedAt || null });
 });
 
 // ── Summoned agents tracking ──
