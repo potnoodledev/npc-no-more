@@ -1680,6 +1680,7 @@ a:hover { color: var(--accent-bright); }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   min-height: 500px;
+  max-height: 500px;
 }
 
 .network-directory {
@@ -1734,6 +1735,7 @@ a:hover { color: var(--accent-bright); }
   background: var(--bg);
   border-radius: 0 var(--radius) var(--radius) 0;
   min-width: 0;
+  position: relative;
 }
 
 .network-main .network-container {
@@ -1743,6 +1745,51 @@ a:hover { color: var(--accent-bright); }
 }
 
 /* Detail panel below graph */
+/* Mini profile popup (embedded mode) */
+.network-popup-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  animation: fadeIn 0.1s ease;
+}
+.network-popup {
+  background: var(--surface);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  max-width: 280px;
+  width: 90%;
+  position: relative;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+.network-popup-close {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.network-popup-close:hover { color: var(--text); }
+.network-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.network-popup-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .network-detail {
   background: var(--surface);
   border-top: 2px solid var(--border);

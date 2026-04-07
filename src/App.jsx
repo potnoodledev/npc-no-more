@@ -63,7 +63,6 @@ function parseHash() {
   const parts = hash.split("/");
   if (parts[0] === "characters" && parts[1] === "new") return { route: "new-character" };
   if (parts[0] === "invite" && parts[1]) return { route: "invite", key: parts[1] };
-  if (parts[0] === "network") return { route: "network" };
   if (parts[0] === "pi") return { route: "pi" };
   if (parts[0] === "settings") return { route: "settings" };
   if (parts[0] === "profile" && parts[1]) return { route: "profile", key: parts[1] };
@@ -73,7 +72,6 @@ function parseHash() {
   if (parts[0] === "replay" && parts[1]) return { route: "replay", key: parts[1] };
   if (parts[0] === "explore") return { route: "explore" };
   if (parts[0] === "studio" && parts[1]) return { route: "studio", key: parts[1] };
-  if (parts[0] === DASHBOARD_ROUTE) return { route: "dashboard" };
   return { route: "home" };
 }
 
@@ -293,38 +291,12 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
       </div>
 
       <div className="sidebar-footer">
-        <button className="sidebar-item" onClick={() => setHash(DASHBOARD_ROUTE)}>
-          <span className="sidebar-icon">&#9733;</span>
-          <span>{DASHBOARD_LABEL}</span>
-        </button>
         {isUserWhitelisted && (
           <button className="sidebar-item" onClick={() => setHash("pi")}>
             <span className="sidebar-icon">&#9000;</span>
             <span>Superclaw</span>
           </button>
         )}
-        <button className="sidebar-item" onClick={() => {
-          const active = allIdentities.find(c => c.id === activeCharId) || allIdentities[0];
-          if (active?.pk) setHash("room/" + active.pk);
-        }}>
-          <span className="sidebar-icon">&#9738;</span>
-          <span>My Room</span>
-        </button>
-        <button className="sidebar-item" onClick={() => {
-          const active = allIdentities.find(c => c.id === activeCharId) || allIdentities[0];
-          if (active?.pk) setHash("studio/" + active.pk);
-        }}>
-          <span className="sidebar-icon">&#9835;</span>
-          <span>Jam Studio</span>
-        </button>
-        <button className="sidebar-item" onClick={() => setHash("explore")}>
-          <span className="sidebar-icon">&#9678;</span>
-          <span>Rooms</span>
-        </button>
-        <button className="sidebar-item" onClick={() => setHash("network")}>
-          <span className="sidebar-icon">&#9673;</span>
-          <span>Network</span>
-        </button>
         <button className="sidebar-item" onClick={() => setHash("settings")}>
           <span className="sidebar-icon">&#9881;</span>
           <span>Settings</span>
@@ -1181,11 +1153,160 @@ function Nip05ClaimWidget({ editFields, updateField, account, isUserWhitelisted 
 }
 
 // ══════════════════════════════════════
-//  OWNED CHARACTER PAGE (tabs: Posts / Profile)
+//  ACTIVITIES PANEL (Rooms / Studios)
+// ══════════════════════════════════════
+
+function ActivitiesPanel({ characterPk, characterName }) {
+  const [subTab, setSubTab] = useState("rooms");
+  const [rooms, setRooms] = useState([]);
+  const [recordings, setRecordings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const lobbyRef = useRef(null);
+
+  useEffect(() => {
+    const ROOMS_URL_LOCAL = import.meta.env.VITE_ROOMS_URL || "";
+    if (!ROOMS_URL_LOCAL) { setLoading(false); return; }
+    let cancelled = false;
+
+    async function connect() {
+      try {
+        const { Client } = await import("colyseus.js");
+        if (!_colyseusClient) _colyseusClient = new Client(ROOMS_URL_LOCAL);
+        const lobby = await _colyseusClient.joinOrCreate("lobby");
+        if (cancelled) { lobby.leave(); return; }
+        lobbyRef.current = lobby;
+        lobby.onMessage("rooms", (allRooms) => { setRooms(allRooms); setLoading(false); });
+        lobby.onMessage("+", ([roomId, room]) => {
+          setRooms(prev => {
+            const idx = prev.findIndex(r => r.roomId === roomId);
+            if (idx !== -1) { const next = [...prev]; next[idx] = room; return next; }
+            return [...prev, room];
+          });
+          setLoading(false);
+        });
+        lobby.onMessage("-", (roomId) => setRooms(prev => prev.filter(r => r.roomId !== roomId)));
+      } catch (e) {
+        console.error("[activities] lobby error:", e);
+        setLoading(false);
+      }
+    }
+
+    // Fetch recordings
+    const roomsHttp = ROOMS_URL_LOCAL.replace("ws://", "http://").replace("wss://", "https://");
+    fetch(`${roomsHttp}/recordings`).then(r => r.json()).then(data => {
+      if (data.recordings) setRecordings(data.recordings);
+    }).catch(() => {});
+
+    connect();
+    return () => { cancelled = true; if (lobbyRef.current) lobbyRef.current.leave(); };
+  }, []);
+
+  const liveRooms = rooms.filter(r => r.name === "character_room");
+  const liveStudios = rooms.filter(r => r.name === "jam_studio");
+
+  return (
+    <div>
+      <div className="feed-tabs" style={{ marginTop: 8 }}>
+        <button className={subTab === "rooms" ? "active" : ""} onClick={() => setSubTab("rooms")}>
+          Rooms {liveRooms.length > 0 && `(${liveRooms.length})`}
+        </button>
+        <button className={subTab === "studios" ? "active" : ""} onClick={() => setSubTab("studios")}>
+          Studios {liveStudios.length > 0 && `(${liveStudios.length})`}
+        </button>
+        <button className={subTab === "recordings" ? "active" : ""} onClick={() => setSubTab("recordings")}>
+          Recordings {recordings.length > 0 && `(${recordings.length})`}
+        </button>
+      </div>
+
+      {subTab === "rooms" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, marginBottom: 8 }}>
+            <button className="btn-primary" onClick={() => setHash("room/" + characterPk)} style={{ fontSize: "0.78rem", padding: "6px 14px" }}>
+              + My Room
+            </button>
+          </div>
+          {loading && <div className="loading" style={{ fontSize: "0.8rem" }}>Looking for active rooms...</div>}
+          {!loading && liveRooms.length === 0 && <p style={{ color: "var(--text-dim)", fontSize: "0.8rem" }}>No active rooms. Open yours to get started!</p>}
+          <div className="room-explore-grid">
+            {liveRooms.map((r) => (
+              <div key={r.roomId} className="room-explore-card room-explore-live clickable" onClick={() => {
+                const pk = r.metadata?.ownerPubkey;
+                if (pk) setHash("room/" + pk);
+              }}>
+                <div className="room-explore-live-dot" />
+                <div className="room-explore-name">{r.metadata?.ownerName || "Unknown"}'s Room</div>
+                <div className="room-explore-meta">
+                  <span>{r.metadata?.scene || "default"}</span>
+                  <span>{r.clients} online</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {subTab === "studios" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8, marginBottom: 8 }}>
+            <button className="btn-primary" onClick={() => setHash("studio/" + characterPk)} style={{ fontSize: "0.78rem", padding: "6px 14px" }}>
+              + New Studio
+            </button>
+          </div>
+          {loading && <div className="loading" style={{ fontSize: "0.8rem" }}>Looking for active studios...</div>}
+          {!loading && liveStudios.length === 0 && <p style={{ color: "var(--text-dim)", fontSize: "0.8rem" }}>No active studios. Start one!</p>}
+          <div className="room-explore-grid">
+            {liveStudios.map((r) => (
+              <div key={r.roomId} className="room-explore-card room-explore-live clickable" onClick={() => {
+                const pk = r.metadata?.ownerPubkey;
+                if (pk) setHash("studio/" + pk);
+              }}>
+                <div className="room-explore-live-dot" />
+                <div className="room-explore-name">{r.metadata?.ownerName || "Unknown"}'s Studio</div>
+                <div className="room-explore-meta">
+                  <span>jam studio</span>
+                  <span>{r.clients} online</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {subTab === "recordings" && (
+        <div>
+          {recordings.length === 0 && <p style={{ color: "var(--text-dim)", fontSize: "0.8rem", marginTop: 8 }}>No recordings yet. Room sessions are recorded automatically.</p>}
+          <div className="room-explore-grid" style={{ marginTop: 8 }}>
+            {recordings.map((r) => (
+              <div key={r.sessionId} className="room-explore-card clickable" onClick={() => setHash("replay/" + r.sessionId)}>
+                <div className="room-explore-name">{r.roomOwnerName || "Unknown"}'s Room</div>
+                <div className="room-explore-meta">
+                  <span>{r.scene}</span>
+                  <span>{r.participantCount} participant{r.participantCount !== 1 ? "s" : ""}</span>
+                </div>
+                <div className="room-explore-meta" style={{ marginTop: "0.3rem" }}>
+                  <span>{new Date(r.startedAt).toLocaleString()}</span>
+                  <span>{Math.round(r.duration / 1000)}s · {r.eventCount} events</span>
+                </div>
+                <div className="room-explore-participants">
+                  {r.participants.map((p, i) => (
+                    <span key={i} className="room-explore-participant">{p.isAgent ? "🤖" : "👤"} {p.name}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
+//  OWNED CHARACTER PAGE
 // ══════════════════════════════════════
 
 function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead }) {
-  const [tab, setTab] = useState("posts"); // "posts" | "profile"
+  const [tab, setTab] = useState("activities");
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
   const [postModel, setPostModel] = useState("");
@@ -1488,12 +1609,18 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
     <div>
       {/* Tabs */}
       <div className="feed-tabs">
-        <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>Posts</button>
-        <button className={tab === "dms" ? "active" : ""} onClick={() => setTab("dms")}>Messages</button>
+        <button className={tab === "activities" ? "active" : ""} onClick={() => setTab("activities")}>Activities</button>
+        <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>Feed</button>
+        <button className={tab === "dms" ? "active" : ""} onClick={() => setTab("dms")}>Social</button>
         <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Profile</button>
       </div>
 
-      {/* Posts tab */}
+      {/* Activities tab */}
+      {tab === "activities" && (
+        <ActivitiesPanel characterPk={character.pk} characterName={character.name} />
+      )}
+
+      {/* Feed tab */}
       {tab === "posts" && (
         <div>
           {/* Compose */}
@@ -1601,9 +1728,13 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
         </div>
       )}
 
-      {/* DMs tab */}
+      {/* Social tab */}
       {tab === "dms" && (
-        <DmInbox account={account} allIdentities={allIdentities || []} onRead={onDmRead} />
+        <div>
+          <NetworkPage characters={characters || []} activeAccount={account} highlightPk={character?.pk || account?.pk} embedded />
+          <h3 style={{ marginTop: 20, marginBottom: 8 }}>Messages</h3>
+          <DmInbox account={account} allIdentities={allIdentities || []} onRead={onDmRead} />
+        </div>
       )}
 
       {/* Profile tab */}
@@ -1643,6 +1774,8 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                   <FollowSection targetPk={character.pk} allIdentities={allIdentities} />
                 </div>
               </div>
+
+              <CharacterGamePanel account={account} characterPk={character.pk} characterName={character.name} characterImage={character.profile_image} />
 
               <KeysSection npub={character.npub} nsec={character.nsec} />
 
@@ -1739,7 +1872,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
 
 function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, allIdentities, activeCharId, onUpdateProfile, onDmRead }) {
   const account = adminAccount;
-  const [tab, setTab] = useState("posts");
+  const [tab, setTab] = useState("posts"); // admin profile: no activities tab
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
   const [postModel, setPostModel] = useState("");
@@ -1977,8 +2110,8 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, al
   return (
     <div>
       <div className="feed-tabs">
-        <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>Posts</button>
-        <button className={tab === "dms" ? "active" : ""} onClick={() => setTab("dms")}>Messages</button>
+        <button className={tab === "posts" ? "active" : ""} onClick={() => setTab("posts")}>Feed</button>
+        <button className={tab === "dms" ? "active" : ""} onClick={() => setTab("dms")}>Social</button>
         <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Profile</button>
       </div>
 
@@ -2076,7 +2209,11 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, al
       )}
 
       {tab === "dms" && (
-        <DmInbox account={account} allIdentities={allIdentities || []} onRead={onDmRead} />
+        <div>
+          <NetworkPage characters={[]} activeAccount={account} highlightPk={account?.pk} embedded />
+          <h3 style={{ marginTop: 20, marginBottom: 8 }}>Messages</h3>
+          <DmInbox account={account} allIdentities={allIdentities || []} onRead={onDmRead} />
+        </div>
       )}
 
       {tab === "profile" && !editing && (
@@ -4951,7 +5088,7 @@ function ReplayViewer({ sessionId }) {
           {Array.from({ length: recording.height }, (_, y) =>
             Array.from({ length: recording.width }, (_, x) => {
               const playersHere = [...players.values()].filter(p => Math.round(p.x) === x && Math.round(p.y) === y);
-              const objectsHere = recording.objects.filter(o => Math.round(o.x) === x && Math.round(o.y) === y);
+              const objectsHere = (recording.objects || []).filter(o => Math.round(o.x) === x && Math.round(o.y) === y);
               return (
                 <div
                   key={`${x}-${y}`}
@@ -5046,7 +5183,7 @@ function ReplayViewer({ sessionId }) {
 //  NETWORK PAGE (Directory sidebar + Graph)
 // ══════════════════════════════════════
 
-function NetworkPage({ characters = [], activeAccount }) {
+function NetworkPage({ characters = [], activeAccount, highlightPk, embedded }) {
   const [profiles, setProfiles] = useState({});
   const [follows, setFollows] = useState({}); // pk -> [followed pks]
   const [loading, setLoading] = useState(true);
@@ -5225,7 +5362,7 @@ function NetworkPage({ characters = [], activeAccount }) {
 
   // Canvas renderers
   const paintNode = useCallback((node, ctx, globalScale) => {
-    const isSelected = selectedPk === node.id;
+    const isSelected = selectedPk === node.id || highlightPk === node.id;
     const isHovered = hoverNode?.id === node.id;
     const size = 8 + (node.followCount || 0);
     const img = imageCache.current[node.id];
@@ -5277,18 +5414,20 @@ function NetworkPage({ characters = [], activeAccount }) {
 
   return (
     <div>
-      <h2 className="page-title">Network</h2>
+      {!embedded && <h2 className="page-title">Network</h2>}
 
-      <div className="network-stats">
-        <div className="network-stat">
-          <span className="network-stat-value">{Object.keys(profiles).length}</span>
-          <span className="network-stat-label">Users</span>
+      {!embedded && (
+        <div className="network-stats">
+          <div className="network-stat">
+            <span className="network-stat-value">{Object.keys(profiles).length}</span>
+            <span className="network-stat-label">Users</span>
+          </div>
+          <div className="network-stat">
+            <span className="network-stat-value">{edges.length}</span>
+            <span className="network-stat-label">Follows</span>
+          </div>
         </div>
-        <div className="network-stat">
-          <span className="network-stat-value">{edges.length}</span>
-          <span className="network-stat-label">Follows</span>
-        </div>
-      </div>
+      )}
 
       {loading && <div className="loading">Loading network...</div>}
 
@@ -5348,7 +5487,9 @@ function NetworkPage({ characters = [], activeAccount }) {
                 linkDirectionalArrowRelPos={0.8}
                 onNodeHover={(node) => setHoverNode(node || null)}
                 onLinkHover={(link) => setHoverLink(link || null)}
-                onNodeClick={(node) => setSelectedPk(selectedPk === node.id ? null : node.id)}
+                onNodeClick={(node) => {
+                  setSelectedPk(selectedPk === node.id ? null : node.id);
+                }}
                 d3AlphaDecay={0.02}
                 d3VelocityDecay={0.3}
                 cooldownTime={5000}
@@ -5378,58 +5519,85 @@ function NetworkPage({ characters = [], activeAccount }) {
               )}
             </div>
 
-            {/* Selected user detail panel */}
+            {/* Mini profile popup */}
             {selectedProfile && (
-              <div className="network-detail">
-                <div className="network-detail-header">
-                  <div className="directory-card-avatar" style={{ width: 48, height: 48, fontSize: "1.4rem" }}>
-                    {selectedProfile.picture ? <img src={selectedProfile.picture} alt="" /> : <span>{selectedProfile.name.charAt(0).toUpperCase()}</span>}
-                  </div>
-                  <div>
-                    <div className="directory-card-name" style={{ fontSize: "1.05rem" }}>{selectedProfile.name}</div>
-                    {selectedProfile.about && <div className="directory-card-about">{selectedProfile.about}</div>}
-                  </div>
-                </div>
-
-                <div className="network-detail-actions">
-                  <button className="btn-small" onClick={() => setHash("profile/" + npubEncode(selectedPk))}>View Profile</button>
-                  <button className="btn-small" onClick={() => setHash("messages/" + npubEncode(selectedPk))}>Message</button>
-                  {activeAccount && activeAccount.pk !== selectedPk && (
-                    <button
-                      className={`btn-small ${myFollows.includes(selectedPk) ? "btn-reset" : ""}`}
-                      onClick={() => handleFollow(selectedPk)}
-                      disabled={followingInProgress}
-                    >
-                      {followingInProgress ? "..." : myFollows.includes(selectedPk) ? "Unfollow" : "Follow"}
-                    </button>
-                  )}
-                </div>
-
-                {follows[selectedPk] && follows[selectedPk].follows.filter((f) => profiles[f]).length > 0 && (
-                  <div className="network-detail-follows">
-                    <span className="network-detail-label">Following</span>
-                    <div className="network-detail-follow-list">
-                      {follows[selectedPk].follows.filter((f) => profiles[f]).map((f) => (
-                        <button key={f} className="network-detail-follow-chip" onClick={() => setSelectedPk(f)}>
-                          {profiles[f].name}
+              embedded ? (
+                <div className="network-popup-overlay" onClick={() => setSelectedPk(null)}>
+                  <div className="network-popup" onClick={(e) => e.stopPropagation()}>
+                    <button className="network-popup-close" onClick={() => setSelectedPk(null)}>&times;</button>
+                    <div className="network-popup-header">
+                      <div className="directory-card-avatar" style={{ width: 48, height: 48, fontSize: "1.4rem" }}>
+                        {selectedProfile.picture ? <img src={selectedProfile.picture} alt="" /> : <span>{selectedProfile.name.charAt(0).toUpperCase()}</span>}
+                      </div>
+                      <div>
+                        <div className="directory-card-name" style={{ fontSize: "1rem" }}>{selectedProfile.name}</div>
+                        {selectedProfile.about && <div className="directory-card-about" style={{ fontSize: "0.72rem", maxHeight: 40, overflow: "hidden" }}>{selectedProfile.about}</div>}
+                      </div>
+                    </div>
+                    <div className="network-popup-actions">
+                      <button className="btn-small" onClick={() => setHash("profile/" + npubEncode(selectedPk))}>View Profile</button>
+                      <button className="btn-small" onClick={() => setHash("messages/" + npubEncode(selectedPk))}>Message</button>
+                      {activeAccount && activeAccount.pk !== selectedPk && (
+                        <button
+                          className={`btn-small ${myFollows.includes(selectedPk) ? "btn-reset" : ""}`}
+                          onClick={() => handleFollow(selectedPk)}
+                          disabled={followingInProgress}
+                        >
+                          {followingInProgress ? "..." : myFollows.includes(selectedPk) ? "Unfollow" : "Follow"}
                         </button>
-                      ))}
+                      )}
                     </div>
                   </div>
-                )}
-
-                <div className="network-detail-posts">
-                  <span className="network-detail-label">Recent Posts</span>
-                  {postsLoading && <div className="loading" style={{ padding: 12 }}>Loading...</div>}
-                  {!postsLoading && selectedPosts.length === 0 && <div style={{ color: "var(--text-faint)", fontSize: "0.78rem", padding: "8px 0" }}>No posts.</div>}
-                  {selectedPosts.slice(0, 5).map((ev) => (
-                    <div key={ev.id} className="network-detail-post clickable" onClick={() => setHash("thread/" + ev.id)}>
-                      <div style={{ fontSize: "0.82rem", lineHeight: 1.4 }}>{ev.content.slice(0, 120)}{ev.content.length > 120 ? "..." : ""}</div>
-                      <div className="note-time">{formatTime(ev.created_at)}</div>
-                    </div>
-                  ))}
                 </div>
-              </div>
+              ) : (
+                <div className="network-detail">
+                  <div className="network-detail-header">
+                    <div className="directory-card-avatar" style={{ width: 48, height: 48, fontSize: "1.4rem" }}>
+                      {selectedProfile.picture ? <img src={selectedProfile.picture} alt="" /> : <span>{selectedProfile.name.charAt(0).toUpperCase()}</span>}
+                    </div>
+                    <div>
+                      <div className="directory-card-name" style={{ fontSize: "1.05rem" }}>{selectedProfile.name}</div>
+                      {selectedProfile.about && <div className="directory-card-about">{selectedProfile.about}</div>}
+                    </div>
+                  </div>
+                  <div className="network-detail-actions">
+                    <button className="btn-small" onClick={() => setHash("profile/" + npubEncode(selectedPk))}>View Profile</button>
+                    <button className="btn-small" onClick={() => setHash("messages/" + npubEncode(selectedPk))}>Message</button>
+                    {activeAccount && activeAccount.pk !== selectedPk && (
+                      <button
+                        className={`btn-small ${myFollows.includes(selectedPk) ? "btn-reset" : ""}`}
+                        onClick={() => handleFollow(selectedPk)}
+                        disabled={followingInProgress}
+                      >
+                        {followingInProgress ? "..." : myFollows.includes(selectedPk) ? "Unfollow" : "Follow"}
+                      </button>
+                    )}
+                  </div>
+                  {follows[selectedPk] && follows[selectedPk].follows.filter((f) => profiles[f]).length > 0 && (
+                    <div className="network-detail-follows">
+                      <span className="network-detail-label">Following</span>
+                      <div className="network-detail-follow-list">
+                        {follows[selectedPk].follows.filter((f) => profiles[f]).map((f) => (
+                          <button key={f} className="network-detail-follow-chip" onClick={() => setSelectedPk(f)}>
+                            {profiles[f].name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="network-detail-posts">
+                    <span className="network-detail-label">Recent Posts</span>
+                    {postsLoading && <div className="loading" style={{ padding: 12 }}>Loading...</div>}
+                    {!postsLoading && selectedPosts.length === 0 && <div style={{ color: "var(--text-faint)", fontSize: "0.78rem", padding: "8px 0" }}>No posts.</div>}
+                    {selectedPosts.slice(0, 5).map((ev) => (
+                      <div key={ev.id} className="network-detail-post clickable" onClick={() => setHash("thread/" + ev.id)}>
+                        <div style={{ fontSize: "0.82rem", lineHeight: 1.4 }}>{ev.content.slice(0, 120)}{ev.content.length > 120 ? "..." : ""}</div>
+                        <div className="note-time">{formatTime(ev.created_at)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
             )}
           </div>
         </div>
@@ -5552,7 +5720,7 @@ function PersonalityRadar({ axes, size = 200 }) {
 
 const GAME_URL = import.meta.env.VITE_GAME_URL || "";
 
-function GameDashboard({ adminAccount, characters, activeCharId }) {
+function CharacterGamePanel({ account, characterPk, characterName, characterImage }) {
   const [gameCat, setGameCat] = useState(null);
   const [dailies, setDailies] = useState([]);
   const [todos, setTodos] = useState([]);
@@ -5563,10 +5731,6 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
   const [lastResult, setLastResult] = useState(null);
   const [personality, setPersonality] = useState(null);
   const [showAllEvents, setShowAllEvents] = useState(false);
-
-  const activeChar = characters.find((c) => c.id === activeCharId) || null;
-  const isUserIdentity = !activeChar;
-  const account = activeChar ? accountFromSkHex(activeChar.skHex) : adminAccount;
 
   async function gameHeaders(url, method) {
     if (!account) return { "Content-Type": "application/json" };
@@ -5588,10 +5752,10 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
 
   // Register cat if needed and load game state
   async function loadGameState() {
-    if (!GAME_URL || !account || isUserIdentity) { setLoading(false); return; }
+    if (!GAME_URL || !account) { setLoading(false); return; }
     try {
       let cats = await gameFetch("/game/cats");
-      const charPk = activeChar?.pk || account.pk;
+      const charPk = characterPk || account.pk;
 
       // Find or register cat for active character
       let cat = cats.find((c) => c.character_pubkey === charPk);
@@ -5604,7 +5768,7 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
         } catch {}
         cat = await gameFetch("/game/cats", "POST", {
           character_pubkey: charPk,
-          name: activeChar?.name || `My ${CREATURE_TYPE.charAt(0).toUpperCase() + CREATURE_TYPE.slice(1)}`,
+          name: characterName || `My ${CREATURE_TYPE.charAt(0).toUpperCase() + CREATURE_TYPE.slice(1)}`,
           zodiac_sign: zodiac,
         });
         // Fetch full cat data
@@ -5628,7 +5792,7 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
     setLoading(false);
   }
 
-  useEffect(() => { setLoading(true); loadGameState(); }, [activeCharId, account?.pk]);
+  useEffect(() => { setLoading(true); loadGameState(); }, [characterPk, account?.pk]);
 
   async function handleCompleteDaily(questId) {
     setCompleting(`daily-${questId}`);
@@ -5671,51 +5835,9 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
     loadGameState();
   }
 
-  if (!GAME_URL) {
-    return (
-      <div>
-        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
-        <div className="edit-section" style={{ marginTop: 16 }}>
-          <p style={{ color: "var(--text-dim)" }}>Game service not configured. Set <code>VITE_GAME_URL</code> in your environment.</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (isUserIdentity) {
-    return (
-      <div>
-        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
-        <div className="edit-section" style={{ marginTop: 16 }}>
-          <p style={{ color: "var(--text-dim)" }}>Your {USER_ROLE} profile doesn't have a game dashboard.</p>
-          <p style={{ color: "var(--text-dim)", marginTop: 8, fontSize: "0.8rem" }}>
-            Switch to one of your {CREATURE_TYPE_PLURAL} in the sidebar to see their dashboard.
-            {characters.length === 0 && <> Or <a href="#/characters/new" style={{ color: "var(--accent)" }}>create a {CREATURE_TYPE}</a> first.</>}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div>
-        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
-        <p style={{ color: "var(--text-dim)", marginTop: 16 }}>Loading...</p>
-      </div>
-    );
-  }
-
-  if (!gameCat) {
-    return (
-      <div>
-        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
-        <div className="edit-section" style={{ marginTop: 16 }}>
-          <p style={{ color: "var(--text-dim)" }}>No active {CREATURE_TYPE}. Create a {CREATURE_TYPE} first.</p>
-        </div>
-      </div>
-    );
-  }
+  if (!GAME_URL) return null;
+  if (loading) return <div className="loading" style={{ fontSize: "0.8rem", marginTop: 12 }}>Loading game data...</div>;
+  if (!gameCat) return null;
 
   const xpNeeded = gameCat.level * 100;
   const xpPercent = Math.min(100, Math.round((gameCat.xp / xpNeeded) * 100));
@@ -5724,8 +5846,6 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
 
   return (
     <div>
-      <h2 className="page-title">{DASHBOARD_LABEL}</h2>
-
       {/* Reward Toast */}
       {lastResult && (
         <div className="sc-toast">
@@ -5736,25 +5856,15 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
         </div>
       )}
 
-      {/* Cat Card */}
+      {/* Stats */}
       <div className="edit-section" style={{ marginTop: 16 }}>
-        <div className="sc-cat-card">
-          <div className="sc-cat-avatar">
-            {activeChar?.profile_image ? (
-              <img src={activeChar.profile_image} alt="" />
-            ) : (
-              <span className="sc-cat-initial">{(gameCat.name || "?")[0].toUpperCase()}</span>
-            )}
-          </div>
-          <div className="sc-cat-info">
-            <div className="sc-cat-name">{gameCat.name}</div>
-            <div className="sc-cat-level">Level {gameCat.level}</div>
-            <div className="sc-stat-row">
-              <span title="Courage">CRG {gameCat.courage}</span>
-              <span title="Resilience">RES {gameCat.resilience}</span>
-              <span title="Agility">AGI {gameCat.agility}</span>
-              <span title="Charm">CHA {gameCat.charm}</span>
-            </div>
+        <div className="sc-cat-info">
+          <div className="sc-cat-level">Level {gameCat.level}</div>
+          <div className="sc-stat-row">
+            <span title="Courage">CRG {gameCat.courage}</span>
+            <span title="Resilience">RES {gameCat.resilience}</span>
+            <span title="Agility">AGI {gameCat.agility}</span>
+            <span title="Charm">CHA {gameCat.charm}</span>
           </div>
         </div>
 
@@ -6829,14 +6939,8 @@ export default function App() {
     if (route === "replay" && routeKey) {
       return <ReplayViewer sessionId={routeKey} />;
     }
-    if (route === "dashboard") {
-      return <GameDashboard adminAccount={adminAccount} characters={characters} activeCharId={activeCharId} />;
-    }
     if (route === "explore") {
       return <ExploreRooms />;
-    }
-    if (route === "network") {
-      return <NetworkPage characters={characters} activeAccount={activeAccount} />;
     }
     if (route === "settings") {
       return <SettingsPage characters={characters} onReset={handleReset} adminAccount={adminAccount} serverAdminPubkey={serverAdminPubkey} />;
