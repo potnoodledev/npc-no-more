@@ -27,9 +27,10 @@ fi
 
 echo "Switching to brand: $BRAND"
 
-# Copy branding.json
+# Copy branding.json (root + game-service for Docker builds)
 if [ -f "$BRAND_DIR/branding.json" ]; then
   cp "$BRAND_DIR/branding.json" "$ROOT/branding.json"
+  cp "$BRAND_DIR/branding.json" "$ROOT/game-service/branding.json"
   echo "  -> branding.json"
 fi
 
