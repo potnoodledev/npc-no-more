@@ -69,5 +69,43 @@
     "post": {
       "intro": "Broadcast messages to the relay. Do NOT try to post using any other method — only use the script below."
     }
+  },
+  "personality": {
+    "axes": [
+      { "key": "intensity", "label": "Intensity", "negLabel": "Raw", "posLabel": "Refined" },
+      { "key": "melancholy", "label": "Melancholy", "negLabel": "Dark", "posLabel": "Bright" },
+      { "key": "chaos", "label": "Chaos", "negLabel": "Experimental", "posLabel": "Structured" },
+      { "key": "warmth", "label": "Warmth", "negLabel": "Intimate", "posLabel": "Detached" },
+      { "key": "defiance", "label": "Defiance", "negLabel": "Rebellious", "posLabel": "Harmonious" }
+    ],
+    "genres": [
+      { "key": "punk", "label": "Punk" },
+      { "key": "electronic", "label": "Electronic" },
+      { "key": "blues", "label": "Blues" },
+      { "key": "ambient", "label": "Ambient" },
+      { "key": "hip_hop", "label": "Hip Hop" },
+      { "key": "folk", "label": "Folk" },
+      { "key": "metal", "label": "Metal" },
+      { "key": "jazz", "label": "Jazz" }
+    ],
+    "zodiacMapping": {
+      "aries":       { "axes": { "intensity": -40, "defiance": -35, "chaos": -20, "warmth": -10, "melancholy": 15 }, "genres": ["punk", "metal"] },
+      "taurus":      { "axes": { "intensity": 20, "warmth": -30, "chaos": 30, "melancholy": 10, "defiance": 20 }, "genres": ["blues", "folk"] },
+      "gemini":      { "axes": { "chaos": -40, "warmth": -20, "intensity": -10, "melancholy": 20, "defiance": -15 }, "genres": ["electronic", "hip_hop"] },
+      "cancer":      { "axes": { "warmth": -45, "melancholy": -30, "intensity": 10, "chaos": 15, "defiance": 20 }, "genres": ["folk", "ambient"] },
+      "leo":         { "axes": { "intensity": -35, "defiance": -25, "warmth": 20, "melancholy": 25, "chaos": -10 }, "genres": ["punk", "hip_hop"] },
+      "virgo":       { "axes": { "chaos": 45, "intensity": 15, "melancholy": 10, "warmth": 10, "defiance": 25 }, "genres": ["jazz", "electronic"] },
+      "libra":       { "axes": { "defiance": 40, "warmth": -15, "melancholy": 20, "chaos": 15, "intensity": 10 }, "genres": ["jazz", "ambient"] },
+      "scorpio":     { "axes": { "melancholy": -45, "intensity": -30, "warmth": -20, "defiance": -15, "chaos": -10 }, "genres": ["metal", "electronic"] },
+      "sagittarius": { "axes": { "chaos": -35, "defiance": -20, "intensity": -15, "melancholy": 25, "warmth": 10 }, "genres": ["folk", "hip_hop"] },
+      "capricorn":   { "axes": { "chaos": 40, "intensity": 25, "defiance": 20, "warmth": 15, "melancholy": 5 }, "genres": ["blues", "jazz"] },
+      "aquarius":    { "axes": { "chaos": -45, "defiance": -30, "warmth": 25, "intensity": -10, "melancholy": 10 }, "genres": ["electronic", "ambient"] },
+      "pisces":      { "axes": { "melancholy": -35, "warmth": -30, "chaos": -20, "intensity": 15, "defiance": 10 }, "genres": ["ambient", "folk"] }
+    },
+    "archetypes": [
+      "The Broadcaster", "The Wanderer", "The Archivist", "The Rebel",
+      "The Dreamer", "The Trickster", "The Healer", "The Outlaw",
+      "The Sage", "The Storm", "The Ghost", "The Flame"
+    ]
   }
 }

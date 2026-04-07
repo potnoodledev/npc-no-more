@@ -7,6 +7,7 @@ import { registerCat, getCatsByOwner, getCatById, getCatByCharacterPubkey, verif
 import { getDailies, completeDaily } from "./modules/quests.js";
 import { getTodos, createTodo, updateTodo, completeTodo, deleteTodo } from "./modules/todos.js";
 import { recordCareActivity, addEnergy, spendEnergy } from "./modules/care.js";
+import { initializePersonality, getPersonality, getPersonalityForPrompt, shiftAxis, shiftGenre, addLifeEvent } from "./modules/personality.js";
 
 const app = express();
 app.use(cors());
@@ -76,11 +77,11 @@ app.get("/game/cats", (req, res) => {
 });
 
 app.post("/game/cats", (req, res) => {
-  const { character_pubkey, name } = req.body;
+  const { character_pubkey, name, zodiac_sign } = req.body;
   if (!character_pubkey || !name) {
     return res.status(400).json({ error: "character_pubkey and name required" });
   }
-  const result = registerCat(req.pubkey, character_pubkey, name);
+  const result = registerCat(req.pubkey, character_pubkey, name, zodiac_sign);
   res.json(result);
 });
 
@@ -144,6 +145,22 @@ app.delete("/game/cats/:catId/todos/:todoId", requireCatOwner, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Personality Routes (authenticated) ──
+
+app.get("/game/cats/:catId/personality", requireCatOwner, (req, res) => {
+  const personality = getPersonality(req.catId);
+  res.json(personality);
+});
+
+app.post("/game/cats/:catId/personality/init", requireCatOwner, (req, res) => {
+  const { zodiac_sign } = req.body;
+  if (!zodiac_sign) return res.status(400).json({ error: "zodiac_sign required" });
+  const db = getDb();
+  db.prepare("UPDATE cats SET zodiac_sign = ? WHERE id = ?").run(zodiac_sign, req.catId);
+  initializePersonality(req.catId, zodiac_sign);
+  res.json(getPersonality(req.catId));
+});
+
 // ── Internal Routes (no auth, for room-server / pi-bridge) ──
 
 app.get("/internal/cat-by-pubkey/:pubkey", (req, res) => {
@@ -189,6 +206,34 @@ app.get("/internal/cat-appearance/:pubkey", (req, res) => {
   ];
 
   res.json({ cat_id: cat.id, equipped, traits, promptModifiers });
+});
+
+app.get("/internal/cat-personality/:pubkey", (req, res) => {
+  const cat = getCatByCharacterPubkey(req.params.pubkey);
+  if (!cat) return res.status(404).json({ error: "cat not found" });
+  const prompt_fragment = getPersonalityForPrompt(cat.id);
+  res.json({ prompt_fragment });
+});
+
+app.post("/internal/cat-personality-shift", (req, res) => {
+  const { character_pubkey, shifts, event } = req.body;
+  if (!character_pubkey) return res.status(400).json({ error: "character_pubkey required" });
+  const cat = getCatByCharacterPubkey(character_pubkey);
+  if (!cat) return res.status(404).json({ error: "cat not found" });
+
+  if (event?.title) {
+    addLifeEvent(cat.id, {
+      event_type: event.event_type || "interaction",
+      title: event.title,
+      description: event.description || null,
+      statChanges: shifts || null,
+    });
+  } else if (shifts) {
+    for (const [key, delta] of Object.entries(shifts)) {
+      shiftAxis(cat.id, key, delta);
+    }
+  }
+  res.json({ ok: true });
 });
 
 // ── Start ──

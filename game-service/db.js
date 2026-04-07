@@ -213,5 +213,41 @@ function migrate(db) {
       published_at INTEGER NOT NULL DEFAULT (unixepoch()),
       UNIQUE(cat_id, milestone_type, milestone_key)
     );
+
+    -- Personality system
+    CREATE TABLE IF NOT EXISTS personality_axes (
+      cat_id INTEGER NOT NULL REFERENCES cats(id),
+      axis_key TEXT NOT NULL,
+      value INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (cat_id, axis_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS genre_dna (
+      cat_id INTEGER NOT NULL REFERENCES cats(id),
+      genre_key TEXT NOT NULL,
+      affinity INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (cat_id, genre_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS archetype_tags (
+      cat_id INTEGER NOT NULL REFERENCES cats(id),
+      tag TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (cat_id, tag)
+    );
+
+    CREATE TABLE IF NOT EXISTS life_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cat_id INTEGER NOT NULL REFERENCES cats(id),
+      event_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      stat_changes_json TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_life_events_cat ON life_events(cat_id);
   `);
+
+  // Migration: add zodiac_sign to cats (safe to re-run)
+  try { db.exec("ALTER TABLE cats ADD COLUMN zodiac_sign TEXT"); } catch {}
 }

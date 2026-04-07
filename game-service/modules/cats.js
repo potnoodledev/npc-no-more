@@ -1,23 +1,31 @@
 import { getDb } from "../db.js";
 import { loadBranding } from "../branding.js";
+import { initializePersonality } from "./personality.js";
 import crypto from "crypto";
 
 const branding = loadBranding();
 const CURRENCY = branding.currency || "shinies";
 
-export function registerCat(ownerPubkey, characterPubkey, name) {
+export function registerCat(ownerPubkey, characterPubkey, name, zodiacSign) {
   const db = getDb();
   const existing = db.prepare("SELECT id FROM cats WHERE character_pubkey = ?").get(characterPubkey);
   if (existing) return existing;
 
   const result = db.prepare(`
-    INSERT INTO cats (pubkey, character_pubkey, name) VALUES (?, ?, ?)
-  `).run(ownerPubkey, characterPubkey, name);
+    INSERT INTO cats (pubkey, character_pubkey, name, zodiac_sign) VALUES (?, ?, ?, ?)
+  `).run(ownerPubkey, characterPubkey, name, zodiacSign || null);
+
+  const catId = result.lastInsertRowid;
 
   // Initialize currency
-  db.prepare("INSERT INTO currencies (cat_id, currency, balance) VALUES (?, ?, 0)").run(result.lastInsertRowid, CURRENCY);
+  db.prepare("INSERT INTO currencies (cat_id, currency, balance) VALUES (?, ?, 0)").run(catId, CURRENCY);
 
-  return { id: result.lastInsertRowid };
+  // Initialize personality if zodiac sign provided
+  if (zodiacSign) {
+    initializePersonality(catId, zodiacSign);
+  }
+
+  return { id: catId };
 }
 
 export function getCatsByOwner(ownerPubkey) {

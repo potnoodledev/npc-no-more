@@ -32,6 +32,60 @@ const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
 const RELAY_URL = process.env.RELAY_URL || "ws://localhost:7777";
 const API_URL = process.env.API_URL || "http://localhost:3456";
+const GAME_SERVICE_URL = process.env.GAME_SERVICE_URL || "http://localhost:3458";
+
+// ── Personality Analysis ──
+const sessionMessages = new Map(); // pubkey -> [{role, content}]
+const NIM_ANALYSIS_MODEL = "meta/llama-3.1-8b-instruct";
+
+async function analyzeConversationPersonality(pubkeyHex) {
+  const msgs = sessionMessages.get(pubkeyHex);
+  if (!msgs || msgs.length < 5 || !NVIDIA_NIM_API_KEY) return;
+
+  // Take last 20 messages, format compactly
+  const recent = msgs.slice(-20).map((m) => `${m.role}: ${m.content.slice(0, 200)}`).join("\n");
+
+  const prompt = `Analyze this conversation and suggest tiny personality stat shifts (-3 to +3) for the character. Only shift 1-2 axes that are most relevant. Axes: intensity (raw↔refined), melancholy (dark↔bright), chaos (experimental↔structured), warmth (intimate↔detached), defiance (rebellious↔harmonious). Negative values lean toward the first label, positive toward the second.
+
+Conversation:
+${recent}
+
+Respond with ONLY valid JSON, no markdown:
+{"shifts": {"axis_key": delta}, "event_title": "Brief description of the interaction", "event_description": "One sentence about what happened"}`;
+
+  try {
+    const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${NVIDIA_NIM_API_KEY}` },
+      body: JSON.stringify({
+        model: NIM_ANALYSIS_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 200,
+        temperature: 0.3,
+      }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content?.trim();
+    if (!text) return;
+
+    const parsed = JSON.parse(text);
+    if (!parsed.shifts || !parsed.event_title) return;
+
+    await fetch(`${GAME_SERVICE_URL}/internal/cat-personality-shift`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        character_pubkey: pubkeyHex,
+        shifts: parsed.shifts,
+        event: { event_type: "conversation", title: parsed.event_title, description: parsed.event_description || null },
+      }),
+    });
+    console.log(`[personality] Analyzed ${pubkeyHex.slice(0, 12)}: ${JSON.stringify(parsed.shifts)}`);
+  } catch (e) {
+    console.log(`[personality] Analysis failed for ${pubkeyHex.slice(0, 12)}: ${e.message}`);
+  }
+}
 
 // ── Auth — delegate to api-service ──
 
@@ -356,8 +410,20 @@ async function getOrCreateSession(pubkeyHex) {
     if (profile) console.log(`[session] Using cached profile for ${pubkeyHex.slice(0, 12)}...`);
   }
 
-  // Build system prompt from NIP-01 profile + installed skills
-  const systemPrompt = buildSystemPrompt(profile, pubkeyHex, charDir);
+  // Fetch personality from game-service
+  let personalityFragment = "";
+  try {
+    const pRes = await fetch(`${GAME_SERVICE_URL}/internal/cat-personality/${pubkeyHex}`);
+    if (pRes.ok) {
+      const pData = await pRes.json();
+      personalityFragment = pData.prompt_fragment || "";
+    }
+  } catch (e) {
+    console.log(`[session] Personality fetch skipped: ${e.message}`);
+  }
+
+  // Build system prompt from NIP-01 profile + installed skills + personality
+  const systemPrompt = buildSystemPrompt(profile, pubkeyHex, charDir, personalityFragment);
 
   const rpc = new PiRpcProcess(sessionId);
   rpc.start(charDir, systemPrompt);
@@ -941,13 +1007,24 @@ wss.on("connection", async (ws, req) => {
             return;
           }
 
+          // Track messages for personality analysis
+          if (!sessionMessages.has(pubkeyHex)) sessionMessages.set(pubkeyHex, []);
+
           const listener = (piMsg) => {
             if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(piMsg));
+            // Capture assistant messages for analysis
+            if (piMsg.type === "agent_end" && piMsg.data?.content) {
+              const buf = sessionMessages.get(pubkeyHex) || [];
+              buf.push({ role: "assistant", content: piMsg.data.content });
+              if (buf.length > 30) buf.splice(0, buf.length - 30);
+            }
           };
           rpc.addListener(listener);
           ws.on("close", () => {
             console.log(`[ws] Disconnected pubkey=${pubkeyHex.slice(0, 16)}...`);
             rpc.removeListener(listener);
+            // Fire-and-forget personality analysis
+            analyzeConversationPersonality(pubkeyHex).catch(() => {});
           });
 
           // Send initial state
@@ -959,8 +1036,15 @@ wss.on("connection", async (ws, req) => {
         return;
       }
 
-      // Authenticated — forward to pi
-      if (rpc) rpc.send(msg);
+      // Authenticated — forward to pi and track user messages
+      if (rpc) {
+        rpc.send(msg);
+        if (msg.type === "prompt" && msg.message && pubkeyHex) {
+          const buf = sessionMessages.get(pubkeyHex) || [];
+          buf.push({ role: "user", content: msg.message });
+          if (buf.length > 30) buf.splice(0, buf.length - 30);
+        }
+      }
     } catch (err) {
       ws.send(JSON.stringify({ type: "error", error: "Invalid JSON: " + err.message }));
     }

@@ -40,6 +40,7 @@ services:
       - API_URL=http://npc-api:3456
       - CLIENT_SLUG=${VITE_CLIENT_SLUG:-npc-no-more}
       - ROOMS_URL=ws://npc-rooms:2567
+      - GAME_SERVICE_URL=http://npc-game:3458
     restart: unless-stopped
 
   rooms:
@@ -60,6 +61,7 @@ services:
       - "3458:3458"
     volumes:
       - game-data:/data
+      - ./branding.json:/app/branding.json:ro
     environment:
       - API_URL=http://npc-api:3456
     restart: unless-stopped

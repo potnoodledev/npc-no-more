@@ -3597,6 +3597,263 @@ a:hover { color: var(--accent-bright); }
 }
 .sc-todo-select:focus { outline: none; border-color: var(--accent-dim); }
 
+/* Personality */
+.sc-radar-svg { display: block; margin: 0 auto; }
+
+.sc-archetype-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.sc-archetype-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sc-axis-legend { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.sc-axis-row { display: flex; align-items: center; gap: 8px; }
+.sc-axis-neg, .sc-axis-pos {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-faint);
+  width: 80px;
+  flex-shrink: 0;
+}
+.sc-axis-neg { text-align: right; }
+.sc-axis-pos { text-align: left; }
+.sc-axis-bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 1px;
+  position: relative;
+}
+.sc-axis-bar-center {
+  position: absolute;
+  left: 50%;
+  top: -1px;
+  bottom: -1px;
+  width: 1px;
+  background: var(--text-faint);
+}
+.sc-axis-bar-marker {
+  position: absolute;
+  top: -2px;
+  width: 8px;
+  height: 10px;
+  background: var(--accent);
+  border-radius: 1px;
+  transform: translateX(-4px);
+}
+
+.sc-genre-list { display: flex; flex-direction: column; gap: 4px; }
+.sc-genre-row { display: flex; align-items: center; gap: 8px; }
+.sc-genre-label {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  width: 80px;
+  flex-shrink: 0;
+}
+.sc-genre-val {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--text-faint);
+  width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.sc-bar-genre { background: var(--accent-dim); }
+
+.sc-event-list { display: flex; flex-direction: column; gap: 4px; }
+.sc-event-item {
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.sc-event-title {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--cream);
+}
+.sc-event-desc {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.sc-event-shifts { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.sc-event-shift {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+.sc-event-shift.pos { color: var(--accent); background: rgba(var(--accent-rgb), 0.1); }
+.sc-event-shift.neg { color: var(--danger); background: rgba(234, 56, 76, 0.1); }
+.sc-event-time {
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-faint);
+  margin-top: 4px;
+}
+
+/* Zodiac Badge (profile display) */
+.zodiac-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+.zodiac-badge-symbol { font-size: 1rem; }
+.zodiac-badge-name {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--cream);
+  text-transform: capitalize;
+}
+.zodiac-badge-date {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+}
+
+/* Zodiac Picker */
+.zodiac-picker { margin: 16px 0; }
+.zodiac-picker-label {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--cream);
+  margin-bottom: 10px;
+}
+.zodiac-selected-label {
+  font-weight: 400;
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+/* Sign strip — 2 rows of 6 */
+.zodiac-strip {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+@media (max-width: 420px) { .zodiac-strip { grid-template-columns: repeat(4, 1fr); } }
+
+.zodiac-sign {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 2px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.zodiac-sign:hover { border-color: var(--accent-dim); background: var(--surface); }
+.zodiac-sign-active {
+  border-color: var(--accent) !important;
+  background: var(--surface2) !important;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.zodiac-sign-expanded {
+  border-color: var(--accent-dim) !important;
+  background: var(--surface) !important;
+}
+.zodiac-sign-symbol { font-size: 1.2rem; line-height: 1; }
+.zodiac-sign-name {
+  font-family: var(--font-body);
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--cream);
+}
+.zodiac-sign-active .zodiac-sign-name { color: var(--accent); }
+.zodiac-sign-dates {
+  font-family: var(--font-mono);
+  font-size: 0.48rem;
+  color: var(--text-faint);
+  text-align: center;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+/* Expanded state — selected sign + day grid */
+.zodiac-expanded {
+  animation: zodiac-expand-in 0.15s ease;
+}
+@keyframes zodiac-expand-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.zodiac-sign-wide {
+  width: 100%;
+  flex-direction: row;
+  gap: 8px;
+  justify-content: center;
+  padding: 8px 16px;
+}
+.zodiac-sign-hint {
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  color: var(--text-faint);
+  margin-left: auto;
+}
+.zodiac-day-grid {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+}
+.zodiac-day-month { flex: 1; min-width: 0; }
+.zodiac-day-month-label {
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  text-align: center;
+}
+.zodiac-day-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(28px, 1fr));
+  gap: 3px;
+}
+.zodiac-day-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: border-color 0.1s, background 0.1s;
+}
+.zodiac-day-cell:hover { border-color: var(--accent-dim); background: var(--surface); color: var(--text); }
+.zodiac-day-cell-active {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: var(--bg) !important;
+  font-weight: 700;
+}
+
 /* ══════════════════════════════════════
    JAM STUDIO
    ══════════════════════════════════════ */

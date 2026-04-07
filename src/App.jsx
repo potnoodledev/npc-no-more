@@ -610,6 +610,152 @@ function UserSetup({ serverAdminPubkey, onComplete, invitePk }) {
 }
 
 // ══════════════════════════════════════
+//  ZODIAC PICKER (circular wheel)
+// ══════════════════════════════════════
+
+const ZODIAC_DATA = [
+  { key: "aries",       symbol: "♈", startMonth: 3, startDay: 21, endMonth: 4, endDay: 19 },
+  { key: "taurus",      symbol: "♉", startMonth: 4, startDay: 20, endMonth: 5, endDay: 20 },
+  { key: "gemini",      symbol: "♊", startMonth: 5, startDay: 21, endMonth: 6, endDay: 20 },
+  { key: "cancer",      symbol: "♋", startMonth: 6, startDay: 21, endMonth: 7, endDay: 22 },
+  { key: "leo",         symbol: "♌", startMonth: 7, startDay: 23, endMonth: 8, endDay: 22 },
+  { key: "virgo",       symbol: "♍", startMonth: 8, startDay: 23, endMonth: 9, endDay: 22 },
+  { key: "libra",       symbol: "♎", startMonth: 9, startDay: 23, endMonth: 10, endDay: 22 },
+  { key: "scorpio",     symbol: "♏", startMonth: 10, startDay: 23, endMonth: 11, endDay: 21 },
+  { key: "sagittarius", symbol: "♐", startMonth: 11, startDay: 22, endMonth: 12, endDay: 21 },
+  { key: "capricorn",   symbol: "♑", startMonth: 12, startDay: 22, endMonth: 1, endDay: 19 },
+  { key: "aquarius",    symbol: "♒", startMonth: 1, startDay: 20, endMonth: 2, endDay: 18 },
+  { key: "pisces",      symbol: "♓", startMonth: 2, startDay: 19, endMonth: 3, endDay: 20 },
+];
+
+const MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function ZodiacBadge({ zodiac, birthday }) {
+  const z = ZODIAC_DATA.find((d) => d.key === zodiac);
+  if (!z) return null;
+  const bday = birthday ? birthday.split("-") : null;
+  const monthDay = bday ? `${MONTH_NAMES[parseInt(bday[0])]} ${parseInt(bday[1])}` : null;
+  return (
+    <div className="zodiac-badge">
+      <span className="zodiac-badge-symbol">{z.symbol}</span>
+      <span className="zodiac-badge-name">{z.key.charAt(0).toUpperCase() + z.key.slice(1)}</span>
+      {monthDay && <span className="zodiac-badge-date">{monthDay}</span>}
+    </div>
+  );
+}
+
+function getZodiacDays(z) {
+  const days = [];
+  let m = z.startMonth, d = z.startDay;
+  const daysInMonth = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  for (let i = 0; i < 32; i++) {
+    days.push({ month: m, day: d });
+    if (m === z.endMonth && d === z.endDay) break;
+    d++;
+    if (d > daysInMonth[m]) { d = 1; m = (m % 12) + 1; }
+  }
+  return days;
+}
+
+function randomZodiacBirth() {
+  const z = ZODIAC_DATA[Math.floor(Math.random() * ZODIAC_DATA.length)];
+  const days = getZodiacDays(z);
+  const pick = days[Math.floor(Math.random() * days.length)];
+  return { zodiac: z.key, month: pick.month, day: pick.day };
+}
+
+function ZodiacPicker({ value, birthMonth, birthDay, onChange }) {
+  const [expanded, setExpanded] = useState(null);
+
+  function handleSignClick(z) {
+    setExpanded(expanded === z.key ? null : z.key);
+  }
+
+  function handleDayClick(z, month, day) {
+    onChange(z.key, month, day);
+    setExpanded(null);
+  }
+
+  const activeSign = expanded ? ZODIAC_DATA.find((z) => z.key === expanded) : null;
+
+  // Split days by month for the grid
+  const daysByMonth = useMemo(() => {
+    if (!activeSign) return [];
+    const days = getZodiacDays(activeSign);
+    const groups = [];
+    let current = null;
+    for (const d of days) {
+      if (!current || current.month !== d.month) {
+        current = { month: d.month, days: [] };
+        groups.push(current);
+      }
+      current.days.push(d.day);
+    }
+    return groups;
+  }, [expanded]);
+
+  return (
+    <div className="zodiac-picker">
+      <div className="zodiac-picker-label">
+        Birthday
+        {value && <span className="zodiac-selected-label">
+          {" "}— {ZODIAC_DATA.find((z) => z.key === value)?.symbol} {value.charAt(0).toUpperCase() + value.slice(1)}
+          {birthMonth && birthDay ? ` (${MONTH_NAMES[birthMonth]} ${birthDay})` : ""}
+        </span>}
+      </div>
+
+      {expanded ? (
+        /* Picking a day — show only the selected sign + day grid */
+        <div className="zodiac-expanded">
+          <button type="button" className="zodiac-sign zodiac-sign-active zodiac-sign-wide"
+            onClick={() => setExpanded(null)}>
+            <span className="zodiac-sign-symbol">{activeSign.symbol}</span>
+            <span className="zodiac-sign-name">{activeSign.key.charAt(0).toUpperCase() + activeSign.key.slice(1)}</span>
+            <span className="zodiac-sign-dates">{MONTH_NAMES[activeSign.startMonth]} {activeSign.startDay} – {MONTH_NAMES[activeSign.endMonth]} {activeSign.endDay}</span>
+            <span className="zodiac-sign-hint">tap to change sign</span>
+          </button>
+          <div className="zodiac-day-grid">
+            {daysByMonth.map((group) => (
+              <div key={group.month} className="zodiac-day-month">
+                <div className="zodiac-day-month-label">{MONTH_NAMES[group.month]}</div>
+                <div className="zodiac-day-cells">
+                  {group.days.map((day) => {
+                    const isSel = birthMonth === group.month && birthDay === day && value === activeSign.key;
+                    return (
+                      <button key={day} type="button"
+                        className={`zodiac-day-cell ${isSel ? "zodiac-day-cell-active" : ""}`}
+                        onClick={() => handleDayClick(activeSign, group.month, day)}>
+                        {day}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        /* Sign selector — 6x2 grid */
+        <div className="zodiac-strip">
+          {ZODIAC_DATA.map((z) => {
+            const isActive = value === z.key;
+            return (
+              <button key={z.key} type="button"
+                className={`zodiac-sign ${isActive ? "zodiac-sign-active" : ""}`}
+                onClick={() => handleSignClick(z)}>
+                <span className="zodiac-sign-symbol">{z.symbol}</span>
+                <span className="zodiac-sign-name">{z.key.charAt(0).toUpperCase() + z.key.slice(1)}</span>
+                <span className="zodiac-sign-dates">{MONTH_NAMES[z.startMonth]} {z.startDay} – {MONTH_NAMES[z.endMonth]} {z.endDay}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════
 //  CREATE CHARACTER
 // ══════════════════════════════════════
 
@@ -618,6 +764,9 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
   const [saving, setSaving] = useState(false);
   const [charName, setCharName] = useState("");
   const [charAbout, setCharAbout] = useState("");
+  const [zodiacSign, setZodiacSign] = useState("");
+  const [birthMonth, setBirthMonth] = useState(0);
+  const [birthDay, setBirthDay] = useState(0);
   const [rolling, setRolling] = useState(false);
   const [rolledModel, setRolledModel] = useState(null);
   const [mode, setMode] = useState("create");
@@ -656,6 +805,13 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
       setCharName(persona.name);
       setCharAbout(persona.personality);
       setRolledModel(persona.model);
+      // Random zodiac birthday
+      if (!zodiacSign) {
+        const rb = randomZodiacBirth();
+        setZodiacSign(rb.zodiac);
+        setBirthMonth(rb.month);
+        setBirthDay(rb.day);
+      }
     } catch (e) {
       const msg = e?.message || "";
       setError(!isWhitelisted && (msg.includes("401") || msg.includes("unauthorized"))
@@ -717,6 +873,8 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
         display_name: charName,
         about: charAbout,
         ...(avatarUrl ? { picture: avatarUrl } : {}),
+        ...(zodiacSign ? { zodiac: zodiacSign } : {}),
+        ...(birthMonth && birthDay ? { birthday: `${String(birthMonth).padStart(2, "0")}-${String(birthDay).padStart(2, "0")}` } : {}),
       }, acc);
       onComplete(char);
     } catch (e) {
@@ -779,6 +937,9 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
             <textarea placeholder="Personality, backstory, how they speak..." value={charAbout} onChange={(e) => setCharAbout(e.target.value)} rows={4} /></label>
         </div>
 
+        <ZodiacPicker value={zodiacSign} birthMonth={birthMonth} birthDay={birthDay}
+          onChange={(z, m, d) => { setZodiacSign(z); setBirthMonth(m || 0); setBirthDay(d || 0); }} />
+
         <div className="avatar-gen-section">
           <div className="avatar-gen-header">
             <span className="avatar-gen-label">Profile Picture</span>
@@ -817,7 +978,7 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
           <button
             className="btn-primary"
             onClick={handleCreate}
-            disabled={saving || rolling || !charName.trim() || (mode === "import" && !nsecInput.trim())}
+            disabled={saving || rolling || !charName.trim() || !zodiacSign || (mode === "import" && !nsecInput.trim())}
           >
             {saving ? "Creating..." : "Create Character"}
           </button>
@@ -1277,8 +1438,10 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
     setSaving(true);
     setSaved(false);
     try {
-      // Build clean metadata — only include non-empty fields
+      // Build clean metadata — preserve custom fields (zodiac, birthday, etc.)
       const metadata = {};
+      if (profile?.zodiac) metadata.zodiac = profile.zodiac;
+      if (profile?.birthday) metadata.birthday = profile.birthday;
       if (editFields.name) metadata.name = editFields.name;
       if (editFields.display_name) metadata.display_name = editFields.display_name;
       if (editFields.about) metadata.about = editFields.about;
@@ -1465,6 +1628,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
                   </div>
                   <h2 className="char-hero-name">{profile?.display_name || profile?.name || character.name} <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>YOU</span></h2>
                   <NpubBadge npub={character.npub} />
+                  {profile?.zodiac && <ZodiacBadge zodiac={profile.zodiac} birthday={profile.birthday} />}
                   {profile?.about && <p className="char-hero-personality">{profile.about}</p>}
                   {profile?.website && (
                     <p className="char-hero-world">
@@ -1772,7 +1936,10 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, al
     setSaving(true);
     setSaved(false);
     try {
+      // Preserve custom fields (zodiac, birthday, etc.)
       const metadata = {};
+      if (profile?.zodiac) metadata.zodiac = profile.zodiac;
+      if (profile?.birthday) metadata.birthday = profile.birthday;
       if (editFields.name) metadata.name = editFields.name;
       if (editFields.display_name) metadata.display_name = editFields.display_name;
       if (editFields.about) metadata.about = editFields.about;
@@ -1928,6 +2095,7 @@ function OwnProfilePage({ adminAccount, serverAdminPubkey, isUserWhitelisted, al
               </div>
               <h2 className="char-hero-name">{displayName} <span style={{ fontSize: "0.6rem", color: "var(--accent)", marginLeft: 8, verticalAlign: "middle" }}>YOU</span></h2>
               <NpubBadge npub={account.npub} />
+              {profile?.zodiac && <ZodiacBadge zodiac={profile.zodiac} birthday={profile.birthday} />}
               {(profile?.about || account.profile_about) && <p className="char-hero-personality">{profile?.about || account.profile_about}</p>}
               {profile?.website && (
                 <p className="char-hero-world">
@@ -2075,6 +2243,7 @@ function ExternalProfileView({ pubkey, activeAccount, serverAdminPubkey, allIden
             )}
           </h2>
           <NpubBadge npub={npub} />
+          {profile?.zodiac && <ZodiacBadge zodiac={profile.zodiac} birthday={profile.birthday} />}
           {about && <p className="char-hero-personality">{about}</p>}
           {activeAccount && (
             <div className="char-hero-actions" style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 12 }}>
@@ -5313,6 +5482,71 @@ function RelayStatus({ url }) {
 }
 
 // ══════════════════════════════════════
+//  PERSONALITY RADAR (pure SVG)
+// ══════════════════════════════════════
+
+function PersonalityRadar({ axes, size = 200 }) {
+  if (!axes || axes.length === 0) return null;
+  const cx = size / 2, cy = size / 2;
+  const radius = size / 2 - 30;
+  const n = axes.length;
+  const angleStep = (2 * Math.PI) / n;
+
+  function polarToXY(angle, r) {
+    return [cx + r * Math.sin(angle), cy - r * Math.cos(angle)];
+  }
+
+  // Grid rings at 25%, 50%, 75%, 100%
+  const rings = [0.25, 0.5, 0.75, 1.0];
+
+  // Map axis value [-100, +100] to [0, radius]
+  // -100 = center, 0 = midpoint, +100 = edge
+  const dataPoints = axes.map((a, i) => {
+    const norm = (a.value + 100) / 200; // 0 to 1
+    const r = norm * radius;
+    const angle = i * angleStep;
+    return polarToXY(angle, r);
+  });
+
+  const dataPath = dataPoints.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") + " Z";
+
+  return (
+    <svg width={size} height={size} className="sc-radar-svg">
+      {/* Grid rings */}
+      {rings.map((pct) => {
+        const pts = Array.from({ length: n }, (_, i) => polarToXY(i * angleStep, radius * pct));
+        const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") + " Z";
+        return <path key={pct} d={d} fill="none" stroke="var(--border)" strokeWidth={pct === 0.5 ? 1.5 : 0.5} />;
+      })}
+      {/* Axis lines */}
+      {axes.map((_, i) => {
+        const [ex, ey] = polarToXY(i * angleStep, radius);
+        return <line key={i} x1={cx} y1={cy} x2={ex} y2={ey} stroke="var(--border)" strokeWidth={0.5} />;
+      })}
+      {/* Data polygon */}
+      <path d={dataPath} fill="var(--accent)" fillOpacity={0.2} stroke="var(--accent)" strokeWidth={2} />
+      {/* Data points */}
+      {dataPoints.map((p, i) => (
+        <circle key={i} cx={p[0]} cy={p[1]} r={3} fill="var(--accent)" />
+      ))}
+      {/* Labels */}
+      {axes.map((a, i) => {
+        const angle = i * angleStep;
+        const [lx, ly] = polarToXY(angle, radius + 18);
+        const anchor = Math.abs(lx - cx) < 5 ? "middle" : lx > cx ? "start" : "end";
+        return (
+          <text key={i} x={lx} y={ly} textAnchor={anchor} dominantBaseline="central" fill="var(--text-dim)" fontSize="9" fontFamily="var(--font-body)">
+            {a.label}
+          </text>
+        );
+      })}
+      {/* Center dot (neutral) */}
+      <circle cx={cx} cy={cy} r={2} fill="var(--text-faint)" />
+    </svg>
+  );
+}
+
+// ══════════════════════════════════════
 //  GAME DASHBOARD
 // ══════════════════════════════════════
 
@@ -5325,8 +5559,10 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
   const [loading, setLoading] = useState(true);
   const [newTodo, setNewTodo] = useState("");
   const [newTodoCategory, setNewTodoCategory] = useState("general");
-  const [completing, setCompleting] = useState(null); // quest/todo id being completed
-  const [lastResult, setLastResult] = useState(null); // last completion result toast
+  const [completing, setCompleting] = useState(null);
+  const [lastResult, setLastResult] = useState(null);
+  const [personality, setPersonality] = useState(null);
+  const [showAllEvents, setShowAllEvents] = useState(false);
 
   const activeChar = characters.find((c) => c.id === activeCharId) || null;
   const isUserIdentity = !activeChar;
@@ -5360,9 +5596,16 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
       // Find or register cat for active character
       let cat = cats.find((c) => c.character_pubkey === charPk);
       if (!cat) {
+        // Fetch profile from relay to get zodiac sign
+        let zodiac = null;
+        try {
+          const prof = await fetchProfile(DEFAULT_RELAYS, charPk);
+          zodiac = prof?.zodiac || null;
+        } catch {}
         cat = await gameFetch("/game/cats", "POST", {
           character_pubkey: charPk,
           name: activeChar?.name || `My ${CREATURE_TYPE.charAt(0).toUpperCase() + CREATURE_TYPE.slice(1)}`,
+          zodiac_sign: zodiac,
         });
         // Fetch full cat data
         if (cat.id) cat = await gameFetch(`/game/cats/${cat.id}`);
@@ -5370,12 +5613,14 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
       setGameCat(cat);
 
       if (cat?.id) {
-        const [d, t] = await Promise.all([
+        const [d, t, p] = await Promise.all([
           gameFetch(`/game/cats/${cat.id}/dailies`),
           gameFetch(`/game/cats/${cat.id}/todos`),
+          gameFetch(`/game/cats/${cat.id}/personality`).catch(() => null),
         ]);
         setDailies(d);
         setTodos(t);
+        setPersonality(p);
       }
     } catch (err) {
       console.error("[dashboard] load error:", err);
@@ -5540,6 +5785,90 @@ function GameDashboard({ adminAccount, characters, activeCharId }) {
           <span className="sc-meta-item" title="Care score">{gameCat.care_score} care</span>
         </div>
       </div>
+
+      {/* Personality */}
+      {personality && personality.axes?.length > 0 && (
+        <div className="edit-section" style={{ marginTop: 16 }}>
+          <h3>Personality {personality.zodiacSign && <span style={{ fontWeight: 400, fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "capitalize" }}> — {personality.zodiacSign}</span>}</h3>
+
+          {/* Archetype Tags */}
+          {personality.archetypes?.length > 0 && (
+            <div className="sc-archetype-row">
+              {personality.archetypes.map((tag) => (
+                <span key={tag} className="sc-archetype-pill">{tag}</span>
+              ))}
+            </div>
+          )}
+
+          {/* Radar Chart */}
+          <div style={{ display: "flex", justifyContent: "center", margin: "12px 0" }}>
+            <PersonalityRadar axes={personality.axes} size={220} />
+          </div>
+
+          {/* Axis Legend */}
+          <div className="sc-axis-legend">
+            {personality.axes.map((a) => (
+              <div key={a.key} className="sc-axis-row">
+                <span className="sc-axis-neg">{a.negLabel}</span>
+                <div className="sc-axis-bar-track">
+                  <div className="sc-axis-bar-marker" style={{ left: `${((a.value + 100) / 200) * 100}%` }} />
+                  <div className="sc-axis-bar-center" />
+                </div>
+                <span className="sc-axis-pos">{a.posLabel}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Genre DNA */}
+          {personality.genres?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <h4 style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Genre DNA</h4>
+              <div className="sc-genre-list">
+                {personality.genres.filter((g) => g.affinity > 0).sort((a, b) => b.affinity - a.affinity).map((g) => (
+                  <div key={g.key} className="sc-genre-row">
+                    <span className="sc-genre-label">{g.label}</span>
+                    <div className="sc-bar" style={{ flex: 1 }}>
+                      <div className="sc-bar-fill sc-bar-genre" style={{ width: `${g.affinity}%` }} />
+                    </div>
+                    <span className="sc-genre-val">{g.affinity}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Life Events */}
+          {personality.lifeEvents?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <h4 style={{ fontSize: "0.75rem", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Life Events</h4>
+              <div className="sc-event-list">
+                {(showAllEvents ? personality.lifeEvents : personality.lifeEvents.slice(0, 5)).map((ev) => (
+                  <div key={ev.id} className="sc-event-item">
+                    <div className="sc-event-title">{ev.title}</div>
+                    {ev.description && <div className="sc-event-desc">{ev.description}</div>}
+                    {ev.stat_changes_json && (
+                      <div className="sc-event-shifts">
+                        {Object.entries(JSON.parse(ev.stat_changes_json)).map(([k, v]) => (
+                          <span key={k} className={`sc-event-shift ${v > 0 ? "pos" : "neg"}`}>
+                            {v > 0 ? "+" : ""}{v} {k}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="sc-event-time">{new Date(ev.created_at * 1000).toLocaleDateString()}</div>
+                  </div>
+                ))}
+                {personality.lifeEvents.length > 5 && (
+                  <button className="btn-small" onClick={() => setShowAllEvents(!showAllEvents)} style={{ marginTop: 6 }}>
+                    {showAllEvents ? "Show less" : `Show all (${personality.lifeEvents.length})`}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
 
       {/* Daily Quests */}
       <div className="edit-section" style={{ marginTop: 16 }}>
