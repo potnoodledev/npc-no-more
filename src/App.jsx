@@ -704,20 +704,20 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
         npub: acc.npub,
         createdAt: Math.floor(Date.now() / 1000),
       };
+      // Register character pubkey on relay BEFORE publishing profile
+      const apiUrl = import.meta.env.VITE_API_URL || "";
+      if (apiUrl && adminAccount) {
+        const regUrl = `${apiUrl}/register-pubkey`;
+        const headers = await getAuthHeaders(regUrl, "POST", adminAccount);
+        headers["Content-Type"] = "application/json";
+        await fetch(regUrl, { method: "POST", headers, body: JSON.stringify({ pubkey: acc.pk, label: charName }) }).catch(() => {});
+      }
       await publishProfile({
         name: charName,
         display_name: charName,
         about: charAbout,
         ...(avatarUrl ? { picture: avatarUrl } : {}),
       }, acc);
-      // Register character pubkey on relay
-      const apiUrl = import.meta.env.VITE_API_URL || "";
-      if (apiUrl && adminAccount) {
-        const regUrl = `${apiUrl}/register-pubkey`;
-        const headers = await getAuthHeaders(regUrl, "POST", adminAccount);
-        headers["Content-Type"] = "application/json";
-        fetch(regUrl, { method: "POST", headers, body: JSON.stringify({ pubkey: acc.pk, label: charName }) }).catch(() => {});
-      }
       onComplete(char);
     } catch (e) {
       setError("Failed: " + e.message);
