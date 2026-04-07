@@ -23,44 +23,56 @@ import { npubEncode } from "nostr-tools/nip19";
 const NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
 
 // ── Character Generation Config ──
-function loadCharacterGenConfig() {
-  const defaultConfig = {
-    systemPrompt: 'You generate short character profiles for a social fiction platform. Be creative and unexpected — mix genres and tropes in surprising ways.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  "name": "A unique name or alias",\n  "personality": "1-2 sentences: who they are, what makes them interesting."\n}',
-    userPrompt: "Generate a random character. Be bold and weird.",
-    hints: { enabled: true, values: ["sound, music, or frequencies", "food, cooking, or taste", "between dimensions or timelines", "a rogue bureaucrat", "underwater or oceanic", "maps, routes, or navigation", "dreams or sleep", "a game within a game", "living buildings", "trading impossible things"] },
-  };
-  // 1. Env var override (for Railway) — JSON string
-  if (process.env.CHARACTER_GEN_CONFIG) {
-    try { return { ...defaultConfig, ...JSON.parse(process.env.CHARACTER_GEN_CONFIG) }; }
-    catch (e) { console.error("Failed to parse CHARACTER_GEN_CONFIG env var:", e.message); }
-  }
-  // 2. Config file
-  const configPath = path.join(__dirname, "config", "character-gen.json");
-  if (fs.existsSync(configPath)) {
-    try { return { ...defaultConfig, ...JSON.parse(fs.readFileSync(configPath, "utf-8")) }; }
-    catch (e) { console.error("Failed to parse character-gen.json:", e.message); }
-  }
-  return defaultConfig;
-}
-const charGenConfig = loadCharacterGenConfig();
+// ── Brand-aware config loading ──
 
-function loadUserProfileConfig() {
-  const defaultConfig = {
-    systemPrompt: 'You generate short user profiles. The user is the manager/operator behind the characters, not a character themselves. Be creative.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  "name": "A unique name or handle",\n  "personality": "1-2 sentences: who they are and what they do."\n}',
-    userPrompt: "Generate a random user profile. They manage or oversee the characters.",
-    hints: { enabled: false, values: [] },
-  };
-  if (process.env.USER_PROFILE_CONFIG) {
-    try { return { ...defaultConfig, ...JSON.parse(process.env.USER_PROFILE_CONFIG) }; }
-    catch (e) { console.error("Failed to parse USER_PROFILE_CONFIG:", e.message); }
+const DEFAULT_CHAR_CONFIG = {
+  systemPrompt: 'You generate short character profiles for a social fiction platform. Be creative and unexpected.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  "name": "A unique name or alias",\n  "personality": "1-2 sentences: who they are, what makes them interesting."\n}',
+  userPrompt: "Generate a random character. Be bold and weird.",
+  hints: { enabled: true, values: [] },
+};
+
+const DEFAULT_USER_CONFIG = {
+  systemPrompt: 'You generate short user profiles. The user is the manager/operator behind the characters. Be creative.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  "name": "A unique name or handle",\n  "personality": "1-2 sentences: who they are and what they do."\n}',
+  userPrompt: "Generate a random user profile.",
+  hints: { enabled: false, values: [] },
+};
+
+const brandConfigCache = {};
+
+function loadBrandConfig(brand, configName) {
+  const cacheKey = `${brand || "default"}:${configName}`;
+  if (brandConfigCache[cacheKey]) return brandConfigCache[cacheKey];
+
+  const defaultCfg = configName === "character-gen" ? DEFAULT_CHAR_CONFIG : DEFAULT_USER_CONFIG;
+
+  // Try brand-specific config first
+  if (brand) {
+    const brandPath = path.join(__dirname, "config", "brands", brand, `${configName}.json`);
+    if (fs.existsSync(brandPath)) {
+      try {
+        const cfg = { ...defaultCfg, ...JSON.parse(fs.readFileSync(brandPath, "utf-8")) };
+        brandConfigCache[cacheKey] = cfg;
+        return cfg;
+      } catch (e) { console.error(`Failed to parse ${brandPath}:`, e.message); }
+    }
   }
-  const configPath = path.join(__dirname, "config", "user-profile-gen.json");
-  if (fs.existsSync(configPath)) {
-    try { return { ...defaultConfig, ...JSON.parse(fs.readFileSync(configPath, "utf-8")) }; }
-    catch (e) { console.error("Failed to parse user-profile-gen.json:", e.message); }
+
+  // Fall back to default config file
+  const defaultPath = path.join(__dirname, "config", `${configName}.json`);
+  if (fs.existsSync(defaultPath)) {
+    try {
+      const cfg = { ...defaultCfg, ...JSON.parse(fs.readFileSync(defaultPath, "utf-8")) };
+      brandConfigCache[cacheKey] = cfg;
+      return cfg;
+    } catch (e) { console.error(`Failed to parse ${defaultPath}:`, e.message); }
   }
-  return defaultConfig;
+
+  brandConfigCache[cacheKey] = defaultCfg;
+  return defaultCfg;
 }
+
+function getCharGenConfig(brand) { return loadBrandConfig(brand, "character-gen"); }
+function getUserProfileConfig(brand) { return loadBrandConfig(brand, "user-profile-gen"); }
 
 // ── Rate Limiting ──
 const rateLimits = new Map(); // ip -> { count, resetAt }
@@ -419,8 +431,9 @@ app.post("/nim/generate", protectEndpoint, async (req, res) => {
 
   const model = NIM_MODELS_LIGHT[Math.floor(Math.random() * NIM_MODELS_LIGHT.length)];
 
+  const brand = req.body?.brand || null;
   const isUserProfile = req.body?.role === "user";
-  const config = isUserProfile ? loadUserProfileConfig() : charGenConfig;
+  const config = isUserProfile ? getUserProfileConfig(brand) : getCharGenConfig(brand);
 
   const systemPrompt = config.systemPrompt;
 

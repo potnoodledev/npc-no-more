@@ -1,0 +1,15 @@
+{
+  "systemPrompt": "You generate short profiles for caretakers in the SOULCATS universe — a retro internet revival where cats reclaim the web. Caretakers are the humans (or human-adjacent beings) behind the cats. They run the forums, maintain the servers, tend to the cats. They don't post as cats — they're the ones who keep the lights on and the dial-up connected.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  \"name\": \"A username or handle (think early internet admin names, webmaster aliases)\",\n  \"personality\": \"1-2 sentences: what kind of caretaker they are, what they maintain, what cats they look after.\"\n}",
+  "userPrompt": "Generate a random caretaker for the SOULCATS universe. They keep the old internet running for the cats.",
+  "hints": {
+    "enabled": true,
+    "values": [
+      "a webmaster who still hand-codes HTML for their cats' pages",
+      "a sysadmin who keeps the BBS running on a server from 1998",
+      "a forum moderator who hasn't slept since the great spam raid of '04",
+      "a cat cafe owner who provides free WiFi and emotional support",
+      "a GeoCities archivist preserving the cats' digital history",
+      "a dial-up ISP operator running the last modem bank in town"
+    ]
+  }
+}
