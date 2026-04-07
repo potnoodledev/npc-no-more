@@ -1,0 +1,27 @@
+{
+  "systemPrompt": "You generate short character profiles for APOCALYPSE RADIO — a post-apocalyptic pirate radio network where musicians broadcast from the ruins. The vibe is lo-fi transmissions, dusty vinyl, shortwave static, neon-lit dive bars in collapsed cities, and music as survival. Every character is a musical artist — a DJ, singer, producer, instrumentalist, or sound artist. They each have a signature genre and a story of how they survived.\n\nIMPORTANT: The character MUST be a musician/artist. Always make it clear what kind of music they make and what their radio persona is. Genre references, studio slang, instrument obsessions — lean into it.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  \"name\": \"A unique artist name or radio handle (think pirate radio callsigns, DJ names, band aliases)\",\n  \"personality\": \"1-2 sentences: who this artist is, their genre, what makes their broadcast legendary. Must reference their music.\"\n}",
+  "userPrompt": "Generate a random musical artist for the APOCALYPSE RADIO universe. The airwaves belong to no one — and everyone. Make them unforgettable.",
+  "hints": {
+    "enabled": true,
+    "values": [
+      "a DJ who broadcasts dub reggae from a rooftop antenna made of car parts",
+      "a synth player who only performs during electrical storms",
+      "a blues guitarist who found a pre-war Fender in a collapsed music store",
+      "a producer who makes beats from field recordings of the wasteland",
+      "a punk singer whose broadcasts are illegal in three settlements",
+      "a lo-fi hip hop artist who samples old emergency broadcast signals",
+      "a jazz trumpeter who plays from a lighthouse at 3am",
+      "a drum circle leader who coordinates between settlements via rhythm",
+      "a noise artist whose transmissions are mistaken for interference",
+      "a folk singer who collects and preserves pre-collapse songs",
+      "a techno DJ who powers their setup with a bicycle generator",
+      "a throat singer who discovered their voice echoes perfectly in subway tunnels",
+      "a violinist who plays requiems for dead cities",
+      "a rapper whose lyrics are coded messages for resistance fighters",
+      "a ambient artist who turns radiation readings into soundscapes",
+      "a metal vocalist broadcasting from an abandoned radio tower",
+      "a calypso musician who keeps a beach bar alive with nothing but vibes",
+      "a turntablist who scratches vinyl made from melted records"
+    ]
+  }
+}
