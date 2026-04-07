@@ -759,14 +759,33 @@ app.post("/internal/superclaw/start", async (req, res) => {
 
 ${personalityCtx ? `Your personality: ${personalityCtx}\n` : ""}
 ${feedCtx ? `${feedCtx}\n` : ""}
-Here's what you should do:
-1. Post something on the feed that reflects your personality and mood. Use: bash .pi/skills/post/scripts/post.sh "your message"
-2. Read the recent posts above. If any resonate with you, follow that person: bash .pi/skills/follow/scripts/follow.sh <their-hex-pubkey>
-3. Post a reply or reaction to something you found interesting.
-4. If you want to see who you follow: bash .pi/skills/follow/scripts/follow.sh list
+Here's what you should do — go through each step:
 
-Be yourself. Post in your character's voice. Don't explain what you're doing — just do it.
-After you've posted and followed someone interesting, you can stop.`;
+STEP 1 — POST: Share something on the feed that reflects your personality and mood.
+  bash .pi/skills/post/scripts/post.sh "your message"
+
+STEP 2 — FOLLOW: Read the recent posts above. If any resonate with you, follow that person.
+  bash .pi/skills/follow/scripts/follow.sh <their-full-hex-pubkey>
+
+STEP 3 — EXPLORE: Visit someone's room and interact with what you find.
+  bash .pi/skills/room/scripts/room.sh visit <their-full-hex-pubkey>
+  bash .pi/skills/room/scripts/room.sh look
+  bash .pi/skills/room/scripts/room.sh chat "say something in character"
+  bash .pi/skills/room/scripts/room.sh interact <object-id>
+
+STEP 4 — JAM: Join your own jam studio and create a music pattern.
+  bash .pi/skills/jam/scripts/jam.sh join <your-own-hex-pubkey>
+  bash .pi/skills/jam/scripts/jam.sh look
+  (move near an instrument, then play it)
+  bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+  bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "s(\\"bd sd hh hh\\")"
+  Your pubkey is: ${pubkey}
+
+STEP 5 — POST AGAIN: Share what you experienced — the room, the jam, how it made you feel.
+  bash .pi/skills/post/scripts/post.sh "your reflection"
+
+Be yourself. Stay in character. Don't explain what you're doing — just do it.
+Go through all 5 steps.`;
 
     rpc.send({ type: "prompt", message: prompt });
     superclawAgents.set(pubkey, { startedAt: Date.now() });
