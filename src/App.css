@@ -1,10 +1,13 @@
 /* ═══════════════════════════════════════
-   SOULCATS — Broadsheet / Dossier
+   NPC NO MORE — Broadsheet / Dossier
 
    Concept: underground newspaper meets
    character dossiers. Raw, editorial,
    ink-on-paper feeling. Characters are
    pinning their declarations to a wall.
+
+   Accent color is overridable via
+   VITE_ACCENT_COLOR env var — see main.jsx
    ═══════════════════════════════════════ */
 
 :root {
@@ -22,6 +25,7 @@
   --accent-dim: #96cc00;
   --accent-glow: rgba(186, 255, 0, 0.08);
   --accent-bright: #d4ff4a;
+  --accent-rgb: 186, 255, 0;
   --cream: #ffffff;
   --cream-dim: #cccccc;
   --danger: #ea384c;
@@ -39,8 +43,8 @@
     -45deg,
     transparent,
     transparent 3px,
-    rgba(186, 255, 0, 0.012) 3px,
-    rgba(186, 255, 0, 0.012) 4px
+    rgba(var(--accent-rgb), 0.012) 3px,
+    rgba(var(--accent-rgb), 0.012) 4px
   );
 }
 
@@ -1881,13 +1885,13 @@ a:hover { color: var(--accent-bright); }
   /* Layered grid: fine grid + coarse grid */
   background-image:
     /* Fine grid */
-    linear-gradient(rgba(186, 255, 0, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(186, 255, 0, 0.03) 1px, transparent 1px),
+    linear-gradient(rgba(var(--accent-rgb), 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--accent-rgb), 0.03) 1px, transparent 1px),
     /* Coarse grid */
-    linear-gradient(rgba(186, 255, 0, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(186, 255, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(rgba(var(--accent-rgb), 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--accent-rgb), 0.06) 1px, transparent 1px),
     /* Center radial glow */
-    radial-gradient(ellipse at 50% 50%, rgba(186, 255, 0, 0.04) 0%, transparent 60%);
+    radial-gradient(ellipse at 50% 50%, rgba(var(--accent-rgb), 0.04) 0%, transparent 60%);
   background-size:
     20px 20px,
     20px 20px,
@@ -1910,8 +1914,8 @@ a:hover { color: var(--accent-bright); }
   background: linear-gradient(
     to bottom,
     transparent,
-    rgba(186, 255, 0, 0.06) 40%,
-    rgba(186, 255, 0, 0.03) 60%,
+    rgba(var(--accent-rgb), 0.06) 40%,
+    rgba(var(--accent-rgb), 0.03) 60%,
     transparent
   );
   animation: scan-sweep 6s ease-in-out infinite;
@@ -1937,7 +1941,7 @@ a:hover { color: var(--accent-bright); }
   width: 0;
   height: 0;
   border-radius: 50%;
-  border: 1px solid rgba(186, 255, 0, 0.15);
+  border: 1px solid rgba(var(--accent-rgb), 0.15);
   transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 0;
@@ -3396,7 +3400,7 @@ a:hover { color: var(--accent-bright); }
 }
 
 /* ══════════════════════════════════════
-   SOULCATS DASHBOARD
+   GAME DASHBOARD
    ══════════════════════════════════════ */
 
 .sc-toast {
@@ -3612,8 +3616,8 @@ a:hover { color: var(--accent-bright); }
   animation: studio-pulse 1s ease-in-out infinite;
 }
 @keyframes studio-pulse {
-  0%, 100% { box-shadow: inset 0 0 0 1px rgba(186, 255, 0, 0.1); }
-  50% { box-shadow: inset 0 0 0 1px rgba(186, 255, 0, 0.3); }
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.1); }
+  50% { box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.3); }
 }
 
 .studio-instrument-card {

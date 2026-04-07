@@ -1,6 +1,9 @@
 import { getDb } from "../db.js";
 import { addXp, addCurrency } from "./cats.js";
 import { recordCareActivity, addEnergy } from "./care.js";
+import { loadBranding } from "../branding.js";
+
+const CURRENCY = loadBranding().currency || "shinies";
 
 function todayUTC() {
   return new Date().toISOString().slice(0, 10);
@@ -73,7 +76,7 @@ export function completeDaily(catId, questId) {
 
   // Award rewards
   const levelResult = addXp(catId, template.xp_reward);
-  addCurrency(catId, "shinies", template.currency_reward);
+  addCurrency(catId, CURRENCY, template.currency_reward);
   const careResult = recordCareActivity(catId, template.care_points);
   if (template.energy_reward > 0) addEnergy(catId, template.energy_reward);
 
@@ -81,7 +84,7 @@ export function completeDaily(catId, questId) {
     completed: true,
     rewards: {
       xp: template.xp_reward,
-      shinies: template.currency_reward,
+      [CURRENCY]: template.currency_reward,
       care_points: template.care_points,
       energy: template.energy_reward,
     },

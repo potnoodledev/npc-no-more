@@ -42,6 +42,16 @@ import { claimName as nip05ClaimName, releaseName as nip05ReleaseName, getMyName
 import "./App.css";
 
 const APP_TITLE = import.meta.env.VITE_APP_TITLE || "NPC No More";
+const DASHBOARD_LABEL = import.meta.env.VITE_DASHBOARD_LABEL || APP_TITLE;
+const DASHBOARD_ROUTE = import.meta.env.VITE_DASHBOARD_ROUTE || "dashboard";
+const CREATURE_TYPE = import.meta.env.VITE_CREATURE_TYPE || "character";
+const CREATURE_TYPE_PLURAL = import.meta.env.VITE_CREATURE_TYPE_PLURAL || "characters";
+const RELAY_DEFAULT_NAME = import.meta.env.VITE_RELAY_DEFAULT_NAME || `${APP_TITLE} Relay`;
+const ADMIN_EMAIL_PLACEHOLDER = import.meta.env.VITE_ADMIN_EMAIL_PLACEHOLDER || "";
+const ACCENT_COLOR = import.meta.env.VITE_ACCENT_COLOR || "#baff00";
+const CURRENCY_NAME = import.meta.env.VITE_CURRENCY_NAME || "shinies";
+const USER_ROLE = import.meta.env.VITE_USER_ROLE || "user";
+const USER_ROLE_DESCRIPTION = import.meta.env.VITE_USER_ROLE_DESCRIPTION || "your profile";
 
 // ══════════════════════════════════════
 //  HASH ROUTER
@@ -63,7 +73,7 @@ function parseHash() {
   if (parts[0] === "replay" && parts[1]) return { route: "replay", key: parts[1] };
   if (parts[0] === "explore") return { route: "explore" };
   if (parts[0] === "studio" && parts[1]) return { route: "studio", key: parts[1] };
-  if (parts[0] === "soulcats") return { route: "soulcats" };
+  if (parts[0] === DASHBOARD_ROUTE) return { route: "dashboard" };
   return { route: "home" };
 }
 
@@ -278,14 +288,14 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
         ))}
         <button className="sidebar-item sidebar-add" onClick={() => setHash("characters/new")}>
           <span className="sidebar-icon">+</span>
-          <span>New Character</span>
+          <span>New {CREATURE_TYPE.charAt(0).toUpperCase() + CREATURE_TYPE.slice(1)}</span>
         </button>
       </div>
 
       <div className="sidebar-footer">
-        <button className="sidebar-item" onClick={() => setHash("soulcats")}>
+        <button className="sidebar-item" onClick={() => setHash(DASHBOARD_ROUTE)}>
           <span className="sidebar-icon">&#9733;</span>
-          <span>Soulcats</span>
+          <span>{DASHBOARD_LABEL}</span>
         </button>
         {isUserWhitelisted && (
           <button className="sidebar-item" onClick={() => setHash("pi")}>
@@ -400,7 +410,7 @@ function UserSetup({ serverAdminPubkey, onComplete, invitePk }) {
         if (partial.name) setName(partial.name);
         if (partial.personality) setAbout(partial.personality);
         setRolledModel(partial.model);
-      }, account);
+      }, account, { role: "user" });
       setName(persona.name);
       setAbout(persona.personality);
       setRolledModel(persona.model);
@@ -507,10 +517,10 @@ function UserSetup({ serverAdminPubkey, onComplete, invitePk }) {
         </p>
         <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 12 }}>
           {!hasAdmin
-            ? "This is you — not a character. Your Nostr keypair and admin privileges are created when you save."
+            ? `This is ${USER_ROLE_DESCRIPTION} — not a ${CREATURE_TYPE}. Your Nostr keypair and admin privileges are created when you save.`
             : hasInvite
-            ? "You've been invited! Set up your profile and start creating characters with AI."
-            : "Create your profile so other users and the admin can identify you. Your Nostr keypair will be generated when you save."
+            ? `You've been invited! Set up ${USER_ROLE_DESCRIPTION} and start creating ${CREATURE_TYPE_PLURAL} with AI.`
+            : `Create ${USER_ROLE_DESCRIPTION} — you'll create ${CREATURE_TYPE_PLURAL} after this. Your Nostr keypair will be generated when you save.`
           }
         </p>
 
@@ -527,7 +537,7 @@ function UserSetup({ serverAdminPubkey, onComplete, invitePk }) {
               </p>
             )}
             <button className={`btn-dice${rolling ? " loading" : ""}`} onClick={handleRollDice} disabled={rolling || aiDisabled}>
-              {rolling ? "Generating..." : "Generate Profile with AI"}
+              {rolling ? "Generating..." : `Generate ${USER_ROLE} profile with AI`}
             </button>
             {rolling && rolledModel && (
               <p className="dice-hint">
@@ -719,10 +729,10 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
     <div className="setup-wizard">
       <div className="setup-card">
         <h1>{APP_TITLE}</h1>
-        <p className="setup-tagline">Create a new character</p>
+        <p className="setup-tagline">Create a new {CREATURE_TYPE}</p>
 
         <div className="auth-tabs">
-          <button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>New Identity</button>
+          <button className={mode === "create" ? "active" : ""} onClick={() => setMode("create")}>New {CREATURE_TYPE}</button>
           <button className={mode === "import" ? "active" : ""} onClick={() => setMode("import")}>Import nsec</button>
         </div>
 
@@ -743,7 +753,7 @@ function CreateCharacter({ onComplete, adminAccount, serverAdminPubkey }) {
               </p>
             )}
             <button className={`btn-dice${rolling ? " loading" : ""}`} onClick={handleRollDice} disabled={rolling || (serverAdminPubkey && serverAdminPubkey !== adminAccount?.pk)}>
-              {rolling ? "Rolling..." : "Generate Character with AI"}
+              {rolling ? "Rolling..." : `Generate ${CREATURE_TYPE} with AI`}
             </button>
             {rolling && rolledModel && (
               <p className="dice-hint">
@@ -913,8 +923,8 @@ function Nip05ClaimWidget({ editFields, updateField, account, isUserWhitelisted 
   const [error, setError] = useState("");
 
   const currentNip05 = editFields.nip05 || "";
-  const isSoulcatNip05 = currentNip05.startsWith("_@") && currentNip05.endsWith("." + NIP05_DOMAIN);
-  const claimedName = isSoulcatNip05 ? currentNip05.slice(2, -(NIP05_DOMAIN.length + 1)) : null;
+  const isBrandNip05 = currentNip05.startsWith("_@") && currentNip05.endsWith("." + NIP05_DOMAIN);
+  const claimedName = isBrandNip05 ? currentNip05.slice(2, -(NIP05_DOMAIN.length + 1)) : null;
 
   function suggestName() {
     const name = (editFields.display_name || editFields.name || "").toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 30);
@@ -967,7 +977,7 @@ function Nip05ClaimWidget({ editFields, updateField, account, isUserWhitelisted 
 
   return (
     <label><span>NIP-05 (Nostr Address)</span>
-      {isSoulcatNip05 ? (
+      {isBrandNip05 ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input type="text" value={editFields.nip05} readOnly style={{ flex: 1, opacity: 0.8 }} />
           <button className="btn-back" onClick={handleRelease} disabled={releasing} style={{ whiteSpace: "nowrap" }}>
@@ -5058,16 +5068,16 @@ function NetworkPage({ characters = [], activeAccount }) {
       ctx.clip();
       ctx.drawImage(img, node.x - size, node.y - size, size * 2, size * 2);
       ctx.restore();
-      ctx.strokeStyle = isSelected ? "#baff00" : isHovered ? "#baff00" : "#333";
+      ctx.strokeStyle = isSelected ? ACCENT_COLOR : isHovered ? ACCENT_COLOR : "#333";
       ctx.lineWidth = isSelected ? 2.5 : isHovered ? 2 : 1;
       ctx.strokeRect(node.x - size, node.y - size, size * 2, size * 2);
     } else {
       ctx.fillStyle = isSelected ? "#1a2600" : isHovered ? "#1a1a00" : "#222";
       ctx.fillRect(node.x - size, node.y - size, size * 2, size * 2);
-      ctx.strokeStyle = isSelected ? "#baff00" : isHovered ? "#baff00" : "#444";
+      ctx.strokeStyle = isSelected ? ACCENT_COLOR : isHovered ? ACCENT_COLOR : "#444";
       ctx.lineWidth = isSelected ? 2.5 : 1;
       ctx.strokeRect(node.x - size, node.y - size, size * 2, size * 2);
-      ctx.fillStyle = "#baff00";
+      ctx.fillStyle = ACCENT_COLOR;
       ctx.font = `${Math.max(10, size)}px sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -5076,7 +5086,7 @@ function NetworkPage({ characters = [], activeAccount }) {
 
     if (globalScale > 1.2 || isHovered || isSelected) {
       ctx.font = `${isSelected ? "bold " : ""}4px sans-serif`;
-      ctx.fillStyle = isSelected ? "#baff00" : "#d9d6d6";
+      ctx.fillStyle = isSelected ? ACCENT_COLOR : "#d9d6d6";
       ctx.textAlign = "center";
       ctx.fillText(node.name, node.x, node.y + size + 6);
     }
@@ -5303,12 +5313,12 @@ function RelayStatus({ url }) {
 }
 
 // ══════════════════════════════════════
-//  SOULCATS DASHBOARD
+//  GAME DASHBOARD
 // ══════════════════════════════════════
 
 const GAME_URL = import.meta.env.VITE_GAME_URL || "";
 
-function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
+function GameDashboard({ adminAccount, characters, activeCharId }) {
   const [gameCat, setGameCat] = useState(null);
   const [dailies, setDailies] = useState([]);
   const [todos, setTodos] = useState([]);
@@ -5352,7 +5362,7 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
       if (!cat) {
         cat = await gameFetch("/game/cats", "POST", {
           character_pubkey: charPk,
-          name: activeChar?.name || "My Cat",
+          name: activeChar?.name || `My ${CREATURE_TYPE.charAt(0).toUpperCase() + CREATURE_TYPE.slice(1)}`,
         });
         // Fetch full cat data
         if (cat.id) cat = await gameFetch(`/game/cats/${cat.id}`);
@@ -5368,7 +5378,7 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
         setTodos(t);
       }
     } catch (err) {
-      console.error("[soulcats] load error:", err);
+      console.error("[dashboard] load error:", err);
     }
     setLoading(false);
   }
@@ -5419,7 +5429,7 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
   if (!GAME_URL) {
     return (
       <div>
-        <h2 className="page-title">Soulcats</h2>
+        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
         <div className="edit-section" style={{ marginTop: 16 }}>
           <p style={{ color: "var(--text-dim)" }}>Game service not configured. Set <code>VITE_GAME_URL</code> in your environment.</p>
         </div>
@@ -5430,12 +5440,12 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
   if (isUserIdentity) {
     return (
       <div>
-        <h2 className="page-title">Soulcats</h2>
+        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
         <div className="edit-section" style={{ marginTop: 16 }}>
-          <p style={{ color: "var(--text-dim)" }}>Your user identity isn't a soulcat — you're the caretaker.</p>
+          <p style={{ color: "var(--text-dim)" }}>Your {USER_ROLE} profile doesn't have a game dashboard.</p>
           <p style={{ color: "var(--text-dim)", marginTop: 8, fontSize: "0.8rem" }}>
-            Switch to one of your character identities in the sidebar to see their soulcat dashboard.
-            {characters.length === 0 && <> Or <a href="#/characters/new" style={{ color: "var(--accent)" }}>create a character</a> first.</>}
+            Switch to one of your {CREATURE_TYPE_PLURAL} in the sidebar to see their dashboard.
+            {characters.length === 0 && <> Or <a href="#/characters/new" style={{ color: "var(--accent)" }}>create a {CREATURE_TYPE}</a> first.</>}
           </p>
         </div>
       </div>
@@ -5445,7 +5455,7 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
   if (loading) {
     return (
       <div>
-        <h2 className="page-title">Soulcats</h2>
+        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
         <p style={{ color: "var(--text-dim)", marginTop: 16 }}>Loading...</p>
       </div>
     );
@@ -5454,9 +5464,9 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
   if (!gameCat) {
     return (
       <div>
-        <h2 className="page-title">Soulcats</h2>
+        <h2 className="page-title">{DASHBOARD_LABEL}</h2>
         <div className="edit-section" style={{ marginTop: 16 }}>
-          <p style={{ color: "var(--text-dim)" }}>No active character. Create a character first.</p>
+          <p style={{ color: "var(--text-dim)" }}>No active {CREATURE_TYPE}. Create a {CREATURE_TYPE} first.</p>
         </div>
       </div>
     );
@@ -5465,16 +5475,16 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
   const xpNeeded = gameCat.level * 100;
   const xpPercent = Math.min(100, Math.round((gameCat.xp / xpNeeded) * 100));
   const energyPercent = Math.round((gameCat.energy / gameCat.max_energy) * 100);
-  const shinies = gameCat.currencies?.find((c) => c.currency === "shinies")?.balance || 0;
+  const currencyBalance = gameCat.currencies?.find((c) => c.currency === CURRENCY_NAME)?.balance || 0;
 
   return (
     <div>
-      <h2 className="page-title">Soulcats</h2>
+      <h2 className="page-title">{DASHBOARD_LABEL}</h2>
 
       {/* Reward Toast */}
       {lastResult && (
         <div className="sc-toast">
-          +{lastResult.rewards.xp} XP, +{lastResult.rewards.shinies} shinies
+          +{lastResult.rewards.xp} XP, +{lastResult.rewards[CURRENCY_NAME] || lastResult.rewards.currency || 0} {CURRENCY_NAME}
           {lastResult.rewards.energy > 0 && `, +${lastResult.rewards.energy} energy`}
           {lastResult.leveledUp && ` — Level ${lastResult.newLevel}!`}
           {lastResult.streak > 1 && ` — ${lastResult.streak} day streak!`}
@@ -5526,7 +5536,7 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
           <span className="sc-meta-item" title="Care streak">
             {gameCat.current_streak > 0 ? `${gameCat.current_streak} day streak` : "No streak yet"}
           </span>
-          <span className="sc-meta-item" title="Shinies">{shinies} shinies</span>
+          <span className="sc-meta-item" title={CURRENCY_NAME}>{currencyBalance} {CURRENCY_NAME}</span>
           <span className="sc-meta-item" title="Care score">{gameCat.care_score} care</span>
         </div>
       </div>
@@ -5546,7 +5556,7 @@ function SoulcatsDashboard({ adminAccount, characters, activeCharId }) {
                   <div className="sc-quest-rewards">
                     <span className="sc-quest-cat">{q.category}</span>
                     <span>+{q.xp_reward} XP</span>
-                    <span>+{q.currency_reward} shinies</span>
+                    <span>+{q.currency_reward} {CURRENCY_NAME}</span>
                     {q.energy_reward > 0 && <span>+{q.energy_reward} energy</span>}
                   </div>
                 </div>
@@ -6046,7 +6056,7 @@ function RelayInfoEditor({ adminAccount }) {
     setGeneratingIcon(true);
     try {
       const result = await generateAvatar({
-        name: info.name || "Soulcats Relay",
+        name: info.name || RELAY_DEFAULT_NAME,
         personality: info.description || "A Nostr relay",
         world: "digital",
       }, adminAccount);
@@ -6075,7 +6085,7 @@ function RelayInfoEditor({ adminAccount }) {
       <h4 style={{ margin: "0 0 12px 0", fontSize: "0.85rem", color: "var(--cream)" }}>Relay Info (NIP-11)</h4>
       <div className="edit-form">
         <label><span>Name</span>
-          <input type="text" value={info.name} onChange={(e) => setInfo({ ...info, name: e.target.value })} placeholder="Soulcats Relay" /></label>
+          <input type="text" value={info.name} onChange={(e) => setInfo({ ...info, name: e.target.value })} placeholder={RELAY_DEFAULT_NAME} /></label>
         <label><span>Description</span>
           <textarea value={info.description} onChange={(e) => setInfo({ ...info, description: e.target.value })} rows={2} placeholder="A relay for..." /></label>
         <label>
@@ -6122,7 +6132,7 @@ function RelayInfoEditor({ adminAccount }) {
           </div>
         </label>
         <label><span>Contact</span>
-          <input type="text" value={info.contact} onChange={(e) => setInfo({ ...info, contact: e.target.value })} placeholder="admin@soulcats.xyz" /></label>
+          <input type="text" value={info.contact} onChange={(e) => setInfo({ ...info, contact: e.target.value })} placeholder={ADMIN_EMAIL_PLACEHOLDER || `admin@${NIP05_DOMAIN}`} /></label>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button className="btn-primary" onClick={handleSave} disabled={saving}>
@@ -6490,8 +6500,8 @@ export default function App() {
     if (route === "replay" && routeKey) {
       return <ReplayViewer sessionId={routeKey} />;
     }
-    if (route === "soulcats") {
-      return <SoulcatsDashboard adminAccount={adminAccount} characters={characters} activeCharId={activeCharId} />;
+    if (route === "dashboard") {
+      return <GameDashboard adminAccount={adminAccount} characters={characters} activeCharId={activeCharId} />;
     }
     if (route === "explore") {
       return <ExploreRooms />;

@@ -3,19 +3,36 @@ const { RoomState, PlayerState, ChatMessage, ObjectState } = require("../schema/
 const { saveRecording } = require("../recordings.js");
 const { verifyNostrAuth } = require("../nostr-auth.js");
 
+const { existsSync, readFileSync } = require("fs");
+const path = require("path");
+
 const MAX_CHAT = 50;
 const INTERACT_DISTANCE = 2;
 
-const DEFAULT_OBJECTS = [
-  { type: "couch", name: "Cozy Couch", description: "A worn-out couch covered in cat hair. Perfect for napping.", x: 2, y: 2 },
-  { type: "bookshelf", name: "Bookshelf", description: "Stacked with old zines, printed forum threads, and a copy of 'HTML for Cats'.", x: 8, y: 1 },
-  { type: "computer", name: "CRT Monitor", description: "A chunky CRT running a BBS client. The cursor blinks patiently.", x: 10, y: 3 },
-  { type: "plant", name: "Catnip Plant", description: "A thriving catnip plant in a cracked pot. Smells incredible.", x: 1, y: 8 },
-  { type: "record_player", name: "Record Player", description: "A dusty turntable with a stack of lo-fi vinyl. Currently playing static.", x: 6, y: 10 },
-  { type: "window", name: "Window", description: "Overlooking the old internet. You can see GeoCities pages drifting by like clouds.", x: 0, y: 5 },
-  { type: "scratching_post", name: "Scratching Post", description: "Battle-scarred and beloved. Claw marks tell stories.", x: 5, y: 5 },
-  { type: "food_bowl", name: "Food Bowl", description: "Half-full with artisanal kibble. Label says 'Vintage 2003 Blend'.", x: 9, y: 8 },
-];
+// Load room objects from branding config, fall back to defaults
+function loadDefaultObjects() {
+  const brandingPath = path.resolve(__dirname, "../../../branding.json");
+  try {
+    if (existsSync(brandingPath)) {
+      const branding = JSON.parse(readFileSync(brandingPath, "utf-8"));
+      if (branding.roomObjects?.length) return branding.roomObjects;
+    }
+  } catch (e) {
+    console.warn("[room] Failed to load branding.json, using defaults:", e.message);
+  }
+  return [
+    { type: "couch", name: "Cozy Couch", description: "A worn-out couch. Perfect for napping.", x: 2, y: 2 },
+    { type: "bookshelf", name: "Bookshelf", description: "Stacked with old zines and printed forum threads.", x: 8, y: 1 },
+    { type: "computer", name: "CRT Monitor", description: "A chunky CRT running a BBS client. The cursor blinks patiently.", x: 10, y: 3 },
+    { type: "plant", name: "Plant", description: "A thriving plant in a cracked pot.", x: 1, y: 8 },
+    { type: "record_player", name: "Record Player", description: "A dusty turntable with a stack of lo-fi vinyl. Currently playing static.", x: 6, y: 10 },
+    { type: "window", name: "Window", description: "Overlooking the old internet. You can see GeoCities pages drifting by like clouds.", x: 0, y: 5 },
+    { type: "decoration", name: "Decoration", description: "Something distinctive. Tells a story.", x: 5, y: 5 },
+    { type: "food_bowl", name: "Food Bowl", description: "Half-full. Label says 'Vintage 2003 Blend'.", x: 9, y: 8 },
+  ];
+}
+
+const DEFAULT_OBJECTS = loadDefaultObjects();
 
 function distance(x1, y1, x2, y2) {
   return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
@@ -171,12 +188,12 @@ class CharacterRoom extends Room {
       nearbyPlayers.sort((a, b) => a.dist - b.dist);
 
       if (nearbyPlayers.length > 0) {
-        lines.push("\nNearby cats:");
+        lines.push("\nNearby:");
         for (const p of nearbyPlayers) {
           lines.push(`  - ${p.name} (${p.dist.toFixed(1)} tiles away, ${p.status})`);
         }
       } else {
-        lines.push("\nNo other cats here.");
+        lines.push("\nNo one else here.");
       }
 
       const nearbyObjects = [];

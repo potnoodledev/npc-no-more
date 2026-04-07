@@ -1,6 +1,9 @@
 import { getDb } from "../db.js";
 import { addXp, addCurrency } from "./cats.js";
 import { recordCareActivity } from "./care.js";
+import { loadBranding } from "../branding.js";
+
+const CURRENCY = loadBranding().currency || "shinies";
 
 export function getTodos(catId, includeCompleted = false) {
   const db = getDb();
@@ -52,7 +55,7 @@ export function completeTodo(catId, todoId) {
 
   // Award rewards
   const levelResult = addXp(catId, todo.xp_reward);
-  addCurrency(catId, "shinies", 3); // Small currency reward for todos
+  addCurrency(catId, CURRENCY, 3); // Small currency reward for todos
   const careResult = recordCareActivity(catId, todo.care_points);
 
   // If recurring, create the next instance
@@ -65,7 +68,7 @@ export function completeTodo(catId, todoId) {
 
   return {
     completed: true,
-    rewards: { xp: todo.xp_reward, shinies: 3, care_points: todo.care_points },
+    rewards: { xp: todo.xp_reward, [CURRENCY]: 3, care_points: todo.care_points },
     leveledUp: levelResult?.leveledUp || false,
     newLevel: levelResult?.level,
     streak: careResult?.current_streak,

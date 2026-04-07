@@ -44,6 +44,24 @@ function loadCharacterGenConfig() {
 }
 const charGenConfig = loadCharacterGenConfig();
 
+function loadUserProfileConfig() {
+  const defaultConfig = {
+    systemPrompt: 'You generate short user profiles. The user is the manager/operator behind the characters, not a character themselves. Be creative.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  "name": "A unique name or handle",\n  "personality": "1-2 sentences: who they are and what they do."\n}',
+    userPrompt: "Generate a random user profile. They manage or oversee the characters.",
+    hints: { enabled: false, values: [] },
+  };
+  if (process.env.USER_PROFILE_CONFIG) {
+    try { return { ...defaultConfig, ...JSON.parse(process.env.USER_PROFILE_CONFIG) }; }
+    catch (e) { console.error("Failed to parse USER_PROFILE_CONFIG:", e.message); }
+  }
+  const configPath = path.join(__dirname, "config", "user-profile-gen.json");
+  if (fs.existsSync(configPath)) {
+    try { return { ...defaultConfig, ...JSON.parse(fs.readFileSync(configPath, "utf-8")) }; }
+    catch (e) { console.error("Failed to parse user-profile-gen.json:", e.message); }
+  }
+  return defaultConfig;
+}
+
 // ── Rate Limiting ──
 const rateLimits = new Map(); // ip -> { count, resetAt }
 const RATE_LIMIT = 30; // requests per window
@@ -401,11 +419,14 @@ app.post("/nim/generate", protectEndpoint, async (req, res) => {
 
   const model = NIM_MODELS_LIGHT[Math.floor(Math.random() * NIM_MODELS_LIGHT.length)];
 
-  const systemPrompt = charGenConfig.systemPrompt;
+  const isUserProfile = req.body?.role === "user";
+  const config = isUserProfile ? loadUserProfileConfig() : charGenConfig;
 
-  let userPrompt = charGenConfig.userPrompt;
-  if (charGenConfig.hints?.enabled && charGenConfig.hints.values?.length) {
-    const hint = charGenConfig.hints.values[Math.floor(Math.random() * charGenConfig.hints.values.length)];
+  const systemPrompt = config.systemPrompt;
+
+  let userPrompt = config.userPrompt;
+  if (config.hints?.enabled && config.hints.values?.length) {
+    const hint = config.hints.values[Math.floor(Math.random() * config.hints.values.length)];
     userPrompt += ` Hint: ${hint}`;
   }
 

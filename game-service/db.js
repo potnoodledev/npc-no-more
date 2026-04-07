@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { join, dirname } from "path";
 import { mkdirSync } from "fs";
 
-const DB_PATH = join(process.env.DATA_DIR || "/data", "soulcats.db");
+const DB_PATH = join(process.env.DATA_DIR || "/data", "game.db");
 
 let db;
 

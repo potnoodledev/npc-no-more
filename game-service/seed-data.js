@@ -1,4 +1,21 @@
 import { getDb } from "./db.js";
+import { loadBranding } from "./branding.js";
+
+const branding = loadBranding();
+
+// Default care quests (theme-neutral). Override via branding.json questTemplates.care
+const DEFAULT_CARE_QUESTS = [
+  { title: "Feed Your Character", description: "Time for a meal! Give them some love.", xp_reward: 10, currency_reward: 5, care_points: 2, energy_reward: 1 },
+  { title: "Groom Your Character", description: "A little pampering goes a long way.", xp_reward: 10, currency_reward: 5, care_points: 2, energy_reward: 0 },
+  { title: "Play Together", description: "Have some fun together.", xp_reward: 10, currency_reward: 5, care_points: 2, energy_reward: 1 },
+  { title: "Nap Together", description: "Sometimes the best thing you can do is rest.", xp_reward: 5, currency_reward: 3, care_points: 3, energy_reward: 1 },
+];
+
+function getCareQuests() {
+  const custom = branding.questTemplates?.care;
+  if (custom?.length) return custom.map(q => ({ ...q, category: "care", verification_type: "manual" }));
+  return DEFAULT_CARE_QUESTS.map(q => ({ ...q, category: "care", verification_type: "manual" }));
+}
 
 export function seedIfEmpty() {
   const db = getDb();
@@ -33,11 +50,8 @@ export function seedIfEmpty() {
     { title: "Chat with the Agent", description: "Have a conversation with your Pi Agent", category: "exploration", verification_type: "agent_chat", xp_reward: 10, currency_reward: 5, care_points: 1, energy_reward: 0 },
     { title: "Try Something New", description: "Do something in the app you haven't done before", category: "exploration", verification_type: "manual", xp_reward: 15, currency_reward: 8, care_points: 1, energy_reward: 1 },
 
-    // Care
-    { title: "Feed Your Cat", description: "Your cat is hungry! Give them some love.", category: "care", verification_type: "manual", xp_reward: 10, currency_reward: 5, care_points: 2, energy_reward: 1 },
-    { title: "Groom Your Cat", description: "Brush and pamper your cat. They purr with delight.", category: "care", verification_type: "manual", xp_reward: 10, currency_reward: 5, care_points: 2, energy_reward: 0 },
-    { title: "Play with Your Cat", description: "Toss a toy, chase a laser dot, or just be silly together.", category: "care", verification_type: "manual", xp_reward: 10, currency_reward: 5, care_points: 2, energy_reward: 1 },
-    { title: "Nap Together", description: "Sometimes the best thing you can do is rest.", category: "care", verification_type: "manual", xp_reward: 5, currency_reward: 3, care_points: 3, energy_reward: 1 },
+    // Care (from branding config)
+    ...getCareQuests(),
   ];
 
   const insert = db.prepare(`

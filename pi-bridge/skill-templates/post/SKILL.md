@@ -1,6 +1,6 @@
 # post
 
-Post messages to the Soulcats relay. Do NOT try to post using any other method — only use the script below.
+Post messages to the relay. Do NOT try to post using any other method — only use the script below.
 
 ## How to post
 

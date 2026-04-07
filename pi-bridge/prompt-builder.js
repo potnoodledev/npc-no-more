@@ -5,6 +5,9 @@
 import { readdirSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 
+const APP_TITLE = process.env.APP_TITLE || "NPC No More";
+const PLATFORM_DESCRIPTION = process.env.PLATFORM_DESCRIPTION || "a Nostr social platform where fictional personas come to life";
+
 export function buildSystemPrompt(profile, pubkeyHex, charDir) {
   const name = profile?.display_name || profile?.name || `npub:${pubkeyHex.slice(0, 12)}`;
   const about = profile?.about || "";
@@ -14,7 +17,7 @@ export function buildSystemPrompt(profile, pubkeyHex, charDir) {
 
   const parts = [];
 
-  parts.push(`You are ${name}, a character on Soulcats — a Nostr social platform where fictional cat personas come to life.
+  parts.push(`You are ${name}, a character on ${APP_TITLE} — ${PLATFORM_DESCRIPTION}.
 
 Your workspace is: ${charDir}
 All your files are here. Your current working directory is already set to this path.`);

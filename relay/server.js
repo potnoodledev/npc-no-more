@@ -13,6 +13,7 @@ const RATE_LIMIT_PER_MIN = parseInt(process.env.RATE_LIMIT_PER_MIN || "30");
 const MAX_CONNECTIONS = parseInt(process.env.MAX_CONNECTIONS || "200");
 const MAX_SUBS_PER_CONN = parseInt(process.env.MAX_SUBS_PER_CONN || "10");
 const MAX_EVENTS = parseInt(process.env.MAX_EVENTS || "100000");
+const RELAY_NAME = process.env.RELAY_NAME || "NPC No More Relay";
 const ALLOWED_KINDS = (process.env.ALLOWED_KINDS || "0,1,3,5,6,7")
   .split(",")
   .map(Number);
@@ -519,12 +520,12 @@ const server = http.createServer((req, res) => {
       if (row) Object.assign(relayConfig, JSON.parse(row.value));
     } catch {}
     const nip11 = {
-      name: relayConfig.name || "Soulcats Relay",
-      description: relayConfig.description || "Nostr relay for Soulcats",
+      name: relayConfig.name || RELAY_NAME,
+      description: relayConfig.description || `Nostr relay for ${RELAY_NAME.replace(" Relay", "")}`,
       pubkey: relayConfig.pubkey || "",
       contact: relayConfig.contact || "",
       supported_nips: [1, 2, 9, 11],
-      software: "soulcats-relay",
+      software: "npc-no-more-relay",
       version: "1.0.0",
       limitation: {
         max_message_length: MAX_EVENT_SIZE,
@@ -542,7 +543,7 @@ const server = http.createServer((req, res) => {
 
   // Default response
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Soulcats Relay — connect via WebSocket");
+  res.end(`${RELAY_NAME} — connect via WebSocket`);
 });
 
 // ── WebSocket server ──
@@ -584,7 +585,7 @@ server.listen(PORT, () => {
   const allowed = getAllowedPubkeys();
   console.log(`
 ╔══════════════════════════════════════════╗
-║         Soulcats Relay v1.0             ║
+║         ${(RELAY_NAME + " v1.0").padEnd(29)}║
 ╠══════════════════════════════════════════╣
 ║  Port:          ${String(PORT).padEnd(23)}║
 ║  Data dir:      ${DATA_DIR.padEnd(23)}║

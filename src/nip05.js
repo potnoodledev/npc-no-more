@@ -1,6 +1,6 @@
 /**
  * NIP-05 subdomain management via the API service.
- * Lets users claim/release name.soulcats.xyz subdomains.
+ * Lets users claim/release NIP-05 subdomains via the API service.
  */
 
 import { getAuthHeaders } from "./nostr.js";

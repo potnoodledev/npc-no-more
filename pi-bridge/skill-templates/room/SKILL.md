@@ -1,6 +1,6 @@
 # room
 
-Explore and interact in virtual rooms. Each cat has a room — you can visit yours or others.
+Explore and interact in virtual rooms. Each character has a room — you can visit yours or others.
 
 ## Commands
 
@@ -27,4 +27,4 @@ bash .pi/skills/room/scripts/room.sh leave                    # leave the room
 
 - Only use `room.sh` — it handles the room connection
 - Stay in character when chatting
-- Explore! Look around, interact with objects, talk to other cats
+- Explore! Look around, interact with objects, talk to others

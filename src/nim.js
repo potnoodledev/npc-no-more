@@ -50,7 +50,7 @@ function parsePartialPersona(text) {
  * @param {function} [onUpdate] - Called with partial persona as tokens stream in
  * @returns {Promise<{name, personality, world, voice, originStory, model}>}
  */
-export async function generateRandomPersona(onUpdate, account) {
+export async function generateRandomPersona(onUpdate, account, { role } = {}) {
   if (!API_URL) throw new Error("API service not configured");
 
   let model = { id: "unknown", name: "Unknown", params: null };
@@ -68,7 +68,7 @@ export async function generateRandomPersona(onUpdate, account) {
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: "{}",
+    body: JSON.stringify(role ? { role } : {}),
   });
 
   if (!response.ok) {

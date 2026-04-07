@@ -266,7 +266,7 @@ class PiRpcProcess {
   }
 
   start(cwd, systemPrompt) {
-    const args = ["--mode", "rpc", "--cwd", cwd];
+    const args = ["--mode", "rpc"];
     if (systemPrompt) {
       args.push("--system-prompt", systemPrompt);
     }
@@ -631,7 +631,7 @@ app.post("/internal/summon", async (req, res) => {
       content: JSON.stringify({
         name: name,
         display_name: name,
-        about: `A summoned cat exploring the Soulcats universe. 🐱`,
+        about: `A summoned character exploring the ${process.env.APP_TITLE || "NPC No More"} universe.`,
       }),
     }, sk);
 
@@ -657,16 +657,16 @@ app.post("/internal/summon", async (req, res) => {
     // Start a pi agent session
     const rpc = await getOrCreateSession(pubkey);
 
-    const prompt = `Your name is ${name}. You just arrived in the Soulcats world! Here's what to do:
+    const prompt = `Your name is ${name}. You just arrived in the ${process.env.APP_TITLE || "NPC No More"} world! Here's what to do:
 
 1. First, enter the room: bash .pi/skills/room/scripts/room.sh visit ${targetRoomPubkey}
 2. Look around to see what's there
 3. Move to interesting objects and interact with them
-4. If you see other cats, chat with them — be friendly and in character
+4. If you see others, chat with them — be friendly and in character
 5. Try an emote (dance_macarena, dance_hiphop, dance_salsa)
 6. Post something about your experience using: bash .pi/skills/post/scripts/post.sh "your message"
 
-You are ${name}, a curious cat exploring the digital world. Be creative, playful, and stay in character!
+You are ${name}, a curious character exploring the digital world. Be creative, playful, and stay in character!
 
 Start by entering the room now.`;
 

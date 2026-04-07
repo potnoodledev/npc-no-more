@@ -1,5 +1,9 @@
 import { getDb } from "../db.js";
+import { loadBranding } from "../branding.js";
 import crypto from "crypto";
+
+const branding = loadBranding();
+const CURRENCY = branding.currency || "shinies";
 
 export function registerCat(ownerPubkey, characterPubkey, name) {
   const db = getDb();
@@ -11,7 +15,7 @@ export function registerCat(ownerPubkey, characterPubkey, name) {
   `).run(ownerPubkey, characterPubkey, name);
 
   // Initialize currency
-  db.prepare("INSERT INTO currencies (cat_id, currency, balance) VALUES (?, 'shinies', 0)").run(result.lastInsertRowid);
+  db.prepare("INSERT INTO currencies (cat_id, currency, balance) VALUES (?, ?, 0)").run(result.lastInsertRowid, CURRENCY);
 
   return { id: result.lastInsertRowid };
 }

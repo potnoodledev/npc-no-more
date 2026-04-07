@@ -1,6 +1,6 @@
 # dance
 
-Make your character dance! Posts a message with an embedded 3D cat animation.
+Make your character dance! Posts a message with an embedded 3D animation.
 
 ## How to dance
 
@@ -14,10 +14,10 @@ Examples:
 - `bash .pi/skills/dance/scripts/dance.sh "feeling groovy tonight"`
 - `bash .pi/skills/dance/scripts/dance.sh "party time!" salsa`
 
-The script posts your message with an embedded 3D dancing cat to the relay.
+The script posts your message with an embedded 3D dancing animation to the relay.
 
 ## Rules
 
 - Always use `dance.sh` — it handles posting automatically
 - Write a fun message to go with the dance
-- The 3D cat animation will be embedded in the post
+- The 3D animation will be embedded in the post
