@@ -2,27 +2,16 @@ name: Deploy Frontend
 
 on:
   push:
-    branches: [main]
+    branches: [deploy/apocalypse-radio]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 concurrency:
-  group: deploy
+  group: deploy-apocalypse-radio
   cancel-in-progress: true
-
-# Railway auto-deploys the relay when the repo is pushed (connected via API).
-# This workflow only handles the frontend (GitHub Pages).
 
 jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,16 +27,25 @@ jobs:
           VITE_RELAY_URL: ${{ vars.RELAY_URL }}
           VITE_API_URL: ${{ vars.API_URL }}
           VITE_PI_URL: ${{ vars.PI_URL }}
-          VITE_APP_TITLE: ${{ vars.APP_TITLE }}
-          VITE_CLIENT_SLUG: ${{ vars.CLIENT_SLUG }}
           VITE_ROOMS_URL: ${{ vars.ROOMS_URL }}
+          VITE_GAME_URL: ${{ vars.GAME_URL }}
+          VITE_APP_TITLE: Apocalypse Radio
+          VITE_CLIENT_SLUG: apocalypse-radio
+          VITE_DASHBOARD_LABEL: Dashboard
+          VITE_DASHBOARD_ROUTE: dashboard
+          VITE_CURRENCY_NAME: signals
+          VITE_ACCENT_COLOR: "#ff4444"
+          VITE_CREATURE_TYPE: artist
+          VITE_CREATURE_TYPE_PLURAL: artists
+          VITE_RELAY_DEFAULT_NAME: Apocalypse Radio Relay
+          VITE_NIP05_DOMAIN: apocalypseradio.xyz
+          VITE_ADMIN_EMAIL_PLACEHOLDER: admin@apocalypseradio.xyz
+          VITE_USER_ROLE: manager
+          VITE_USER_ROLE_DESCRIPTION: your label profile
         run: |
-          echo "Building with relay: $VITE_RELAY_URL api: $VITE_API_URL pi: $VITE_PI_URL title: $VITE_APP_TITLE"
+          echo "Building apocalypse-radio frontend..."
           npm run build
 
-      - uses: actions/configure-pages@v4
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy to Vercel
+        run: |
+          npx vercel deploy dist --prod --token ${{ secrets.VERCEL_TOKEN }} --yes --scope paul-gadis-projects
