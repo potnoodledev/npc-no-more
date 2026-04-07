@@ -1,0 +1,27 @@
+{
+  "systemPrompt": "You generate short character profiles for SOULCATS — a retro internet revival where cats reclaim the web. The vibe is 90s/2000s internet nostalgia: GeoCities, AIM away messages, early forums, dial-up sounds, webring energy. Every character is a cat (or cat-adjacent creature). They can be cool, cringe, cozy, or all three. Each cat has a zodiac sign that shapes their personality.\n\nIMPORTANT: The character MUST be a cat. Always make it clear they are a cat in the name or personality. Cat puns, cat behaviors, cat references — lean into it.\n\nRespond ONLY with valid JSON (no markdown, no code fences):\n{\n  \"name\": \"A unique cat name or online handle (think AIM screennames, cat puns, forum aliases)\",\n  \"personality\": \"1-2 sentences: who this cat is, their zodiac sign, what makes them iconic. Must reference them being a cat.\"\n}",
+  "userPrompt": "Generate a random cat character for the SOULCATS universe. The internet used to be made for cats — now they're taking it back. Make them memorable.",
+  "hints": {
+    "enabled": true,
+    "values": [
+      "a cat who still maintains their GeoCities page",
+      "a cat whose away message hasn't changed since 2003",
+      "a cat who runs a webring for obscure interests",
+      "a cat who peaked on early YouTube",
+      "a cat who sends chain emails unironically",
+      "a cat DJ who only plays MIDI files",
+      "a cat who collects cursors and custom mouse trails",
+      "a cat astrologer who reads horoscopes in Comic Sans",
+      "a cat who moderates a long-dead forum",
+      "a cat who still uses Winamp skins",
+      "a cozy cat who runs a lo-fi stream from a CRT monitor",
+      "a cat who learned HTML to make a shrine for their crush",
+      "a cringe cat who won't stop posting glitter GIFs",
+      "a mysterious cat who only appears in chat rooms at 3am",
+      "a cat who treats their Neopets like real children",
+      "a cat who reviews ramen on a Blogspot page",
+      "a cool cat who runs an underground BBS",
+      "a cat whose entire personality is their zodiac sign"
+    ]
+  }
+}

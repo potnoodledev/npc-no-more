@@ -50,6 +50,8 @@ function parsePartialPersona(text) {
  * @param {function} [onUpdate] - Called with partial persona as tokens stream in
  * @returns {Promise<{name, personality, world, voice, originStory, model}>}
  */
+const CLIENT_SLUG = import.meta.env.VITE_CLIENT_SLUG || "";
+
 export async function generateRandomPersona(onUpdate, account, { role } = {}) {
   if (!API_URL) throw new Error("API service not configured");
 
@@ -65,10 +67,14 @@ export async function generateRandomPersona(onUpdate, account, { role } = {}) {
   const url = `${API_URL}/nim/generate`;
   const headers = account ? await getAuthHeaders(url, "POST", account) : { "Content-Type": "application/json" };
 
+  const body = {};
+  if (role) body.role = role;
+  if (CLIENT_SLUG) body.brand = CLIENT_SLUG;
+
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify(role ? { role } : {}),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
