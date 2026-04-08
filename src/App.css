@@ -326,6 +326,24 @@ a:hover { color: var(--accent-bright); }
   animation: brain-pulse 1.5s ease-in-out infinite;
 }
 
+/* Agent status text under name */
+.sidebar-agent-status {
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  color: var(--accent);
+  opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  display: block;
+  animation: status-fade 0.3s ease;
+}
+@keyframes status-fade {
+  from { opacity: 0; }
+  to { opacity: 0.8; }
+}
+
 /* Active character dot in sidebar */
 .sidebar-acting-dot {
   position: absolute;

@@ -8,6 +8,8 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
+import { createRequire } from "module";
+const _require = createRequire(import.meta.url);
 import { fetchProfile, closePool } from "./profile.js";
 import { buildSystemPrompt } from "./prompt-builder.js";
 import { finalizeEvent, getPublicKey } from "nostr-tools/pure";
@@ -1240,42 +1242,48 @@ import * as rc from "./room-client.js";
     res.json(result);
   });
 
+  // Validate strudel patterns using the krill (mini-notation) parser
+  let krillParser = null;
+  try {
+    krillParser = _require("@strudel/mini/krill-parser.js");
+    console.log("[jam] krill parser loaded for pattern validation");
+  } catch (e) { console.warn("[jam] krill parser not available:", e.message); }
+
   function validateStrudelPattern(pattern) {
     if (!pattern) return { valid: true, cleaned: "" };
-    let p = pattern;
-    // Normalize all single quotes to double quotes
-    p = p.replace(/'/g, '"');
-    // Fix JS array notation → mini-notation: note(["c3","~","e3"]) → note("c3 ~ e3")
-    p = p.replace(/\[([^\]]*)\]/g, (match, inner) => {
-      if (inner.includes('"') && inner.includes(',')) {
-        const notes = inner.split(',').map(s => s.trim().replace(/"/g, ''));
-        return `"${notes.join(' ')}"`;
+
+    // Normalize single quotes to double quotes
+    let p = pattern.replace(/'/g, '"');
+
+    // Extract mini-notation strings and validate each with the krill parser
+    if (krillParser) {
+      const miniStrings = [];
+      p.replace(/(?:s|note|n)\("([^"]+)"\)/g, (_, mini) => { miniStrings.push(mini); });
+
+      for (const mini of miniStrings) {
+        try {
+          krillParser.parse(`"${mini}"`);
+        } catch (e) {
+          const shortErr = (e.message || "").split("\n")[0];
+          return {
+            valid: false,
+            error: `Invalid mini-notation: "${mini}" — ${shortErr}. Use valid strudel patterns like s("bd sd hh hh") or note("c3 e3 g3 b3"). All note/sound names must be inside double quotes.`,
+            cleaned: p,
+          };
+        }
       }
-      return match;
-    });
-    // Fix invalid bank names
-    const validBanks = ["RolandTR808", "RolandTR909", "RolandCR78", "AkaiLinn"];
-    p = p.replace(/\.bank\("([^"]+)"\)/g, (match, bank) => validBanks.includes(bank) ? match : '.bank("RolandTR808")');
-    // Add bank for bare drum patterns
-    if (/s\("[^"]*(?:bd|sd|hh|oh|cp)[^"]*"\)/.test(p) && !p.includes(".bank(")) {
-      p += '.bank("RolandTR808")';
+
+      // Check for unquoted arguments — note([...]) or s([...]) or note(c3 e3) without quotes
+      const unquotedArgs = p.match(/(?:note|s|n)\((?!\s*")/);
+      if (unquotedArgs) {
+        return {
+          valid: false,
+          error: `Pattern arguments must be quoted strings. Use note("c3 e3 g3") not note([c3, e3]) or note(c3 e3). All mini-notation must be inside double quotes.`,
+          cleaned: p,
+        };
+      }
     }
-    // Fix .distort()
-    p = p.replace(/\.distort\([^)]*\)/g, ".shape(0.3)");
-    // Remove perlin in audio params (causes NaN)
-    p = p.replace(/\.lpf\(perlin[^)]*\)/g, ".lpf(800)");
-    p = p.replace(/\.hpf\(perlin[^)]*\)/g, ".hpf(200)");
-    // Check for obvious syntax issues
-    const openParens = (p.match(/\(/g) || []).length;
-    const closeParens = (p.match(/\)/g) || []).length;
-    if (openParens !== closeParens) {
-      return { valid: false, error: `Mismatched parentheses: ${openParens} open, ${closeParens} close. Fix your pattern and use only double quotes.`, cleaned: p };
-    }
-    // Check for mismatched quotes
-    const dquotes = (p.match(/"/g) || []).length;
-    if (dquotes % 2 !== 0) {
-      return { valid: false, error: `Mismatched quotes (${dquotes} double quotes). Check your pattern strings.`, cleaned: p };
-    }
+
     return { valid: true, cleaned: p };
   }
 

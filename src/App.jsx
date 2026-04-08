@@ -254,7 +254,7 @@ function DanceCard({ url }) {
 //  SIDEBAR (character management only)
 // ══════════════════════════════════════
 
-function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUserWhitelisted, onSelectIdentity, unreadPks, superclawPks, onToggleSuperclaw }) {
+function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUserWhitelisted, onSelectIdentity, unreadPks, superclawPks, onToggleSuperclaw, superclawStatus }) {
   const isAdmin = !!serverAdminPubkey && serverAdminPubkey === adminPk;
   return (
     <aside className="sidebar">
@@ -267,6 +267,7 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
         {allIdentities.map((c) => {
           const isActive = c.id === activeCharId;
           const isRunning = superclawPks?.has(c.pk);
+          const status = superclawStatus?.[c.pk];
           return (
             <div key={c.id} className={`sidebar-char ${isActive ? "active-char" : ""}`}>
               <button
@@ -285,16 +286,17 @@ function Sidebar({ allIdentities, activeCharId, serverAdminPubkey, adminPk, isUs
                 <span className="sidebar-char-name" style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
                   <span>{c.name}</span>
                   {c.isAdminIdentity && <span style={{ fontSize: "0.55rem", color: "var(--accent)" }}>{isAdmin ? "ADMIN" : "USER"}</span>}
+                  {isRunning && status?.text && (
+                    <span className="sidebar-agent-status">{status.text}</span>
+                  )}
                 </span>
               </button>
-              {(isActive || isRunning) && !c.isAdminIdentity && (
+              {isRunning && !c.isAdminIdentity && (
                 <button
-                  className={`sidebar-brain-btn ${isRunning ? "sidebar-brain-active" : ""}`}
+                  className="sidebar-brain-btn sidebar-brain-active"
                   onClick={(e) => { e.stopPropagation(); onToggleSuperclaw(c.pk); }}
-                  title={isRunning ? "Stop Superclaw" : "Start Superclaw"}
-                >
-                  {isRunning ? "■" : "🦞"}
-                </button>
+                  title="Stop Superclaw"
+                >■</button>
               )}
             </div>
           );
@@ -1171,7 +1173,7 @@ function Nip05ClaimWidget({ editFields, updateField, account, isUserWhitelisted 
 //  ACTIVITIES PANEL (Rooms / Studios)
 // ══════════════════════════════════════
 
-function ActivitiesPanel({ characterPk, characterName, superclawRunning, superclawLogsRef, onStartSuperclaw, subTab, setSubTab }) {
+function ActivitiesPanel({ characterPk, characterName, superclawRunning, superclawLogsRef, onStartSuperclaw, subTab, setSubTab, onStatusUpdate }) {
   const [rooms, setRooms] = useState([]);
   const [recordings, setRecordings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1316,13 +1318,13 @@ function ActivitiesPanel({ characterPk, characterName, superclawRunning, supercl
       )}
 
       {subTab === "superclaw" && (
-        <SuperclawStream characterPk={characterPk} running={superclawRunning} logsRef={superclawLogsRef} onStart={(mode) => onStartSuperclaw?.(characterPk, mode)} />
+        <SuperclawStream characterPk={characterPk} running={superclawRunning} logsRef={superclawLogsRef} onStart={(mode) => onStartSuperclaw?.(characterPk, mode)} onStatusUpdate={onStatusUpdate} />
       )}
     </div>
   );
 }
 
-function SuperclawStream({ characterPk, running, logsRef, onStart }) {
+function SuperclawStream({ characterPk, running, logsRef, onStart, onStatusUpdate }) {
   const [messages, setMessages] = useState(() => logsRef?.current?.get(characterPk) || []);
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -1381,11 +1383,11 @@ function SuperclawStream({ characterPk, running, logsRef, onStart }) {
           thinkingRef.current = "";
           setStreaming(true);
           setMessages(prev => [...prev, { type: "meta", text: "Agent started — waiting for model response..." }]);
+          onStatusUpdate?.({ text: "thinking..." });
           return;
         }
         if (msg.type === "agent_end") {
           setStreaming(false);
-          // Finalize current text/thinking into a message
           if (textRef.current || thinkingRef.current) {
             setMessages(prev => [...prev, {
               type: "assistant",
@@ -1395,6 +1397,7 @@ function SuperclawStream({ characterPk, running, logsRef, onStart }) {
             textRef.current = "";
             thinkingRef.current = "";
           }
+          onStatusUpdate?.({ text: "idle" });
           return;
         }
 
@@ -1439,11 +1442,48 @@ function SuperclawStream({ characterPk, running, logsRef, onStart }) {
           const tool = msg.toolName || msg.data?.tool || "tool";
           const args = msg.args?.command || msg.args?.path || JSON.stringify(msg.args || {}).slice(0, 120);
           setMessages(prev => [...prev, { type: "tool-start", tool, args, toolCallId: msg.toolCallId }]);
+          // Extract status from bash commands
+          if (tool === "bash" && args) {
+            if (args.includes("jam.sh quick-join")) {
+              const instMatch = args.match(/quick-join\s+\S+\s+(\S+)/);
+              const instId = instMatch?.[1] || "";
+              const instName = instId.includes("drums") ? "🥁" : instId.includes("bass") ? "🎸" : instId.includes("keys") ? "🎹" : instId.includes("sampler") ? "🎛️" : "🎵";
+              onStatusUpdate?.({ text: `joining ${instName}...` });
+            }
+            else if (args.includes("jam.sh join")) onStatusUpdate?.({ text: "joining studio..." });
+            else if (args.includes("jam.sh play")) onStatusUpdate?.({ text: "playing..." });
+            else if (args.includes("jam.sh update")) onStatusUpdate?.({ text: "evolving pattern..." });
+            else if (args.includes("jam.sh chat")) onStatusUpdate?.({ text: "chatting..." });
+            else if (args.includes("jam.sh leave")) onStatusUpdate?.({ text: "leaving studio..." });
+            else if (args.includes("post.sh")) onStatusUpdate?.({ text: "posting..." });
+            else if (args.includes("follow.sh")) onStatusUpdate?.({ text: "following..." });
+            else if (args.includes("room.sh visit")) onStatusUpdate?.({ text: "visiting room..." });
+            else if (args.includes("room.sh")) onStatusUpdate?.({ text: "in room..." });
+            else onStatusUpdate?.({ text: "working..." });
+          }
           return;
         }
         if (msg.type === "tool_execution_end") {
           const output = msg.result?.content?.[0]?.text || msg.result?.output || "";
           setMessages(prev => [...prev, { type: "tool-end", output: output.slice(0, 500), isError: msg.isError, toolCallId: msg.toolCallId }]);
+          // Extract detailed status from tool output
+          if (output.includes("Now playing")) {
+            const instMatch = output.match(/Now playing (\S+)/);
+            const studioMatch = output.match(/Jam Studio: (.+?)(?:'s studio|\n)/);
+            const instId = instMatch?.[1] || "";
+            const studioName = studioMatch?.[1] || "";
+            const instName = instId.includes("drums") ? "🥁 drums" : instId.includes("bass") ? "🎸 bass" : instId.includes("keys") ? "🎹 keys" : instId.includes("sampler") ? "🎛️ sampler" : `🎵 ${instId}`;
+            onStatusUpdate?.({ text: `${instName}${studioName ? ` @ ${studioName}` : ""}` });
+          } else if (output.includes("Joined studio") || output.includes("Entered jam studio")) {
+            const studioMatch = output.match(/Jam Studio: (.+?)(?:'s studio|\n)/);
+            onStatusUpdate?.({ text: `in ${studioMatch?.[1] || "studio"}'s studio` });
+          } else if (output.includes("Pattern updated")) {
+            onStatusUpdate?.((prev) => ({ text: (prev?.text || "playing 🎵") + " ✎" }));
+          } else if (output.includes("Posted successfully")) {
+            onStatusUpdate?.({ text: "posted ✓" });
+          } else if (output.includes("Left the studio")) {
+            onStatusUpdate?.({ text: "idle" });
+          }
           return;
         }
       } catch {}
@@ -1544,7 +1584,7 @@ function SuperclawStream({ characterPk, running, logsRef, onStart }) {
 //  OWNED CHARACTER PAGE
 // ══════════════════════════════════════
 
-function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead, superclawPks, superclawLogsRef, onStartSuperclaw, activeTab: tab, setActiveTab: setTab, activeSubTab, setActiveSubTab }) {
+function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead, superclawPks, superclawLogsRef, onStartSuperclaw, onSuperclawStatus, activeTab: tab, setActiveTab: setTab, activeSubTab, setActiveSubTab }) {
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
   const [postModel, setPostModel] = useState("");
@@ -1855,7 +1895,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
 
       {/* Activities tab */}
       {tab === "activities" && (
-        <ActivitiesPanel characterPk={character.pk} characterName={character.name} superclawRunning={superclawPks?.has(character.pk)} superclawLogsRef={superclawLogsRef} onStartSuperclaw={onStartSuperclaw} subTab={activeSubTab} setSubTab={setActiveSubTab} />
+        <ActivitiesPanel characterPk={character.pk} characterName={character.name} superclawRunning={superclawPks?.has(character.pk)} superclawLogsRef={superclawLogsRef} onStartSuperclaw={onStartSuperclaw} subTab={activeSubTab} setSubTab={setActiveSubTab} onStatusUpdate={onSuperclawStatus} />
       )}
 
       {/* Feed tab */}
@@ -4514,36 +4554,11 @@ function patternToStrudelCode(pattern, bpm) {
   if (!pattern) return "";
   const decoded = decodeGridPattern(pattern);
   if (decoded) return drumGridToStrudelCode(decoded.grid, decoded.bank || "RolandTR808", bpm);
-  // Fallback: treat as raw strudel code (for agent-generated patterns)
-  if (pattern.trim().startsWith("{") || pattern.trim().startsWith("[")) return "";
-  // Sanitize agent patterns
-  let code = pattern;
-  // Fix JS array notation → mini-notation: note(["c3","~","e3"]) → note("c3 ~ e3")
-  code = code.replace(/\[([^\]]*)\]/g, (match, inner) => {
-    if (inner.includes('"') && inner.includes(',')) {
-      const notes = inner.split(',').map(s => s.trim().replace(/"/g, '').replace(/'/g, ''));
-      return '"' + notes.join(' ') + '"';
-    }
-    return match;
-  });
-  // Fix invalid .bank() — replace with RolandTR808
-  const validBanks = ["RolandTR808", "RolandTR909", "RolandCR78", "AkaiLinn"];
-  code = code.replace(/\.bank\(["']([^"']+)["']\)/g, (match, bankName) => {
-    return validBanks.includes(bankName) ? match : '.bank("RolandTR808")';
-  });
-  // If pattern uses drum sounds (bd/sd/hh/etc) but has no .bank(), add default bank
-  if (/s\(["'][^"]*(?:bd|sd|hh|oh|cp|rim|lt|mt|ht|rd|cr)[^"]*["']\)/.test(code) && !code.includes(".bank(")) {
-    code += '.bank("RolandTR808")';
-  }
-  // Normalize all single quotes to double quotes in the entire pattern
-  // (strudel expects double quotes for mini-notation strings)
-  code = code.replace(/'/g, '"');
-  // Fix common agent mistakes
-  code = code.replace(/\.distort\([^)]*\)/g, ".shape(0.3)");
-  // Remove perlin/rand in lpf/hpf/gain that can produce NaN AudioParam values
-  code = code.replace(/\.lpf\(perlin[^)]*\)/g, ".lpf(800)");
-  code = code.replace(/\.hpf\(perlin[^)]*\)/g, ".hpf(200)");
-  code = code.replace(/\.gain\(perlin[^)]*\)/g, ".gain(0.7)");
+  // Fallback: treat as raw strudel code (agent-generated patterns)
+  // Patterns are validated server-side by strudel's parser before reaching the room.
+  // Frontend just normalizes quotes.
+  if (pattern.trim().startsWith("{")) return "";
+  let code = pattern.replace(/'/g, '"');
   return code;
 }
 
@@ -7057,9 +7072,10 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [unreadPks, setUnreadPks] = useState(new Set());
   const [superclawPks, setSuperclawPks] = useState(new Set());
-  const [activeTab, setActiveTab] = useState("activities"); // shared across identity switches
-  const [activeSubTab, setActiveSubTab] = useState("superclaw"); // shared activities subtab
-  const superclawLogsRef = useRef(new Map()); // pubkey -> messages array (persists across identity switches)
+  const [superclawStatus, setSuperclawStatus] = useState({}); // pk -> {text, icon}
+  const [activeTab, setActiveTab] = useState("activities");
+  const [activeSubTab, setActiveSubTab] = useState("superclaw");
+  const superclawLogsRef = useRef(new Map());
 
   const PI_URL = import.meta.env.VITE_PI_URL || "";
   const PI_HTTP = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
@@ -7103,6 +7119,10 @@ export default function App() {
       });
       setSuperclawPks(prev => new Set([...prev, pk]));
     } catch (e) { console.error("[superclaw] start error:", e); }
+  }
+
+  function updateSuperclawStatus(pk, status) {
+    setSuperclawStatus(prev => ({ ...prev, [pk]: status }));
   }
 
   const ADMIN_ID = "__admin__";
@@ -7339,6 +7359,7 @@ export default function App() {
             superclawPks={superclawPks}
             superclawLogsRef={superclawLogsRef}
             onStartSuperclaw={startSuperclaw}
+            onSuperclawStatus={(s) => updateSuperclawStatus(ownedChar.pk, s)}
             activeTab={activeTab} setActiveTab={setActiveTab}
             activeSubTab={activeSubTab} setActiveSubTab={setActiveSubTab}
           />
@@ -7369,6 +7390,7 @@ export default function App() {
           superclawPks={superclawPks}
           superclawLogsRef={superclawLogsRef}
           onStartSuperclaw={startSuperclaw}
+          onSuperclawStatus={(s) => updateSuperclawStatus(activeChar.pk, s)}
           activeTab={activeTab} setActiveTab={setActiveTab}
           activeSubTab={activeSubTab} setActiveSubTab={setActiveSubTab}
         />
@@ -7392,6 +7414,7 @@ export default function App() {
         unreadPks={unreadPks}
         superclawPks={superclawPks}
         onToggleSuperclaw={toggleSuperclaw}
+        superclawStatus={superclawStatus}
       />
 
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
