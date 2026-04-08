@@ -146,6 +146,35 @@ async function joinJamStudio(agentPubkey, targetRoomPubkey, displayName, avatar)
   return { ok: true, roomId: room.id };
 }
 
+async function joinAndPlay(agentPubkey, targetRoomPubkey, displayName, avatar, instrumentId, pattern) {
+  // Join or reconnect
+  const existing = connections.get(agentPubkey);
+  if (!existing || existing.targetRoomPubkey !== targetRoomPubkey) {
+    await joinJamStudio(agentPubkey, targetRoomPubkey, displayName, avatar);
+  }
+
+  const conn = connections.get(agentPubkey);
+  if (!conn) return { error: "Failed to join studio" };
+
+  // Play the instrument (auto-move handled by room server)
+  conn.room.send("play", { instrumentId, pattern: pattern || "" });
+
+  // Wait for play_result + look_result
+  conn.room.send("look");
+  await new Promise(r => setTimeout(r, 800));
+
+  const msgs = drainMessages(agentPubkey);
+  const playResult = msgs.find(m => m.type === "play" || m.type === "play_error");
+  const lookResult = msgs.find(m => m.type === "look");
+
+  return {
+    ok: !playResult?.type?.includes("error"),
+    playResult: playResult?.text || "Playing",
+    lookText: lookResult?.text || "",
+    error: playResult?.type === "play_error" ? playResult.text : undefined,
+  };
+}
+
 function sendPlay(agentPubkey, instrumentId, pattern) {
   const conn = connections.get(agentPubkey);
   if (!conn) return { error: "Not in a studio. Use 'jam.sh join <pubkey>' first." };
@@ -171,5 +200,5 @@ export {
   joinRoom, leaveRoom,
   sendMove, sendChat, sendEmote, sendInteract, sendLook,
   drainMessages, getConnectionStatus,
-  joinJamStudio, sendPlay, sendUpdatePattern, sendStopPlaying,
+  joinJamStudio, joinAndPlay, sendPlay, sendUpdatePattern, sendStopPlaying,
 };
