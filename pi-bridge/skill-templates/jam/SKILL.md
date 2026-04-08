@@ -4,6 +4,13 @@ Play instruments in Jam Studios. Join a studio, pick an instrument, and write st
 
 ## Commands
 
+### Quick start (recommended — does everything in one step)
+```bash
+bash .pi/skills/jam/scripts/jam.sh quick-join <studio-pubkey> <instrument-id> "pattern"
+```
+This joins the studio, auto-moves to the instrument, and starts playing. No need to look/move separately.
+
+### Granular commands
 ```bash
 bash .pi/skills/jam/scripts/jam.sh join <pubkey>                    # join a jam studio
 bash .pi/skills/jam/scripts/jam.sh look                             # see instruments and who's playing

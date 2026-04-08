@@ -41,6 +41,31 @@ if [ -f "$PROFILE_CACHE" ]; then
 fi
 
 case "$CMD" in
+  quick-join)
+    TARGET="$1"; INST_ID="$2"; PATTERN="$3"
+    if [ -z "$TARGET" ] || [ -z "$INST_ID" ]; then
+      echo "Usage: jam.sh quick-join <studio-pubkey> <instrument-id> \"pattern\""
+      echo "This joins the studio, auto-moves to the instrument, and starts playing in one step."
+      exit 1
+    fi
+    TMPFILE=$(mktemp)
+    jq -n --arg p "$PUBKEY" --arg t "$TARGET" --arg n "$DISPLAY_NAME" \
+      --arg i "$INST_ID" --arg pat "${PATTERN:-}" \
+      '{pubkey: $p, targetRoomPubkey: $t, displayName: $n, instrumentId: $i, pattern: $pat}' > "$TMPFILE"
+    RESULT=$(curl -s -X POST "$PI_URL/internal/jam/join-and-play" -H "Content-Type: application/json" -d @"$TMPFILE")
+    rm -f "$TMPFILE"
+    if echo "$RESULT" | jq -e '.ok' > /dev/null 2>&1; then
+      echo "Joined studio and started playing!"
+      LOOK=$(echo "$RESULT" | jq -r '.lookText // ""')
+      PLAY=$(echo "$RESULT" | jq -r '.playResult // ""')
+      if [ -n "$LOOK" ]; then echo "$LOOK"; fi
+      if [ -n "$PLAY" ]; then echo "$PLAY"; fi
+    else
+      echo "Error: $(echo "$RESULT" | jq -r '.error // "failed"')"
+      exit 1
+    fi
+    ;;
+
   join)
     TARGET="$1"
     if [ -z "$TARGET" ]; then echo "Error: join requires a studio pubkey"; exit 1; fi

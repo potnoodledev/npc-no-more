@@ -104,11 +104,17 @@ class JamStudioRoom extends Room {
         client.send("play_result", { error: "Instrument not found" });
         return;
       }
-      // Check distance
+      // Auto-move to instrument if too far
       const d = dist(player.x, player.y, inst.x, inst.y);
       if (d > INTERACT_DISTANCE) {
-        client.send("play_result", { error: `Too far away (${d.toFixed(1)} tiles). Move closer.` });
-        return;
+        // Move player adjacent to the instrument
+        const dx = inst.x - player.x;
+        const dy = inst.y - player.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        player.x = Math.round(inst.x - (dx / len) * 1);
+        player.y = Math.round(inst.y - (dy / len) * 1);
+        player.x = Math.max(0, Math.min(this.state.width - 1, player.x));
+        player.y = Math.max(0, Math.min(this.state.height - 1, player.y));
       }
       // Check vacancy
       if (inst.playerSessionId && inst.playerSessionId !== client.sessionId) {

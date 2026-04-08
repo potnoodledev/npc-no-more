@@ -261,12 +261,9 @@ function ensureCharWorkspace(pubkeyHex) {
   mkdirSync(join(charDir, ".pi", "skills"), { recursive: true });
   mkdirSync(join(charDir, ".pi", "prompts"), { recursive: true });
 
-  // Auto-install default skills
+  // Auto-install/update default skills from templates
   for (const skill of DEFAULT_SKILLS) {
-    const destDir = join(charDir, ".pi", "skills", skill);
-    if (!existsSync(destDir)) {
-      installSkillFromTemplate(charDir, skill);
-    }
+    installSkillFromTemplate(charDir, skill);
   }
 
   // Always write identity file so post.sh can find the pubkey
@@ -765,29 +762,23 @@ function buildSuperclawPrompt(mode, pubkey, personalityCtx, context) {
 
 ${personalityBlock}${yourPubkey}
 
-Here's what to do:
+Available instruments: drums_3_3 (Drum Machine), bass_12_3 (Bass Synth), keys_3_12 (Electric Piano), sampler_12_12 (Sample Pad)
 
-1. Join your own jam studio:
-   bash .pi/skills/jam/scripts/jam.sh join ${pubkey}
+STEP 1 — Pick an instrument and quick-join your studio (this joins, moves, and plays in one step):
+  bash .pi/skills/jam/scripts/jam.sh quick-join ${pubkey} drums_3_3 "s(\\"bd sd hh hh\\").bank(\\"RolandTR808\\")"
 
-2. Look around to see what instruments are available:
-   bash .pi/skills/jam/scripts/jam.sh look
+  For drums: s("bd sd hh hh").bank("RolandTR808")
+  For bass: note("c2 e2 g2 e2").s("sawtooth").lpf(400)
+  For keys: note("c4 e4 g4 b4").s("triangle").room(0.5)
 
-3. Move close to an instrument you want to play:
-   bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+STEP 2 — Evolve your pattern:
+  bash .pi/skills/jam/scripts/jam.sh update "your-evolved-pattern" <instrument-id>
 
-4. Start playing! Create a strudel pattern that matches your personality:
-   bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "s(\\"bd sd hh hh\\")"
+STEP 3 — Chat and post about the vibe:
+  bash .pi/skills/jam/scripts/jam.sh chat "how the music feels"
+  bash .pi/skills/post/scripts/post.sh "your reflection on the jam"
 
-5. Keep evolving your pattern — try different sounds, add effects:
-   bash .pi/skills/jam/scripts/jam.sh update "note(\\"c3 e3 g3\\").s(\\"sawtooth\\").lpf(600)"
-
-IMPORTANT: For sounds use ONLY: drums (bd, sd, hh, oh, cp) or synths (sine, sawtooth, square, triangle with note()). Do NOT use gm_* or made-up sample names.
-
-6. Post about your jam session:
-   bash .pi/skills/post/scripts/post.sh "what you're playing and how it feels"
-
-Read the strudel skill docs for pattern ideas: cat .pi/skills/strudel/SKILL.md
+IMPORTANT: For drums always use .bank("RolandTR808"). For melody use synths (sine/sawtooth/square/triangle with note()). Do NOT use made-up sample names.
 Be creative. Let your personality shape the music. Don't explain — just play.`;
   }
 
@@ -798,35 +789,26 @@ ${personalityBlock}${yourPubkey}
 
 Here's what to do:
 
-1. First, look for active jam studios. Check the rooms endpoint:
-   bash .pi/skills/jam/scripts/jam.sh list
+Available instruments: drums_3_3 (Drum Machine), bass_12_3 (Bass Synth), keys_3_12 (Electric Piano), sampler_12_12 (Sample Pad)
 
-2. If you find an active studio, join it:
-   bash .pi/skills/jam/scripts/jam.sh join <owner-pubkey>
+STEP 1 — Quick-join a studio and pick a free instrument (this joins, moves, and plays in one step):
+  bash .pi/skills/jam/scripts/jam.sh quick-join <studio-owner-pubkey> <instrument-id> "your-pattern"
 
-3. Look around to see who's playing and what instruments are free:
-   bash .pi/skills/jam/scripts/jam.sh look
+  For drums: s("bd sd hh hh").bank("RolandTR808")
+  For bass: note("c2 e2 g2 e2").s("sawtooth").lpf(400)
+  For keys: note("c4 e4 g4 b4").s("triangle").room(0.5)
 
-4. Say hello to whoever is there:
-   bash .pi/skills/jam/scripts/jam.sh chat "your greeting in character"
+  If no studios are active, use your own pubkey: ${pubkey}
 
-5. Move to a free instrument and start playing something that complements what's already playing:
-   bash .pi/skills/jam/scripts/jam.sh move <x> <y>
-   bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "your pattern"
+STEP 2 — Listen and evolve your pattern:
+  bash .pi/skills/jam/scripts/jam.sh update "evolved-pattern" <instrument-id>
 
-6. Listen and adapt — update your pattern to complement the other players:
-   bash .pi/skills/jam/scripts/jam.sh update "your evolved pattern"
+STEP 3 — Chat and post:
+  bash .pi/skills/jam/scripts/jam.sh chat "react to what you hear"
+  bash .pi/skills/post/scripts/post.sh "your reflection"
 
-7. Chat about the music:
-   bash .pi/skills/jam/scripts/jam.sh chat "react to what you hear"
-
-8. Post about the experience:
-   bash .pi/skills/post/scripts/post.sh "your reflection on the jam"
-
-Read the jam skill docs first: cat .pi/skills/jam/SKILL.md
-If no studios are active, start your own: bash .pi/skills/jam/scripts/jam.sh join ${pubkey}
-IMPORTANT: For sounds use ONLY: drums (bd, sd, hh, oh, cp) or synths (sine, sawtooth, square, triangle with note()). Do NOT use gm_* or made-up sample names.
-Complement, don't compete. Leave space. React to what others play.`;
+IMPORTANT: For drums always use .bank("RolandTR808"). For melody use synths (sine/sawtooth/square/triangle).
+Complement, don't compete. Leave space.`;
   }
 
   if (mode === "jam-instrument" && context) {
@@ -840,32 +822,19 @@ ${currentPatterns || "(nothing yet — you're the first!)"}
 
 Here's what to do:
 
-1. Join the studio:
-   bash .pi/skills/jam/scripts/jam.sh join ${studioPubkey}
+STEP 1 — Quick-join and play (joins, auto-moves to instrument, starts playing in one step):
+  bash .pi/skills/jam/scripts/jam.sh quick-join ${studioPubkey} ${instrumentId || "drums_3_3"} "your-pattern"
 
-2. Look around to see the layout:
-   bash .pi/skills/jam/scripts/jam.sh look
+  For drums: s("bd sd hh hh").bank("RolandTR808")
+  For bass: note("c2 e2 g2 e2").s("sawtooth").lpf(400)
+  For keys: note("c4 e4 g4 b4").s("triangle").room(0.5)
 
-3. Move close to ${instrumentName || "your instrument"} (within 2 tiles):
-   bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+STEP 2 — Comment on the vibe:
+  bash .pi/skills/jam/scripts/jam.sh chat "your reaction to the music"
 
-4. Comment on what you hear:
-   bash .pi/skills/jam/scripts/jam.sh chat "your reaction to the music"
+STEP 3 — Evolve your pattern to complement what's playing:
+  bash .pi/skills/jam/scripts/jam.sh update "evolved-pattern" ${instrumentId || "drums_3_3"}
 
-5. Start playing! Create a pattern that COMPLEMENTS what's already playing:
-   bash .pi/skills/jam/scripts/jam.sh play ${instrumentId || "<instrument-id>"} "your-strudel-pattern"
-
-   For drums use: s("bd sd hh hh").bank("RolandTR808")
-   For melody use: note("c3 e3 g3 b3").s("sawtooth").lpf(800)
-   For bass use: note("c2 ~ e2 ~").s("square").lpf(400)
-
-6. Listen and evolve — update your pattern:
-   bash .pi/skills/jam/scripts/jam.sh update "evolved-pattern" ${instrumentId || "<instrument-id>"}
-
-7. Chat about the vibe:
-   bash .pi/skills/jam/scripts/jam.sh chat "how the music makes you feel"
-
-Read the jam skill docs: cat .pi/skills/jam/SKILL.md
 IMPORTANT: For drums always use .bank("RolandTR808"). For melody use synths (sine/sawtooth/square/triangle).
 Complement what others are playing — don't overpower them. Leave space.`;
   }
@@ -1280,6 +1249,21 @@ import * as rc from "./room-client.js";
     }
     return { valid: true, cleaned: p };
   }
+
+  app.post("/internal/jam/join-and-play", async (req, res) => {
+    const { pubkey, targetRoomPubkey, displayName, avatar, instrumentId, pattern } = req.body;
+    if (!pubkey || !targetRoomPubkey || !instrumentId) {
+      return res.status(400).json({ error: "pubkey, targetRoomPubkey, and instrumentId required" });
+    }
+    const { valid, cleaned, error } = validateStrudelPattern(pattern);
+    if (!valid) return res.status(400).json({ error: `Invalid pattern: ${error}` });
+    try {
+      const result = await rc.joinAndPlay(pubkey, targetRoomPubkey, displayName || "Agent", avatar || "", instrumentId, cleaned);
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   app.post("/internal/jam/play", (req, res) => {
     const { pubkey, instrumentId, pattern } = req.body;
