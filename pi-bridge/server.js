@@ -31,6 +31,8 @@ const PI_BIN = process.env.PI_BIN || "pi";
 const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
 const HF_TOKEN = process.env.HF_TOKEN || "";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const GEMMA_SELF_HOSTED_URL = process.env.GEMMA_SELF_HOSTED_URL || "";
+const GEMMA_SELF_HOSTED_KEY = process.env.VLLM_API_KEY || process.env.GEMMA_SELF_HOSTED_KEY || process.env.GCLOUD_IDENTITY_TOKEN || "";
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
 const RELAY_URL = process.env.RELAY_URL || "ws://localhost:7777";
 const API_URL = process.env.API_URL || "http://localhost:3456";
@@ -192,7 +194,26 @@ function setupPiConfig() {
 
   const providers = {};
 
-  // OpenRouter provider first (gemma-4 free tier) if key available
+  // Self-hosted Gemma 4 (Cloud Run) — first priority if available
+  if (GEMMA_SELF_HOSTED_URL && GEMMA_SELF_HOSTED_KEY) {
+    providers["gemma-self-hosted"] = {
+      baseUrl: GEMMA_SELF_HOSTED_URL + "/v1",
+      apiKey: GEMMA_SELF_HOSTED_KEY,
+      api: "openai-completions",
+      models: [
+        {
+          id: "gs://gemma-4-492709-gemma-models/gemma-4-31B-it",
+          name: "Gemma 4 31B (self-hosted)",
+          reasoning: true,
+          contextWindow: 32000,
+          maxTokens: 4096,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      ],
+    };
+  }
+
+  // OpenRouter provider (gemma-4) if key available
   if (OPENROUTER_API_KEY) {
     providers["openrouter"] = {
       baseUrl: "https://openrouter.ai/api/v1",
@@ -238,7 +259,7 @@ function setupPiConfig() {
 
   const modelsConfig = { providers };
   writeFileSync(modelsPath, JSON.stringify(modelsConfig, null, 2));
-  console.log(`Wrote ${nimModels.length} NIM models + ${OPENROUTER_API_KEY ? "OpenRouter" : ""} ${HF_TOKEN ? "HF" : ""} to ${modelsPath}`);
+  console.log(`Wrote ${nimModels.length} NIM models + ${GEMMA_SELF_HOSTED_URL ? "SelfHosted " : ""}${OPENROUTER_API_KEY ? "OpenRouter " : ""}${HF_TOKEN ? "HF " : ""}to ${modelsPath}`);
 
   global.__modelMeta = Object.fromEntries(
     nimModels.map((m) => [m.id, { totalParams: m._totalParams, activeParams: m._activeParams, arch: m._arch }])
@@ -379,6 +400,7 @@ class PiRpcProcess {
         NVIDIA_NIM_API_KEY,
         HF_TOKEN,
         OPENROUTER_API_KEY,
+        GEMMA_SELF_HOSTED_KEY,
         HOME: homedir(),
       },
     });
@@ -437,7 +459,7 @@ function restartSession(pubkeyHex) {
   }
 }
 
-const DEFAULT_MODEL = OPENROUTER_API_KEY ? "openrouter/google/gemma-4-31b-it" : HF_TOKEN ? "huggingface/google/gemma-4-26B-A4B-it" : "";
+const DEFAULT_MODEL = (GEMMA_SELF_HOSTED_URL && GEMMA_SELF_HOSTED_KEY) ? "gemma-self-hosted/gs://gemma-4-492709-gemma-models/gemma-4-31B-it" : OPENROUTER_API_KEY ? "openrouter/google/gemma-4-31b-it" : HF_TOKEN ? "huggingface/google/gemma-4-26B-A4B-it" : "";
 
 async function getOrCreateSession(pubkeyHex, model) {
   const sessionId = pubkeyHex.slice(0, 16);
@@ -1221,19 +1243,21 @@ import * as rc from "./room-client.js";
   function validateStrudelPattern(pattern) {
     if (!pattern) return { valid: true, cleaned: "" };
     let p = pattern;
+    // Normalize all single quotes to double quotes
+    p = p.replace(/'/g, '"');
     // Fix JS array notation → mini-notation: note(["c3","~","e3"]) → note("c3 ~ e3")
     p = p.replace(/\[([^\]]*)\]/g, (match, inner) => {
       if (inner.includes('"') && inner.includes(',')) {
-        const notes = inner.split(',').map(s => s.trim().replace(/"/g, '').replace(/'/g, ''));
+        const notes = inner.split(',').map(s => s.trim().replace(/"/g, ''));
         return `"${notes.join(' ')}"`;
       }
       return match;
     });
     // Fix invalid bank names
     const validBanks = ["RolandTR808", "RolandTR909", "RolandCR78", "AkaiLinn"];
-    p = p.replace(/\.bank\(["']([^"']+)["']\)/g, (match, bank) => validBanks.includes(bank) ? match : '.bank("RolandTR808")');
+    p = p.replace(/\.bank\("([^"]+)"\)/g, (match, bank) => validBanks.includes(bank) ? match : '.bank("RolandTR808")');
     // Add bank for bare drum patterns
-    if (/s\(["'][^"]*(?:bd|sd|hh|oh|cp)[^"]*["']\)/.test(p) && !p.includes(".bank(")) {
+    if (/s\("[^"]*(?:bd|sd|hh|oh|cp)[^"]*"\)/.test(p) && !p.includes(".bank(")) {
       p += '.bank("RolandTR808")';
     }
     // Fix .distort()
@@ -1245,7 +1269,12 @@ import * as rc from "./room-client.js";
     const openParens = (p.match(/\(/g) || []).length;
     const closeParens = (p.match(/\)/g) || []).length;
     if (openParens !== closeParens) {
-      return { valid: false, error: `Mismatched parentheses: ${openParens} open, ${closeParens} close. Fix your pattern.`, cleaned: p };
+      return { valid: false, error: `Mismatched parentheses: ${openParens} open, ${closeParens} close. Fix your pattern and use only double quotes.`, cleaned: p };
+    }
+    // Check for mismatched quotes
+    const dquotes = (p.match(/"/g) || []).length;
+    if (dquotes % 2 !== 0) {
+      return { valid: false, error: `Mismatched quotes (${dquotes} double quotes). Check your pattern strings.`, cleaned: p };
     }
     return { valid: true, cleaned: p };
   }

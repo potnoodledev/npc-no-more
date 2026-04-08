@@ -4535,15 +4535,15 @@ function patternToStrudelCode(pattern, bpm) {
   if (/s\(["'][^"]*(?:bd|sd|hh|oh|cp|rim|lt|mt|ht|rd|cr)[^"]*["']\)/.test(code) && !code.includes(".bank(")) {
     code += '.bank("RolandTR808")';
   }
+  // Normalize all single quotes to double quotes in the entire pattern
+  // (strudel expects double quotes for mini-notation strings)
+  code = code.replace(/'/g, '"');
   // Fix common agent mistakes
   code = code.replace(/\.distort\([^)]*\)/g, ".shape(0.3)");
   // Remove perlin/rand in lpf/hpf/gain that can produce NaN AudioParam values
   code = code.replace(/\.lpf\(perlin[^)]*\)/g, ".lpf(800)");
   code = code.replace(/\.hpf\(perlin[^)]*\)/g, ".hpf(200)");
   code = code.replace(/\.gain\(perlin[^)]*\)/g, ".gain(0.7)");
-  // Fix single quotes to double quotes (strudel mini-notation prefers double)
-  code = code.replace(/s\('/g, 's("').replace(/'\)/g, '")');
-  code = code.replace(/note\('/g, 'note("').replace(/'\)\./g, '").');
   return code;
 }
 
