@@ -3967,6 +3967,40 @@ a:hover { color: var(--accent-bright); }
   font-weight: 700;
 }
 
+/* Superclaw Mode Selection */
+.sc-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.sc-mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  text-align: center;
+}
+.sc-mode-card:hover { border-color: var(--accent); background: var(--surface); }
+.sc-mode-icon { font-size: 1.5rem; }
+.sc-mode-title {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--cream);
+}
+.sc-mode-desc {
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  line-height: 1.3;
+}
+
 /* Superclaw Stream */
 .sc-stream-dot {
   width: 8px; height: 8px; border-radius: 50%;
@@ -3998,6 +4032,55 @@ a:hover { color: var(--accent-bright); }
 /* ══════════════════════════════════════
    JAM STUDIO
    ══════════════════════════════════════ */
+
+.studio-audio-overlay {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  animation: brain-pulse 2s ease-in-out infinite;
+}
+.studio-audio-overlay:hover { background: var(--surface2); }
+.studio-audio-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.studio-code-preview {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--accent);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.4;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.studio-code-mini {
+  margin-top: 4px;
+  padding: 3px 6px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .studio-bpm-badge {
   font-family: var(--font-mono);

@@ -26,6 +26,14 @@ bash .pi/skills/jam/scripts/jam.sh leave                            # leave the 
 
 ## Pattern Quick Reference
 
+IMPORTANT: Only use these sound sources. Do NOT use made-up sample or bank names.
+
+### Available sounds
+- Drums (use directly, no .bank() needed): bd, sd, hh, oh, cp, rim, lt, mt, ht, rd, cr
+- Synths (use with note()): sine, sawtooth, square, triangle
+- Optional drum banks (ONLY these exact names): .bank("RolandTR808"), .bank("RolandTR909"), .bank("RolandCR78"), .bank("AkaiLinn")
+- Do NOT use .bank("drums") or any other bank name — it will fail
+
 ### Drums
 ```
 s("bd sd hh hh")              # basic beat
@@ -35,14 +43,14 @@ s("bd sd:2 [hh oh] hh")      # variation with sub-patterns
 s("bd cp ~ bd ~ cp ~ ~")     # boom-bap with clap
 ```
 
-### Bass
+### Bass (use synths, not samples)
 ```
 note("c2 e2 g2 e2").s("sawtooth")           # saw bass line
 note("c2 ~ e2 ~").s("square").lpf(400)      # filtered square bass
 note("<c2 f2 g2>").s("sawtooth").gain(0.6)  # alternating root notes
 ```
 
-### Keys / Melody
+### Keys / Melody (use synths)
 ```
 note("e4 g4 b4 d5").s("triangle")           # simple melody
 note("c4 e4 g4").s("sine").room(0.5)        # chords with reverb

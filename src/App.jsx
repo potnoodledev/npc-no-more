@@ -1171,8 +1171,7 @@ function Nip05ClaimWidget({ editFields, updateField, account, isUserWhitelisted 
 //  ACTIVITIES PANEL (Rooms / Studios)
 // ══════════════════════════════════════
 
-function ActivitiesPanel({ characterPk, characterName, superclawRunning }) {
-  const [subTab, setSubTab] = useState(superclawRunning ? "superclaw" : "rooms");
+function ActivitiesPanel({ characterPk, characterName, superclawRunning, superclawLogsRef, onStartSuperclaw, subTab, setSubTab }) {
   const [rooms, setRooms] = useState([]);
   const [recordings, setRecordings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1317,45 +1316,71 @@ function ActivitiesPanel({ characterPk, characterName, superclawRunning }) {
       )}
 
       {subTab === "superclaw" && (
-        <SuperclawStream characterPk={characterPk} running={superclawRunning} />
+        <SuperclawStream characterPk={characterPk} running={superclawRunning} logsRef={superclawLogsRef} onStart={(mode) => onStartSuperclaw?.(characterPk, mode)} />
       )}
     </div>
   );
 }
 
-function SuperclawStream({ characterPk, running }) {
-  const [messages, setMessages] = useState([]);
+function SuperclawStream({ characterPk, running, logsRef, onStart }) {
+  const [messages, setMessages] = useState(() => logsRef?.current?.get(characterPk) || []);
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState(null);
+  const [elapsed, setElapsed] = useState(0);
   const scrollRef = useRef(null);
   const textRef = useRef("");
   const thinkingRef = useRef("");
+  const startTimeRef = useRef(null);
   const PI_URL_LOCAL = import.meta.env.VITE_PI_URL || "";
   const PI_HTTP = PI_URL_LOCAL.replace("ws://", "http://").replace("wss://", "https://");
+
+  // Elapsed time counter when waiting
+  useEffect(() => {
+    if (!running || connected) { setElapsed(0); return; }
+    if (!startTimeRef.current) startTimeRef.current = Date.now();
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [running, connected]);
+
+  // Restore persisted messages when switching to this character
+  useEffect(() => {
+    const saved = logsRef?.current?.get(characterPk);
+    if (saved?.length) setMessages(saved);
+  }, [characterPk]);
+
+  // Persist messages to the shared ref whenever they change
+  useEffect(() => {
+    if (logsRef?.current && messages.length > 0) logsRef.current.set(characterPk, messages);
+  }, [messages, characterPk]);
 
   useEffect(() => {
     if (!running || !PI_HTTP || !characterPk) {
       setConnected(false);
+      if (!running) setStarting(false);
       return;
     }
 
-    setMessages([]);
     textRef.current = "";
     thinkingRef.current = "";
 
+    setError(null);
+    startTimeRef.current = Date.now();
+
     const es = new EventSource(`${PI_HTTP}/internal/agent-stream/${characterPk}`);
-    es.onopen = () => setConnected(true);
+    es.onopen = () => { setConnected(true); setStarting(false); setError(null); };
     es.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === "connected") return;
+        if (msg.type === "connected") { setConnected(true); return; }
 
         // Agent lifecycle
         if (msg.type === "agent_start") {
           textRef.current = "";
           thinkingRef.current = "";
           setStreaming(true);
-          setMessages(prev => [...prev, { type: "meta", text: "Agent thinking..." }]);
+          setMessages(prev => [...prev, { type: "meta", text: "Agent started — waiting for model response..." }]);
           return;
         }
         if (msg.type === "agent_end") {
@@ -1399,6 +1424,16 @@ function SuperclawStream({ characterPk, running }) {
           return;
         }
 
+        // System events
+        if (msg.type === "auto_compaction_start") {
+          setMessages(prev => [...prev, { type: "meta", text: "Compacting context..." }]);
+          return;
+        }
+        if (msg.type === "auto_retry_start") {
+          setMessages(prev => [...prev, { type: "meta", text: "Retrying request..." }]);
+          return;
+        }
+
         // Tool execution
         if (msg.type === "tool_execution_start") {
           const tool = msg.toolName || msg.data?.tool || "tool";
@@ -1413,34 +1448,75 @@ function SuperclawStream({ characterPk, running }) {
         }
       } catch {}
     };
-    es.onerror = () => setConnected(false);
+    es.onerror = (err) => {
+      setConnected(false);
+      // EventSource auto-reconnects, but if it keeps failing show error
+      if (es.readyState === EventSource.CLOSED) {
+        setError("Stream closed — agent may have finished or crashed");
+      }
+    };
 
-    return () => es.close();
+    return () => { es.close(); startTimeRef.current = null; };
   }, [running, characterPk]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
-  if (!running) {
+  function handleStart(mode) {
+    setStarting(true);
+    setError(null);
+    setMessages([]);
+    startTimeRef.current = Date.now();
+    onStart?.(mode);
+  }
+
+  if (!running && !starting) {
     return (
-      <div style={{ padding: "16px 0" }}>
-        <p style={{ color: "var(--text-dim)", fontSize: "0.82rem" }}>Superclaw is not running.</p>
-        <p style={{ color: "var(--text-faint)", fontSize: "0.72rem", marginTop: 4 }}>Click the 🦞 button on the sidebar identity to start.</p>
+      <div style={{ padding: "12px 0" }}>
+        <p style={{ color: "var(--text-dim)", fontSize: "0.82rem", marginBottom: 12 }}>Choose a mode to start Superclaw:</p>
+        <div className="sc-mode-grid">
+          <button className="sc-mode-card" onClick={() => handleStart("agent-test")}>
+            <span className="sc-mode-icon">🦞</span>
+            <span className="sc-mode-title">Agent Test</span>
+            <span className="sc-mode-desc">Post, follow, explore rooms, jam, and reflect — the full autonomous cycle.</span>
+          </button>
+          <button className="sc-mode-card" onClick={() => handleStart("start-jam")}>
+            <span className="sc-mode-icon">🎵</span>
+            <span className="sc-mode-title">Start a Jam</span>
+            <span className="sc-mode-desc">Open your studio, pick an instrument, and create a strudel pattern.</span>
+          </button>
+          <button className="sc-mode-card" onClick={() => handleStart("join-jam")}>
+            <span className="sc-mode-icon">🎸</span>
+            <span className="sc-mode-title">Join a Jam</span>
+            <span className="sc-mode-desc">Find an active studio, sit in, and play alongside other musicians.</span>
+          </button>
+        </div>
       </div>
     );
   }
 
+  const statusText = connected
+    ? (streaming ? "Agent working..." : "Connected — idle")
+    : (starting || running)
+      ? `Connecting to agent... ${elapsed > 0 ? `(${elapsed}s)` : ""}`
+      : "Disconnected";
+
+  const statusColor = connected ? "var(--accent)" : error ? "var(--danger)" : "var(--text-faint)";
+
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span className={`sc-stream-dot ${connected ? "sc-stream-connected" : ""}`} />
-        <span style={{ fontSize: "0.72rem", color: "var(--text-dim)" }}>
-          {connected ? (streaming ? "Agent working..." : "Connected — waiting") : "Connecting..."}
-        </span>
+        <span className={`sc-stream-dot ${connected ? "sc-stream-connected" : ""}`} style={{ background: statusColor }} />
+        <span style={{ fontSize: "0.72rem", color: "var(--text-dim)" }}>{statusText}</span>
       </div>
+      {error && <div style={{ color: "var(--danger)", fontSize: "0.72rem", marginBottom: 8, padding: "6px 8px", background: "rgba(234,56,76,0.08)", borderRadius: "var(--radius)" }}>{error}</div>}
       <div className="sc-stream-log" ref={scrollRef}>
-        {messages.length === 0 && <div style={{ color: "var(--text-faint)", fontSize: "0.75rem", padding: 8 }}>Waiting for agent activity...</div>}
+        {messages.length === 0 && (
+          <div style={{ color: "var(--text-faint)", fontSize: "0.75rem", padding: 8 }}>
+            {starting && !connected ? "Starting agent — this may take 10-30 seconds while the model initializes..." : "Waiting for agent activity..."}
+          </div>
+        )}
         {messages.map((msg, i) => {
           if (msg.type === "meta") return <div key={i} className="sc-stream-entry sc-stream-meta">{msg.text}</div>;
           if (msg.type === "streaming") return (
@@ -1468,8 +1544,7 @@ function SuperclawStream({ characterPk, running }) {
 //  OWNED CHARACTER PAGE
 // ══════════════════════════════════════
 
-function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead, superclawPks }) {
-  const [tab, setTab] = useState("activities");
+function OwnedCharacterPage({ character, account, characters, allIdentities, activeCharId, onUpdateChar, onDeleteChar, adminAccount, serverAdminPubkey, isUserWhitelisted, onDmRead, superclawPks, superclawLogsRef, onStartSuperclaw, activeTab: tab, setActiveTab: setTab, activeSubTab, setActiveSubTab }) {
   const [postContent, setPostContent] = useState("");
   const [posting, setPosting] = useState(false);
   const [postModel, setPostModel] = useState("");
@@ -1780,7 +1855,7 @@ function OwnedCharacterPage({ character, account, characters, allIdentities, act
 
       {/* Activities tab */}
       {tab === "activities" && (
-        <ActivitiesPanel characterPk={character.pk} characterName={character.name} superclawRunning={superclawPks?.has(character.pk)} />
+        <ActivitiesPanel characterPk={character.pk} characterName={character.name} superclawRunning={superclawPks?.has(character.pk)} superclawLogsRef={superclawLogsRef} onStartSuperclaw={onStartSuperclaw} subTab={activeSubTab} setSubTab={setActiveSubTab} />
       )}
 
       {/* Feed tab */}
@@ -4440,9 +4515,21 @@ function patternToStrudelCode(pattern, bpm) {
   const decoded = decodeGridPattern(pattern);
   if (decoded) return drumGridToStrudelCode(decoded.grid, decoded.bank || "RolandTR808", bpm);
   // Fallback: treat as raw strudel code (for agent-generated patterns)
-  // But skip anything that looks like JSON (not valid strudel)
   if (pattern.trim().startsWith("{") || pattern.trim().startsWith("[")) return "";
-  return pattern;
+  // Sanitize agent patterns
+  let code = pattern;
+  // Fix invalid .bank() — replace with RolandTR808
+  const validBanks = ["RolandTR808", "RolandTR909", "RolandCR78", "AkaiLinn"];
+  code = code.replace(/\.bank\(["']([^"']+)["']\)/g, (match, bankName) => {
+    return validBanks.includes(bankName) ? match : '.bank("RolandTR808")';
+  });
+  // If pattern uses drum sounds (bd/sd/hh/etc) but has no .bank(), add default bank
+  if (/s\(["'][^"]*(?:bd|sd|hh|oh|cp|rim|lt|mt|ht|rd|cr)[^"]*["']\)/.test(code) && !code.includes(".bank(")) {
+    code += '.bank("RolandTR808")';
+  }
+  // Fix .distort() which isn't a strudel function
+  code = code.replace(/\.distort\([^)]*\)/g, ".shape(0.3)");
+  return code;
 }
 
 function DrumGridUI({ grid, currentStep, onToggleStep, readOnly, label, color }) {
@@ -4665,21 +4752,28 @@ function StudioView({ pubkey, adminAccount, allIdentities }) {
 
   async function ensureAudio() {
     if (evaluateRef.current) { console.log("[jam] audio already init"); return; }
-    console.log("[jam] initializing strudel...");
-    const mod = await import("@strudel/web");
+    console.log("[jam] initializing strudel via CDN (single bundle, no dedup issues)...");
+
+    // Load from CDN — single pre-built bundle with one @strudel/core instance
+    // This avoids the npm dual-soundMap issue entirely
+    const cdnUrl = "https://cdn.jsdelivr.net/npm/@strudel/web@1.3.0/dist/index.mjs";
+    const mod = await import(/* @vite-ignore */ cdnUrl);
+
+    // Use default prebake (registers synths) + load drum machine samples
     await mod.initStrudel({
       prebake: async () => {
         const g = globalThis;
         if (typeof g.samples === "function") {
           const ds = "https://raw.githubusercontent.com/felixroos/dough-samples/main";
           await g.samples(`${ds}/tidal-drum-machines.json`).catch(() => {});
-          console.log("[jam] samples loaded");
+          console.log("[jam] drum machine samples loaded");
         }
       },
     });
+
     evaluateRef.current = mod.evaluate;
     hushRef.current = mod.hush;
-    console.log("[jam] strudel ready, evaluateFn:", typeof mod.evaluate);
+    console.log("[jam] strudel ready (CDN bundle)");
     setAudioReady(true);
 
     // Immediately evaluate current state after init
@@ -4856,14 +4950,25 @@ function StudioView({ pubkey, adminAccount, allIdentities }) {
     <div>
       <h2 className="page-title">{studioState.ownerName || "Unknown"}'s Studio</h2>
 
+      {/* Audio init overlay — shown when patterns are playing but audio not started */}
+      {!audioReady && studioState?.instruments && Object.values(studioState.instruments).some(i => i.pattern && !i.muted) && (
+        <div className="studio-audio-overlay" onClick={async () => { try { await ensureAudio(); setAudioError(null); } catch (e) { setAudioError(e.message); } }}>
+          <div className="studio-audio-overlay-content">
+            <span style={{ fontSize: "2rem" }}>🎵</span>
+            <span style={{ fontSize: "1rem", fontWeight: 700, color: "var(--cream)" }}>Music is playing</span>
+            <span style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>Tap to start listening</span>
+          </div>
+        </div>
+      )}
+
       {/* Info bar */}
       <div className="room-info">
         <span className="room-scene-badge">jam studio</span>
-        <span className="room-player-count">{Object.keys(studioState.players).length} cat{Object.keys(studioState.players).length !== 1 ? "s" : ""}</span>
+        <span className="room-player-count">{Object.keys(studioState.players).length} online</span>
         <span className="studio-bpm-badge">BPM {studioState.bpm}</span>
         {!audioReady && (
           <button className="btn-primary" onClick={async () => { try { await ensureAudio(); setAudioError(null); } catch (e) { setAudioError(e.message); } }}>
-            Join Jam
+            Start Listening
           </button>
         )}
         <select className="sc-todo-select" value={bank} onChange={(e) => setBank(e.target.value)}>
@@ -4960,6 +5065,9 @@ function StudioView({ pubkey, adminAccount, allIdentities }) {
                   <span className="studio-instrument-type">({inst.x},{inst.y})</span>
                 </div>
                 {inst.playerName && <div className="studio-instrument-player">{inst.playerName}</div>}
+                {inst.pattern && !isMine && (
+                  <pre className="studio-code-mini">{patternToStrudelCode(inst.pattern, studioState?.bpm || 120).slice(0, 80)}{patternToStrudelCode(inst.pattern, studioState?.bpm || 120).length > 80 ? "..." : ""}</pre>
+                )}
                 {isMine ? (
                   <button className="btn-small" style={{ marginTop: 4, color: "var(--danger)" }} onClick={() => handleLeaveInstrument(inst.id)}>Leave</button>
                 ) : isVacant ? (
@@ -4972,22 +5080,33 @@ function StudioView({ pubkey, adminAccount, allIdentities }) {
         </div>
       </div>
 
-      {/* All active instrument grids */}
+      {/* All active instruments — grid or code view */}
       {instrumentsList.filter((i) => i.pattern || i.playerSessionId === mySessionId).map((inst) => {
         const isMine = inst.playerSessionId === mySessionId;
         const decoded = decodeGridPattern(inst.pattern);
         const displayGrid = isMine ? grid : (decoded?.grid || null);
-        if (!displayGrid) return null;
+        const strudelCode = inst.pattern ? patternToStrudelCode(inst.pattern, studioState.bpm || 120) : "";
+        const label = `${INSTRUMENT_EMOJI[inst.type] || ""} ${inst.name}${inst.playerName ? ` — ${inst.playerName}` : ""}`;
+
         return (
           <div key={inst.id} className="edit-section" style={{ marginTop: 12, padding: "12px 10px" }}>
-            <DrumGridUI
-              grid={displayGrid}
-              currentStep={currentStep}
-              onToggleStep={isMine ? handleToggleStep : () => {}}
-              readOnly={!isMine}
-              label={`${INSTRUMENT_EMOJI[inst.type] || ""} ${inst.name}${inst.playerName ? ` — ${inst.playerName}` : ""}`}
-              color={isMine ? "var(--accent)" : "var(--text-dim)"}
-            />
+            {displayGrid ? (
+              <DrumGridUI
+                grid={displayGrid}
+                currentStep={currentStep}
+                onToggleStep={isMine ? handleToggleStep : () => {}}
+                readOnly={!isMine}
+                label={label}
+                color={isMine ? "var(--accent)" : "var(--text-dim)"}
+              />
+            ) : (
+              <div>
+                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: isMine ? "var(--accent)" : "var(--text-dim)", marginBottom: 6 }}>{label}</div>
+              </div>
+            )}
+            {strudelCode && (
+              <pre className="studio-code-preview">{strudelCode}</pre>
+            )}
           </div>
         );
       })}
@@ -6895,31 +7014,47 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [unreadPks, setUnreadPks] = useState(new Set());
   const [superclawPks, setSuperclawPks] = useState(new Set());
+  const [activeTab, setActiveTab] = useState("activities"); // shared across identity switches
+  const [activeSubTab, setActiveSubTab] = useState("superclaw"); // shared activities subtab
+  const superclawLogsRef = useRef(new Map()); // pubkey -> messages array (persists across identity switches)
 
   const PI_URL = import.meta.env.VITE_PI_URL || "";
   const PI_HTTP = PI_URL.replace("ws://", "http://").replace("wss://", "https://");
 
   async function toggleSuperclaw(pk) {
     if (!PI_HTTP) return;
-    const isRunning = superclawPks.has(pk);
+    console.log("[superclaw] toggle called for", pk.slice(0, 12), "local running:", superclawPks.has(pk));
+    // Check actual server status (not just local state, which can be stale)
     try {
-      if (isRunning) {
+      const statusRes = await fetch(`${PI_HTTP}/internal/superclaw/status/${pk}`);
+      const status = await statusRes.json();
+      console.log("[superclaw] server status:", status.running);
+      if (status.running) {
+        // Actually running — stop it
+        console.log("[superclaw] STOPPING agent", pk.slice(0, 12));
         await fetch(`${PI_HTTP}/internal/superclaw/stop`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ pubkey: pk }),
         });
         setSuperclawPks(prev => { const next = new Set(prev); next.delete(pk); return next; });
       } else {
-        const char = characters.find(c => c.pk === pk);
-        await fetch(`${PI_HTTP}/internal/superclaw/start`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pubkey: pk, skHex: char?.skHex }),
-        });
-        setSuperclawPks(prev => new Set([...prev, pk]));
+        // Not actually running — clear stale state, show mode selector
+        console.log("[superclaw] not running, clearing stale state");
+        setSuperclawPks(prev => { const next = new Set(prev); next.delete(pk); return next; });
       }
-    } catch (e) {
-      console.error("[superclaw] toggle error:", e);
-    }
+    } catch (e) { console.error("[superclaw] toggle error:", e); }
+  }
+
+  async function startSuperclaw(pk, mode) {
+    if (!PI_HTTP) return;
+    try {
+      const char = characters.find(c => c.pk === pk);
+      await fetch(`${PI_HTTP}/internal/superclaw/start`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pubkey: pk, skHex: char?.skHex, mode }),
+      });
+      setSuperclawPks(prev => new Set([...prev, pk]));
+    } catch (e) { console.error("[superclaw] start error:", e); }
   }
 
   const ADMIN_ID = "__admin__";
@@ -7154,6 +7289,10 @@ export default function App() {
             onDeleteChar={handleDeleteCharacter}
             onDmRead={setDmLastSeen}
             superclawPks={superclawPks}
+            superclawLogsRef={superclawLogsRef}
+            onStartSuperclaw={startSuperclaw}
+            activeTab={activeTab} setActiveTab={setActiveTab}
+            activeSubTab={activeSubTab} setActiveSubTab={setActiveSubTab}
           />
         );
       }
@@ -7180,6 +7319,10 @@ export default function App() {
           onDeleteChar={handleDeleteCharacter}
           onDmRead={setDmLastSeen}
           superclawPks={superclawPks}
+          superclawLogsRef={superclawLogsRef}
+          onStartSuperclaw={startSuperclaw}
+          activeTab={activeTab} setActiveTab={setActiveTab}
+          activeSubTab={activeSubTab} setActiveSubTab={setActiveSubTab}
         />
       );
     }
