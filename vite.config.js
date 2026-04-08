@@ -1,10 +1,23 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { resolve } from 'path'
+
+// Force single copy of @strudel/web to avoid duplicate soundMap instances
+// (the pre-built bundle inlines @strudel/core, causing register/lookup mismatches)
+const strudelWeb = resolve(
+  __dirname,
+  'node_modules/@strudel/web/web.mjs',
+)
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   base: '/',
+  resolve: {
+    alias: {
+      '@strudel/web': strudelWeb,
+    },
+  },
   define: {
     // Pass shell env vars to the client (Vite only reads VITE_* from .env files)
     ...(process.env.VITE_RELAY_URL ? { 'import.meta.env.VITE_RELAY_URL': JSON.stringify(process.env.VITE_RELAY_URL) } : {}),
