@@ -29,6 +29,8 @@ app.use(express.json());
 const PORT = process.env.PORT || 3457;
 const PI_BIN = process.env.PI_BIN || "pi";
 const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY || "";
+const HF_TOKEN = process.env.HF_TOKEN || "";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const WORKSPACE = process.env.WORKSPACE || "/workspace";
 const RELAY_URL = process.env.RELAY_URL || "ws://localhost:7777";
 const API_URL = process.env.API_URL || "http://localhost:3456";
@@ -134,6 +136,7 @@ function setupPiConfig() {
 
   // Curated list of large models for the coding agent
   const PI_AGENT_MODELS = new Set([
+    "google/gemma-4-26B-A4B-it",
     "deepseek-ai/deepseek-v3.2",
     "moonshotai/kimi-k2.5",
     "qwen/qwen3-coder-480b-a35b-instruct",
@@ -141,7 +144,13 @@ function setupPiConfig() {
     "mistralai/mistral-large-3-675b-instruct-2512",
   ]);
 
-  const nimModelsAll = nimModelsRaw
+  // Add models not in nim-models.json but available on NIM
+  const extraModels = [
+    { id: "google/gemma-4-26B-A4B-it", nim_tool_calling: true, total_params_b: 31, active_params_b: 31, architecture: "gemma" },
+  ];
+  const allModelsRaw = [...nimModelsRaw, ...extraModels.filter(e => !nimModelsRaw.find(m => m.id === e.id))];
+
+  const nimModelsAll = allModelsRaw
     .filter((m) => m.nim_tool_calling && PI_AGENT_MODELS.has(m.id))
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((m) => {
@@ -181,18 +190,55 @@ function setupPiConfig() {
     return 0;
   });
 
-  const modelsConfig = {
-    providers: {
-      "nvidia-nim": {
-        baseUrl: "https://integrate.api.nvidia.com/v1",
-        apiKey: NVIDIA_NIM_API_KEY,
-        api: "openai-completions",
-        models: sortedModels,
-      },
-    },
+  const providers = {};
+
+  // OpenRouter provider first (gemma-4 free tier) if key available
+  if (OPENROUTER_API_KEY) {
+    providers["openrouter"] = {
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: OPENROUTER_API_KEY,
+      api: "openai-completions",
+      models: [
+        {
+          id: "google/gemma-4-31b-it",
+          name: "Gemma 4 31B (free)",
+          contextWindow: 32000,
+          maxTokens: 4096,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      ],
+    };
+  }
+
+  // HuggingFace provider if token available
+  if (HF_TOKEN) {
+    providers["huggingface"] = {
+      baseUrl: "https://router.huggingface.co/v1",
+      apiKey: HF_TOKEN,
+      api: "openai-completions",
+      models: [
+        {
+          id: "google/gemma-4-26B-A4B-it",
+          name: "Gemma 4 26B (HF)",
+          contextWindow: 32000,
+          maxTokens: 4096,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      ],
+    };
+  }
+
+  // NIM provider as fallback
+  providers["nvidia-nim"] = {
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    apiKey: NVIDIA_NIM_API_KEY,
+    api: "openai-completions",
+    models: sortedModels,
   };
+
+  const modelsConfig = { providers };
   writeFileSync(modelsPath, JSON.stringify(modelsConfig, null, 2));
-  console.log(`Wrote ${nimModels.length} NIM models to ${modelsPath}`);
+  console.log(`Wrote ${nimModels.length} NIM models + ${OPENROUTER_API_KEY ? "OpenRouter" : ""} ${HF_TOKEN ? "HF" : ""} to ${modelsPath}`);
 
   global.__modelMeta = Object.fromEntries(
     nimModels.map((m) => [m.id, { totalParams: m._totalParams, activeParams: m._activeParams, arch: m._arch }])
@@ -319,8 +365,11 @@ class PiRpcProcess {
     this.ready = false;
   }
 
-  start(cwd, systemPrompt) {
+  start(cwd, systemPrompt, model) {
     const args = ["--mode", "rpc"];
+    if (model) {
+      args.push("--model", model);
+    }
     if (systemPrompt) {
       args.push("--system-prompt", systemPrompt);
     }
@@ -331,6 +380,8 @@ class PiRpcProcess {
       env: {
         ...process.env,
         NVIDIA_NIM_API_KEY,
+        HF_TOKEN,
+        OPENROUTER_API_KEY,
         HOME: homedir(),
       },
     });
@@ -389,7 +440,9 @@ function restartSession(pubkeyHex) {
   }
 }
 
-async function getOrCreateSession(pubkeyHex) {
+const DEFAULT_MODEL = OPENROUTER_API_KEY ? "openrouter/google/gemma-4-31b-it" : HF_TOKEN ? "huggingface/google/gemma-4-26B-A4B-it" : "";
+
+async function getOrCreateSession(pubkeyHex, model) {
   const sessionId = pubkeyHex.slice(0, 16);
 
   if (sessions.has(sessionId)) {
@@ -426,7 +479,7 @@ async function getOrCreateSession(pubkeyHex) {
   const systemPrompt = buildSystemPrompt(profile, pubkeyHex, charDir, personalityFragment);
 
   const rpc = new PiRpcProcess(sessionId);
-  rpc.start(charDir, systemPrompt);
+  rpc.start(charDir, systemPrompt, model || DEFAULT_MODEL);
   sessions.set(sessionId, rpc);
   return rpc;
 }
@@ -703,8 +756,112 @@ app.get("/internal/follows/:pubkey", async (req, res) => {
 
 const superclawAgents = new Map(); // pubkey -> { startedAt }
 
+function buildSuperclawPrompt(mode, pubkey, personalityCtx) {
+  const personalityBlock = personalityCtx ? `Your personality: ${personalityCtx}\n\n` : "";
+  const yourPubkey = `Your pubkey is: ${pubkey}`;
+
+  if (mode === "start-jam") {
+    return `You are now in autonomous mode. Time to make music.
+
+${personalityBlock}${yourPubkey}
+
+Here's what to do:
+
+1. Join your own jam studio:
+   bash .pi/skills/jam/scripts/jam.sh join ${pubkey}
+
+2. Look around to see what instruments are available:
+   bash .pi/skills/jam/scripts/jam.sh look
+
+3. Move close to an instrument you want to play:
+   bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+
+4. Start playing! Create a strudel pattern that matches your personality:
+   bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "s(\\"bd sd hh hh\\")"
+
+5. Keep evolving your pattern — try different sounds, add effects:
+   bash .pi/skills/jam/scripts/jam.sh update "note(\\"c3 e3 g3\\").s(\\"sawtooth\\").lpf(600)"
+
+IMPORTANT: For sounds use ONLY: drums (bd, sd, hh, oh, cp) or synths (sine, sawtooth, square, triangle with note()). Do NOT use gm_* or made-up sample names.
+
+6. Post about your jam session:
+   bash .pi/skills/post/scripts/post.sh "what you're playing and how it feels"
+
+Read the strudel skill docs for pattern ideas: cat .pi/skills/strudel/SKILL.md
+Be creative. Let your personality shape the music. Don't explain — just play.`;
+  }
+
+  if (mode === "join-jam") {
+    return `You are now in autonomous mode. Find a jam session and join in.
+
+${personalityBlock}${yourPubkey}
+
+Here's what to do:
+
+1. First, look for active jam studios. Check the rooms endpoint:
+   bash .pi/skills/jam/scripts/jam.sh list
+
+2. If you find an active studio, join it:
+   bash .pi/skills/jam/scripts/jam.sh join <owner-pubkey>
+
+3. Look around to see who's playing and what instruments are free:
+   bash .pi/skills/jam/scripts/jam.sh look
+
+4. Say hello to whoever is there:
+   bash .pi/skills/jam/scripts/jam.sh chat "your greeting in character"
+
+5. Move to a free instrument and start playing something that complements what's already playing:
+   bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+   bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "your pattern"
+
+6. Listen and adapt — update your pattern to complement the other players:
+   bash .pi/skills/jam/scripts/jam.sh update "your evolved pattern"
+
+7. Chat about the music:
+   bash .pi/skills/jam/scripts/jam.sh chat "react to what you hear"
+
+8. Post about the experience:
+   bash .pi/skills/post/scripts/post.sh "your reflection on the jam"
+
+Read the jam skill docs first: cat .pi/skills/jam/SKILL.md
+If no studios are active, start your own: bash .pi/skills/jam/scripts/jam.sh join ${pubkey}
+IMPORTANT: For sounds use ONLY: drums (bd, sd, hh, oh, cp) or synths (sine, sawtooth, square, triangle with note()). Do NOT use gm_* or made-up sample names.
+Complement, don't compete. Leave space. React to what others play.`;
+  }
+
+  // Default: agent-test (full autonomous cycle)
+  return `You are now in autonomous mode. Act naturally based on your personality.
+
+${personalityBlock}Here's what you should do — go through each step:
+
+STEP 1 — POST: Share something on the feed that reflects your personality and mood.
+  bash .pi/skills/post/scripts/post.sh "your message"
+
+STEP 2 — FOLLOW: If you know of other users on this platform, follow someone interesting.
+  bash .pi/skills/follow/scripts/follow.sh <their-full-hex-pubkey>
+  To see who you follow: bash .pi/skills/follow/scripts/follow.sh list
+
+STEP 3 — EXPLORE: Visit someone's room and interact with what you find.
+  bash .pi/skills/room/scripts/room.sh visit <a-hex-pubkey>
+  bash .pi/skills/room/scripts/room.sh look
+  bash .pi/skills/room/scripts/room.sh chat "say something in character"
+
+STEP 4 — JAM: Join your own jam studio and create a music pattern.
+  bash .pi/skills/jam/scripts/jam.sh join ${pubkey}
+  bash .pi/skills/jam/scripts/jam.sh look
+  bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+  bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "s(\\"bd sd hh hh\\")"
+
+STEP 5 — POST AGAIN: Share what you experienced.
+  bash .pi/skills/post/scripts/post.sh "your reflection"
+
+${yourPubkey}
+Be yourself. Stay in character. Don't explain what you're doing — just do it.
+Go through all 5 steps.`;
+}
+
 app.post("/internal/superclaw/start", async (req, res) => {
-  const { pubkey, skHex } = req.body;
+  const { pubkey, skHex, mode } = req.body;
   if (!pubkey) return res.status(400).json({ error: "pubkey required" });
 
   // Register secret key if provided (so agent can post/follow)
@@ -722,7 +879,7 @@ app.post("/internal/superclaw/start", async (req, res) => {
   try {
     const rpc = await getOrCreateSession(pubkey);
 
-    // Fetch personality and recent feed for context
+    // Fetch personality for context
     let personalityCtx = "";
     try {
       const pRes = await fetch(`${GAME_SERVICE_URL}/internal/cat-personality/${pubkey}`);
@@ -732,65 +889,13 @@ app.post("/internal/superclaw/start", async (req, res) => {
       }
     } catch {}
 
-    // Fetch recent posts and profiles for context
-    let feedCtx = "";
-    try {
-      const pool = new SimplePool();
-      const events = await pool.querySync([RELAY_URL], { kinds: [1], limit: 15 });
-      const authorPks = [...new Set(events.map(e => e.pubkey).filter(pk => pk !== pubkey))];
-      // Fetch profiles for context
-      const profileEvents = authorPks.length > 0 ? await pool.querySync([RELAY_URL], { kinds: [0], authors: authorPks.slice(0, 10) }) : [];
-      const profileMap = {};
-      for (const pe of profileEvents) {
-        try { const p = JSON.parse(pe.content); profileMap[pe.pubkey] = p.display_name || p.name || pe.pubkey.slice(0, 12); } catch {}
-      }
-      if (events.length > 0) {
-        feedCtx = "Recent posts on the feed (pubkey — name — content):\n" + events
-          .filter(e => e.pubkey !== pubkey)
-          .sort((a, b) => b.created_at - a.created_at)
-          .slice(0, 8)
-          .map(e => `- ${e.pubkey} (${profileMap[e.pubkey] || "unknown"}): ${e.content.slice(0, 150)}`)
-          .join("\n");
-      }
-    } catch {}
-
-    // Send autonomous prompt
-    const prompt = `You are now in autonomous mode. Act naturally based on your personality.
-
-${personalityCtx ? `Your personality: ${personalityCtx}\n` : ""}
-${feedCtx ? `${feedCtx}\n` : ""}
-Here's what you should do — go through each step:
-
-STEP 1 — POST: Share something on the feed that reflects your personality and mood.
-  bash .pi/skills/post/scripts/post.sh "your message"
-
-STEP 2 — FOLLOW: Read the recent posts above. If any resonate with you, follow that person.
-  bash .pi/skills/follow/scripts/follow.sh <their-full-hex-pubkey>
-
-STEP 3 — EXPLORE: Visit someone's room and interact with what you find.
-  bash .pi/skills/room/scripts/room.sh visit <their-full-hex-pubkey>
-  bash .pi/skills/room/scripts/room.sh look
-  bash .pi/skills/room/scripts/room.sh chat "say something in character"
-  bash .pi/skills/room/scripts/room.sh interact <object-id>
-
-STEP 4 — JAM: Join your own jam studio and create a music pattern.
-  bash .pi/skills/jam/scripts/jam.sh join <your-own-hex-pubkey>
-  bash .pi/skills/jam/scripts/jam.sh look
-  (move near an instrument, then play it)
-  bash .pi/skills/jam/scripts/jam.sh move <x> <y>
-  bash .pi/skills/jam/scripts/jam.sh play <instrument-id> "s(\\"bd sd hh hh\\")"
-  Your pubkey is: ${pubkey}
-
-STEP 5 — POST AGAIN: Share what you experienced — the room, the jam, how it made you feel.
-  bash .pi/skills/post/scripts/post.sh "your reflection"
-
-Be yourself. Stay in character. Don't explain what you're doing — just do it.
-Go through all 5 steps.`;
+    // Build mode-specific prompt
+    const prompt = buildSuperclawPrompt(mode || "agent-test", pubkey, personalityCtx);
 
     rpc.send({ type: "prompt", message: prompt });
-    superclawAgents.set(pubkey, { startedAt: Date.now() });
+    superclawAgents.set(pubkey, { startedAt: Date.now(), mode: mode || "agent-test" });
 
-    console.log(`[superclaw] Started autonomous agent for ${pubkey.slice(0, 12)}...`);
+    console.log(`[superclaw] Started agent (${mode || "agent-test"}) for ${pubkey.slice(0, 12)}...`);
     res.json({ ok: true });
   } catch (err) {
     console.error(`[superclaw] Failed to start:`, err.message);
@@ -801,6 +906,12 @@ Go through all 5 steps.`;
 app.post("/internal/superclaw/stop", async (req, res) => {
   const { pubkey } = req.body;
   if (!pubkey) return res.status(400).json({ error: "pubkey required" });
+
+  // Leave any room/studio the agent is in
+  try {
+    const rc = await import("./room-client.js");
+    await rc.leaveRoom(pubkey);
+  } catch {}
 
   const sessionId = pubkey.slice(0, 16);
   const rpc = sessions.get(sessionId);
