@@ -4518,6 +4518,14 @@ function patternToStrudelCode(pattern, bpm) {
   if (pattern.trim().startsWith("{") || pattern.trim().startsWith("[")) return "";
   // Sanitize agent patterns
   let code = pattern;
+  // Fix JS array notation → mini-notation: note(["c3","~","e3"]) → note("c3 ~ e3")
+  code = code.replace(/\[([^\]]*)\]/g, (match, inner) => {
+    if (inner.includes('"') && inner.includes(',')) {
+      const notes = inner.split(',').map(s => s.trim().replace(/"/g, '').replace(/'/g, ''));
+      return '"' + notes.join(' ') + '"';
+    }
+    return match;
+  });
   // Fix invalid .bank() — replace with RolandTR808
   const validBanks = ["RolandTR808", "RolandTR909", "RolandCR78", "AkaiLinn"];
   code = code.replace(/\.bank\(["']([^"']+)["']\)/g, (match, bankName) => {
@@ -4527,8 +4535,15 @@ function patternToStrudelCode(pattern, bpm) {
   if (/s\(["'][^"]*(?:bd|sd|hh|oh|cp|rim|lt|mt|ht|rd|cr)[^"]*["']\)/.test(code) && !code.includes(".bank(")) {
     code += '.bank("RolandTR808")';
   }
-  // Fix .distort() which isn't a strudel function
+  // Fix common agent mistakes
   code = code.replace(/\.distort\([^)]*\)/g, ".shape(0.3)");
+  // Remove perlin/rand in lpf/hpf/gain that can produce NaN AudioParam values
+  code = code.replace(/\.lpf\(perlin[^)]*\)/g, ".lpf(800)");
+  code = code.replace(/\.hpf\(perlin[^)]*\)/g, ".hpf(200)");
+  code = code.replace(/\.gain\(perlin[^)]*\)/g, ".gain(0.7)");
+  // Fix single quotes to double quotes (strudel mini-notation prefers double)
+  code = code.replace(/s\('/g, 's("').replace(/'\)/g, '")');
+  code = code.replace(/note\('/g, 'note("').replace(/'\)\./g, '").');
   return code;
 }
 
@@ -4572,7 +4587,7 @@ function DrumGridUI({ grid, currentStep, onToggleStep, readOnly, label, color })
   );
 }
 
-function StudioView({ pubkey, adminAccount, allIdentities }) {
+function StudioView({ pubkey, adminAccount, allIdentities, activeCharId, characters, onStartSuperclaw, superclawPks }) {
   const [room, setRoom] = useState(null);
   const [studioState, setStudioState] = useState(null);
   const [error, setError] = useState(null);
@@ -4587,6 +4602,25 @@ function StudioView({ pubkey, adminAccount, allIdentities }) {
   const [observingCat, setObservingCat] = useState(null);
   const [agentMessages, setAgentMessages] = useState([]);
   const agentStreamRef = useRef(null);
+  const activeChar = characters?.find((c) => c.id === activeCharId);
+
+  function handleAgentJamInstrument(instrumentId, instrumentName, instrumentType) {
+    if (!activeChar || !onStartSuperclaw) return;
+    const currentPatterns = studioState?.instruments
+      ? Object.values(studioState.instruments)
+          .filter(i => i.pattern && i.playerName)
+          .map(i => `${i.playerName} on ${i.name}: ${i.pattern.slice(0, 100)}`)
+          .join("\n")
+      : "";
+    onStartSuperclaw(activeChar.pk, "jam-instrument", {
+      studioPubkey: pubkey,
+      instrumentId,
+      instrumentName,
+      instrumentType,
+      currentPatterns,
+      bpm: studioState?.bpm || 120,
+    });
+  }
   const agentMsgEndRef = useRef(null);
   const agentTextRef = useRef("");
   const agentThinkingRef = useRef("");
@@ -5071,7 +5105,16 @@ function StudioView({ pubkey, adminAccount, allIdentities }) {
                 {isMine ? (
                   <button className="btn-small" style={{ marginTop: 4, color: "var(--danger)" }} onClick={() => handleLeaveInstrument(inst.id)}>Leave</button>
                 ) : isVacant ? (
-                  <button className="btn-small" style={{ marginTop: 4 }} onClick={() => handleSitAtInstrument(inst.id)}>Sit Here</button>
+                  <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                    <button className="btn-small" onClick={() => handleSitAtInstrument(inst.id)}>Sit Here</button>
+                    {activeChar && onStartSuperclaw && (
+                      <button className="btn-small" title={superclawPks?.has(activeChar.pk) ? "Agent already running" : "Agent plays this instrument"}
+                        disabled={superclawPks?.has(activeChar.pk)}
+                        onClick={() => handleAgentJamInstrument(inst.id, inst.name, inst.type)}>
+                        {superclawPks?.has(activeChar.pk) ? "■" : "🦞"}
+                      </button>
+                    )}
+                  </div>
                 ) : null}
               </div>
             );
@@ -7045,13 +7088,18 @@ export default function App() {
     } catch (e) { console.error("[superclaw] toggle error:", e); }
   }
 
-  async function startSuperclaw(pk, mode) {
+  async function startSuperclaw(pk, mode, context) {
     if (!PI_HTTP) return;
+    // Prevent duplicate starts
+    if (superclawPks.has(pk)) {
+      console.log("[superclaw] already running for", pk.slice(0, 12));
+      return;
+    }
     try {
       const char = characters.find(c => c.pk === pk);
       await fetch(`${PI_HTTP}/internal/superclaw/start`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pubkey: pk, skHex: char?.skHex, mode }),
+        body: JSON.stringify({ pubkey: pk, skHex: char?.skHex, mode, context }),
       });
       setSuperclawPks(prev => new Set([...prev, pk]));
     } catch (e) { console.error("[superclaw] start error:", e); }
@@ -7256,7 +7304,7 @@ export default function App() {
       return <PiChat allIdentities={allIdentities} activeCharId={activeCharId} adminAccount={adminAccount} />;
     }
     if (route === "studio" && routeKey) {
-      return <StudioView pubkey={routeKey} adminAccount={adminAccount} allIdentities={allIdentities} />;
+      return <StudioView pubkey={routeKey} adminAccount={adminAccount} allIdentities={allIdentities} activeCharId={activeCharId} characters={characters} onStartSuperclaw={startSuperclaw} superclawPks={superclawPks} />;
     }
     if (route === "room" && routeKey) {
       return <RoomView pubkey={routeKey} adminAccount={adminAccount} allIdentities={allIdentities} />;

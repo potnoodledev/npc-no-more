@@ -756,7 +756,7 @@ app.get("/internal/follows/:pubkey", async (req, res) => {
 
 const superclawAgents = new Map(); // pubkey -> { startedAt }
 
-function buildSuperclawPrompt(mode, pubkey, personalityCtx) {
+function buildSuperclawPrompt(mode, pubkey, personalityCtx, context) {
   const personalityBlock = personalityCtx ? `Your personality: ${personalityCtx}\n\n` : "";
   const yourPubkey = `Your pubkey is: ${pubkey}`;
 
@@ -829,6 +829,47 @@ IMPORTANT: For sounds use ONLY: drums (bd, sd, hh, oh, cp) or synths (sine, sawt
 Complement, don't compete. Leave space. React to what others play.`;
   }
 
+  if (mode === "jam-instrument" && context) {
+    const { studioPubkey, instrumentId, instrumentName, instrumentType, currentPatterns, bpm } = context;
+    return `You are joining a jam studio to play ${instrumentName || "an instrument"}.
+
+${personalityBlock}${yourPubkey}
+
+What's currently playing in the studio (BPM ${bpm || 120}):
+${currentPatterns || "(nothing yet — you're the first!)"}
+
+Here's what to do:
+
+1. Join the studio:
+   bash .pi/skills/jam/scripts/jam.sh join ${studioPubkey}
+
+2. Look around to see the layout:
+   bash .pi/skills/jam/scripts/jam.sh look
+
+3. Move close to ${instrumentName || "your instrument"} (within 2 tiles):
+   bash .pi/skills/jam/scripts/jam.sh move <x> <y>
+
+4. Comment on what you hear:
+   bash .pi/skills/jam/scripts/jam.sh chat "your reaction to the music"
+
+5. Start playing! Create a pattern that COMPLEMENTS what's already playing:
+   bash .pi/skills/jam/scripts/jam.sh play ${instrumentId || "<instrument-id>"} "your-strudel-pattern"
+
+   For drums use: s("bd sd hh hh").bank("RolandTR808")
+   For melody use: note("c3 e3 g3 b3").s("sawtooth").lpf(800)
+   For bass use: note("c2 ~ e2 ~").s("square").lpf(400)
+
+6. Listen and evolve — update your pattern:
+   bash .pi/skills/jam/scripts/jam.sh update "evolved-pattern" ${instrumentId || "<instrument-id>"}
+
+7. Chat about the vibe:
+   bash .pi/skills/jam/scripts/jam.sh chat "how the music makes you feel"
+
+Read the jam skill docs: cat .pi/skills/jam/SKILL.md
+IMPORTANT: For drums always use .bank("RolandTR808"). For melody use synths (sine/sawtooth/square/triangle).
+Complement what others are playing — don't overpower them. Leave space.`;
+  }
+
   // Default: agent-test (full autonomous cycle)
   return `You are now in autonomous mode. Act naturally based on your personality.
 
@@ -861,7 +902,7 @@ Go through all 5 steps.`;
 }
 
 app.post("/internal/superclaw/start", async (req, res) => {
-  const { pubkey, skHex, mode } = req.body;
+  const { pubkey, skHex, mode, context } = req.body;
   if (!pubkey) return res.status(400).json({ error: "pubkey required" });
 
   // Register secret key if provided (so agent can post/follow)
@@ -890,7 +931,7 @@ app.post("/internal/superclaw/start", async (req, res) => {
     } catch {}
 
     // Build mode-specific prompt
-    const prompt = buildSuperclawPrompt(mode || "agent-test", pubkey, personalityCtx);
+    const prompt = buildSuperclawPrompt(mode || "agent-test", pubkey, personalityCtx, context);
 
     rpc.send({ type: "prompt", message: prompt });
     superclawAgents.set(pubkey, { startedAt: Date.now(), mode: mode || "agent-test" });
@@ -1208,16 +1249,52 @@ import * as rc from "./room-client.js";
     res.json(result);
   });
 
+  function validateStrudelPattern(pattern) {
+    if (!pattern) return { valid: true, cleaned: "" };
+    let p = pattern;
+    // Fix JS array notation → mini-notation: note(["c3","~","e3"]) → note("c3 ~ e3")
+    p = p.replace(/\[([^\]]*)\]/g, (match, inner) => {
+      if (inner.includes('"') && inner.includes(',')) {
+        const notes = inner.split(',').map(s => s.trim().replace(/"/g, '').replace(/'/g, ''));
+        return `"${notes.join(' ')}"`;
+      }
+      return match;
+    });
+    // Fix invalid bank names
+    const validBanks = ["RolandTR808", "RolandTR909", "RolandCR78", "AkaiLinn"];
+    p = p.replace(/\.bank\(["']([^"']+)["']\)/g, (match, bank) => validBanks.includes(bank) ? match : '.bank("RolandTR808")');
+    // Add bank for bare drum patterns
+    if (/s\(["'][^"]*(?:bd|sd|hh|oh|cp)[^"]*["']\)/.test(p) && !p.includes(".bank(")) {
+      p += '.bank("RolandTR808")';
+    }
+    // Fix .distort()
+    p = p.replace(/\.distort\([^)]*\)/g, ".shape(0.3)");
+    // Remove perlin in audio params (causes NaN)
+    p = p.replace(/\.lpf\(perlin[^)]*\)/g, ".lpf(800)");
+    p = p.replace(/\.hpf\(perlin[^)]*\)/g, ".hpf(200)");
+    // Check for obvious syntax issues
+    const openParens = (p.match(/\(/g) || []).length;
+    const closeParens = (p.match(/\)/g) || []).length;
+    if (openParens !== closeParens) {
+      return { valid: false, error: `Mismatched parentheses: ${openParens} open, ${closeParens} close. Fix your pattern.`, cleaned: p };
+    }
+    return { valid: true, cleaned: p };
+  }
+
   app.post("/internal/jam/play", (req, res) => {
     const { pubkey, instrumentId, pattern } = req.body;
     if (!pubkey || !instrumentId) return res.status(400).json({ error: "pubkey and instrumentId required" });
-    res.json(rc.sendPlay(pubkey, instrumentId, pattern || ""));
+    const { valid, cleaned, error } = validateStrudelPattern(pattern);
+    if (!valid) return res.status(400).json({ error: `Invalid pattern: ${error}` });
+    res.json(rc.sendPlay(pubkey, instrumentId, cleaned));
   });
 
   app.post("/internal/jam/update", (req, res) => {
     const { pubkey, instrumentId, pattern } = req.body;
     if (!pubkey || !instrumentId) return res.status(400).json({ error: "pubkey and instrumentId required" });
-    res.json(rc.sendUpdatePattern(pubkey, instrumentId, pattern || ""));
+    const { valid, cleaned, error } = validateStrudelPattern(pattern);
+    if (!valid) return res.status(400).json({ error: `Invalid pattern: ${error}` });
+    res.json(rc.sendUpdatePattern(pubkey, instrumentId, cleaned));
   });
 
   app.post("/internal/jam/stop", (req, res) => {
